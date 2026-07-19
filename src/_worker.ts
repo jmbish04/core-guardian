@@ -20,29 +20,33 @@
  * mail in D1 for the `/inbox` showcase (see `backend/email/inbound.ts`). The
  * handler is attached to BOTH the object returned by `createExports().default`
  * (what the Astro adapter re-exports) AND the standalone default export.
+ *
+ * The same pair also carries `scheduled(event, env, ctx)` — the hourly Core
+ * Guardian usage evaluation wired to the `0 * * * *` cron in `wrangler.jsonc`.
  */
 
-import { App } from "astro/app";
-import { handle } from "@astrojs/cloudflare/handler";
 import type { ExportedHandler } from "@cloudflare/workers-types";
+
+import { handle } from "@astrojs/cloudflare/handler";
 import { routeAgentRequest } from "agents";
+import { App } from "astro/app";
 
-import { app as honoApp } from "./backend/api/index";
-import { handleInboundEmail } from "./backend/email/inbound";
-
+import { ArtifactAgent } from "./backend/ai/agents/ArtifactAgent";
+import { BrowserHitlAgent } from "./backend/ai/agents/BrowserHitlAgent";
+import { ChatBroker } from "./backend/ai/agents/ChatBroker";
 // Import Durable Object classes (the Agents SDK showcase + realtime agents)
 import { CodeModeAgent } from "./backend/ai/agents/CodeModeAgent";
-import { BrowserHitlAgent } from "./backend/ai/agents/BrowserHitlAgent";
-import { WorkflowsAgent } from "./backend/ai/agents/WorkflowsAgent";
-import { ArtifactAgent } from "./backend/ai/agents/ArtifactAgent";
+import { CoderAgent } from "./backend/ai/agents/CoderAgent";
+import { McpAgent } from "./backend/ai/agents/McpAgent";
+import { NotificationsAgent } from "./backend/ai/agents/NotificationsAgent";
 import { OrchestratorAgent } from "./backend/ai/agents/OrchestratorAgent";
 import { ResearcherAgent } from "./backend/ai/agents/ResearcherAgent";
-import { CoderAgent } from "./backend/ai/agents/CoderAgent";
-import { ChatBroker } from "./backend/ai/agents/ChatBroker";
-import { NotificationsAgent } from "./backend/ai/agents/NotificationsAgent";
-import { McpAgent } from "./backend/ai/agents/McpAgent";
-import { ThinkingAgent } from "./backend/ai/agents/ThinkingAgent";
 import { SkillsAgent } from "./backend/ai/agents/SkillsAgent";
+import { ThinkingAgent } from "./backend/ai/agents/ThinkingAgent";
+import { WorkflowsAgent } from "./backend/ai/agents/WorkflowsAgent";
+import { app as honoApp } from "./backend/api/index";
+import { handleInboundEmail } from "./backend/email/inbound";
+import { evaluateUsage } from "./backend/guardian/collect";
 
 // Re-export Durable Object classes (Pattern B: the @astrojs/cloudflare adapter
 // re-exports these alongside the default handler so Cloudflare resolves every
@@ -62,10 +66,30 @@ export {
   SkillsAgent,
 };
 
+/**
+ * Runs the Guardian hourly usage evaluation, swallowing failures.
+ *
+ * A cron invocation that throws is retried and shows as an error in the
+ * dashboard; a usage read failing is expected (e.g. the API token lacks
+ * Analytics Read) and should be logged, not escalated.
+ */
+async function runGuardianEvaluation(env: Env) {
+  try {
+    const { alerted } = await evaluateUsage(env);
+    if (alerted.length > 0) {
+      console.warn(JSON.stringify({ level: "WARN", source: "guardian.cron", surging: alerted }));
+    }
+  } catch (err) {
+    console.error(JSON.stringify({ level: "ERROR", source: "guardian.cron", error: String(err) }));
+  }
+}
+
 /** True for paths the Hono API owns (REST + OpenAPI doc surfaces). */
 function isApiPath(pathname: string): boolean {
   return (
     pathname.startsWith("/api/") ||
+    pathname === "/mcp" ||
+    pathname.startsWith("/mcp/") ||
     pathname === "/openapi.json" ||
     pathname === "/swagger" ||
     pathname === "/scalar" ||
@@ -125,6 +149,13 @@ export function createExports() {
     async email(message: any, env: Env, ctx: ExecutionContext) {
       await handleInboundEmail(message, env, ctx);
     },
+
+    // Core Guardian hourly usage evaluation (cron `0 * * * *`). Snapshots every
+    // binding's usage to D1 and records a billing_events alert per threshold
+    // crossing. Never throws — a probe failure must not fail the cron run.
+    async scheduled(_event: ScheduledController, env: Env, _ctx: ExecutionContext) {
+      await runGuardianEvaluation(env);
+    },
   } as unknown as ExportedHandler<Env>;
 
   return {
@@ -166,6 +197,11 @@ const handler = {
   // so this module is a valid standalone Worker target for a routing rule too.
   async email(message: any, env: Env, ctx: ExecutionContext) {
     await handleInboundEmail(message, env, ctx);
+  },
+
+  // Guardian hourly cron (mirrors `createExports().default`).
+  async scheduled(_event: ScheduledController, env: Env, _ctx: ExecutionContext) {
+    await runGuardianEvaluation(env);
   },
 } as unknown as ExportedHandler<Env>;
 
