@@ -36,6 +36,41 @@
       "when": 1782890288875,
       "tag": "0004_sticky_exiles",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1784478625214,
+      "tag": "0005_sad_blur",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1784482745179,
+      "tag": "0006_glorious_spot",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1784486036348,
+      "tag": "0007_luxuriant_charles_xavier",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1784488021779,
+      "tag": "0008_glamorous_toad",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1784488426221,
+      "tag": "0009_breezy_pixie",
+      "breakpoints": true
     }
   ]
 }
