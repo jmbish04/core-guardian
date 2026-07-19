@@ -1,0 +1,21 @@
+---
+/**
+ * R2 buckets — Data Storage detail page.
+ *
+ * Thin Astro shell over the `<R2Explorer>` React island.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { R2Explorer } from "@/components/storage";
+---
+
+<BaseLayout title="R2 buckets" description="Browse every R2 bucket by size, open a bucket to inspect its objects, and delete objects or whole buckets.">
+  <main class="container mx-auto flex max-w-7xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/storage"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Data Storage
+    </a>
+    <R2Explorer client:load />
+  </main>
+</BaseLayout>

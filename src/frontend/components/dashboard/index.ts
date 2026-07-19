@@ -6,3 +6,5 @@
  */
 
 export { AdminDashboard } from "./AdminDashboard";
+export { GuardianAuditLog } from "./GuardianAuditLog";
+export { GuardianPanel } from "./GuardianPanel";

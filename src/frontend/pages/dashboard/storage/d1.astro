@@ -1,0 +1,21 @@
+---
+/**
+ * D1 databases — Data Storage detail page.
+ *
+ * Thin Astro shell over the `<D1Table>` React island.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { D1Table } from "@/components/storage";
+---
+
+<BaseLayout title="D1 databases" description="Every D1 database with file size, table count, and the Workers bound to it.">
+  <main class="container mx-auto flex max-w-7xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/storage"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Data Storage
+    </a>
+    <D1Table client:load />
+  </main>
+</BaseLayout>

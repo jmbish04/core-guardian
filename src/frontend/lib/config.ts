@@ -72,6 +72,11 @@ export const siteConfig: SiteConfig = {
     {
       label: "System",
       items: [
+        { href: "/dashboard/guardian", label: "Core Guardian" },
+        { href: "/dashboard/storage", label: "Data Storage" },
+        { href: "/dashboard/ai-gateway", label: "AI Gateway Billing" },
+        { href: "/dashboard/alerts", label: "Alert Rules" },
+        { href: "/dashboard/notifications-inbox", label: "Alert Inbox" },
         { href: "/notifications", label: "Notifications" },
         { href: "/settings", label: "Settings" },
         { href: "/showcase/features", label: "Platform Features" },
