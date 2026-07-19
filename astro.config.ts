@@ -1,5 +1,6 @@
 // @ts-check
 import cloudflare from "@astrojs/cloudflare";
+import agents from "agents/vite";
 import react from "@astrojs/react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "astro/config";
@@ -58,6 +59,11 @@ export default defineConfig({
   integrations: [react()],
   vite: {
     plugins: [
+      // Agents SDK build plugin. Required: Oxc (Vite's transformer) does not
+      // support TC39 decorators, so without this the `@callable()` decorators
+      // on the agent classes are emitted verbatim into the bundle and the
+      // Worker fails to parse at deploy time.
+      ...agents(),
       // Cast through the Vite plugin type to work around the current
       // Vite/@tailwindcss-vite HotUpdateOptions mismatch without dropping
       // type information entirely.

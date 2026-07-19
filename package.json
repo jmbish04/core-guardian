@@ -22,8 +22,8 @@
     "db:generate": "drizzle-kit generate",
     "migrate:local": "pnpm run db:generate && npx wrangler d1 migrations apply DB --local",
     "migrate:remote": "pnpm run db:generate && npx wrangler d1 migrations apply DB --remote",
-    "deploy": "pnpm run build && cp .assetsignore dist/.assetsignore && pnpm run migrate:remote && npx wrangler deploy",
-    "deploy:preview": "pnpm run build && cp .assetsignore dist/.assetsignore && npx wrangler versions upload",
+    "deploy": "pnpm run build && pnpm run migrate:remote && npx wrangler deploy -c dist/server/wrangler.json",
+    "deploy:preview": "pnpm run build && npx wrangler versions upload -c dist/server/wrangler.json",
     "cf-typegen": "wrangler types",
     "deps:lockfile": "corepack pnpm install --no-frozen-lockfile && wrangler types",
     "deps:update": "corepack pnpm update --latest && corepack pnpm install --no-frozen-lockfile && wrangler types"
