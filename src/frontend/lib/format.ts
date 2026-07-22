@@ -54,6 +54,45 @@ export function compactNumber(n: number): string {
   return new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(n);
 }
 
+/**
+ * Density count — the default for any metered quantity in a table cell, meter,
+ * or chart axis where space is tight. `45,523,699` → `45.5M`. Optional unit is
+ * appended with a thin space: `formatCount(45.5e6, "rows")` → `45.5M rows`.
+ *
+ * Use this, not bare `compactNumber`, at call sites so intent is legible.
+ */
+export function formatCount(n: number, unit?: string): string {
+  const s = compactNumber(n);
+  return unit ? `${s} ${unit}` : s;
+}
+
+/**
+ * Exact figure with grouping separators — for a standout number the reader is
+ * meant to dwell on (a headline total, an audit-log value). `1248879489` →
+ * `1,248,879,489`; with a unit, `1,248,879,489 rows`. Reserve for emphasis;
+ * everywhere else prefer {@link formatCount}.
+ */
+export function formatExact(n: number, unit?: string): string {
+  const s = new Intl.NumberFormat("en").format(Math.round(n));
+  return unit ? `${s} ${unit}` : s;
+}
+
+/**
+ * A usage-vs-limit ratio as a legible token. Below 10× it reads as a percent
+ * (`72%`); at or above 10× it flips to a multiplier (`258×`) because
+ * `25768%` is unreadable. Returns `null` when there is no positive limit to
+ * measure against, so callers render a dash rather than `Infinity%`.
+ *
+ * The helper returns only the magnitude token; the caller supplies wording
+ * such as "of limit" / "over limit".
+ */
+export function formatRatio(value: number, limit: number): string | null {
+  if (!Number.isFinite(limit) || limit <= 0) return null;
+  const ratio = value / limit;
+  if (ratio >= 10) return `${new Intl.NumberFormat("en").format(Math.round(ratio))}×`;
+  return `${Math.round(ratio * 100)}%`;
+}
+
 /** Human-readable byte size, e.g. "0 B", "1.4 KB", "3.2 MB". */
 export function humanSize(bytes: number | null | undefined): string {
   if (bytes === null || bytes === undefined || Number.isNaN(bytes)) return "";

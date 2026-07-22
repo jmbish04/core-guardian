@@ -1,0 +1,33 @@
+---
+/**
+ * Sign-in — obtains the `cr_session` cookie the dashboard panels require.
+ *
+ * `?next=/some/path` controls where to land after a successful sign-in so a
+ * panel can deep-link here and send the reader back where they started.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { SignInForm } from "@/components/auth/SignInForm";
+
+const rawNext = Astro.url.searchParams.get("next");
+// Only same-site paths — never bounce to an attacker-supplied origin.
+const next = rawNext && rawNext.startsWith("/") && !rawNext.startsWith("//")
+  ? rawNext
+  : "/dashboard/guardian";
+---
+
+<BaseLayout
+  title="Sign in"
+  description="Authenticate with the Worker API key to unlock the Core Guardian dashboards."
+>
+  <main class="container mx-auto flex max-w-md flex-col gap-6 px-4 py-20">
+    <header class="flex flex-col gap-2">
+      <h1 class="text-2xl font-semibold tracking-tight">Sign in</h1>
+      <p class="text-sm text-muted-foreground">
+        The Guardian telemetry, storage, AI Gateway and alerting panels read
+        live account data and require an authenticated session.
+      </p>
+    </header>
+
+    <SignInForm client:load redirectTo={next} />
+  </main>
+</BaseLayout>

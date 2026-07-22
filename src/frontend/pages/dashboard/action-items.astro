@@ -1,0 +1,24 @@
+---
+/**
+ * `/dashboard/action-items` — all human-gated follow-ups, pending and completed.
+ *
+ * Thin Astro shell over the `<ActionItems mode="full">` island.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { ActionItems } from "@/components/dashboard";
+---
+
+<BaseLayout
+  title="Action items"
+  description="Human-gated follow-up tasks — approve an archived source's deletion, watch it execute and verify, and review completed items."
+>
+  <main class="container mx-auto flex max-w-4xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/guardian"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Core Guardian
+    </a>
+    <ActionItems mode="full" client:load />
+  </main>
+</BaseLayout>

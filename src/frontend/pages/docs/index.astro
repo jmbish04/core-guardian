@@ -1,142 +1,117 @@
 ---
+/**
+ * `/docs` — documentation home / table of contents.
+ *
+ * A one-screen overview of what Core Guardian is, followed by a linked table of
+ * contents for every documentation surface. Deep design and the phased plan
+ * live one click away (architecture docs, and the changelog preview) — this page
+ * only orients and points.
+ */
 import BaseLayout from "@/layouts/BaseLayout.astro";
 import { Badge } from "@/components/ui/badge";
-import { CodeBlock } from "@/components/ui/code-block";
-import { DocsAgentsSection } from "@/components/docs";
+import { shipped, proposed } from "@/lib/changelog";
 
-/**
- * Documentation home (`/docs`).
- *
- * NOTE FOR THE ORCHESTRATOR: `src/_worker.ts` `isApiPath()` currently treats the
- * exact path `/docs` as a Hono-owned route, so this Astro page is NOT reachable
- * until that guard is adjusted (the Hono app only mounts `/api/docs/*`, so a
- * request to `/docs` falls through to a 404 today). See the agent's final report
- * for the one-line fix. Everything on this page is otherwise wired to real data.
- *
- * The agent capability grid binds to the live `GET /api/docs/agents` metadata
- * via the `DocsAgentsSection` island (no mock data).
- */
+const shippedCount = shipped().length;
+const proposedCount = proposed().length;
 
-const stackRows: { area: string; tech: string; note: string }[] = [
-  { area: "Runtime", tech: "Cloudflare Workers", note: "Single Worker serving SSR, API, and agents" },
-  { area: "Frontend", tech: "Astro 5 + React islands", note: "SSR pages, interactive islands, shadcn/ui (base-ui)" },
-  { area: "API", tech: "Hono + zod-openapi", note: "Zod-validated routes, OpenAPI 3.1 at /openapi.json" },
-  { area: "Database", tech: "D1 + Drizzle ORM", note: "One table per file under db/schemas/<domain>/" },
-  { area: "Agents", tech: "Cloudflare Agents SDK", note: "Durable Objects with embedded SQLite + WebSocket" },
-  { area: "Chat UI", tech: "assistant-ui", note: "useAgentChat runtime over the hibernatable socket" },
+const toc: {
+  href: string;
+  title: string;
+  summary: string;
+  tag: string;
+}[] = [
+  {
+    href: "/docs/architecture",
+    title: "Architecture & System Design",
+    summary:
+      "How the one Worker fits together — the hourly cron as the only thing that talks to Cloudflare, D1 as materialized state, and the diagrams for the alert lifecycle, information architecture, pricing-scrape pipeline, and the AI circuit breaker. Also the verified-against-the-API findings (no pricing API, R2 has no last-access timestamp) and the defect register.",
+    tag: "Start here",
+  },
+  {
+    href: "/changelogs/preview",
+    title: "Roadmap / Preview",
+    summary: `The full backlog, grouped by PR size, so every required piece is tracked before it is built. ${proposedCount} proposed changes across the P0–P9 phases.`,
+    tag: "Plan",
+  },
+  {
+    href: "/changelogs",
+    title: "Changelog",
+    summary: `Every change that has shipped, newest first — ${shippedCount} so far, each with its scope and deployed version.`,
+    tag: "Shipped",
+  },
+  {
+    href: "/openapi.json",
+    title: "OpenAPI 3.1 spec",
+    summary:
+      "The machine-readable contract for the whole API, generated from the Hono + zod route definitions.",
+    tag: "API",
+  },
+  {
+    href: "/scalar",
+    title: "Scalar API reference",
+    summary: "An interactive, modern reference UI over the OpenAPI spec.",
+    tag: "API",
+  },
+  {
+    href: "/swagger",
+    title: "Swagger UI",
+    summary: "The classic try-it-out request explorer over the same spec.",
+    tag: "API",
+  },
 ];
-
-const apiSurfaces: { href: string; label: string; desc: string }[] = [
-  { href: "/openapi.json", label: "openapi.json", desc: "The raw OpenAPI 3.1 document for the whole API." },
-  { href: "/scalar", label: "Scalar", desc: "Interactive, modern API reference UI." },
-  { href: "/swagger", label: "Swagger UI", desc: "Classic try-it-out request explorer." },
-  { href: "/health", label: "/api/health", desc: "Structured health check across every agent binding." },
-];
-
-const quickstart = `# Install and run the dev server
-pnpm install
-pnpm dev
-
-# Apply local D1 migrations (generates + applies)
-pnpm migrate:local
-
-# Build the Worker bundle (Astro + adapter)
-pnpm build`;
-
-const fetchAgentsExample = `// The agent catalog on this page is fetched live from the Hono API.
-import { apiGet } from "@/lib/api";
-
-type AgentsResponse = { agents: AgentMetadata[] };
-
-const { agents } = await apiGet<AgentsResponse>("docs/agents");`;
 ---
 
 <BaseLayout
   title="Documentation"
-  description="Documentation home for the Astro + Hono + D1/Drizzle + Cloudflare Agents SDK template — stack overview, live API references, and the agent capability catalog"
+  description="Core Guardian documentation home — what it does, and a table of contents for the architecture docs, roadmap, changelog, and API references."
 >
-  <div class="container mx-auto max-w-6xl px-4 py-16">
-
+  <div class="container mx-auto max-w-4xl px-4 py-16">
     <!-- Hero -->
-    <section class="mb-16">
+    <section class="mb-14">
       <Badge variant="outline" class="mb-4 font-mono text-[11px]">Docs</Badge>
-      <h1 class="text-balance text-4xl font-bold tracking-tight sm:text-5xl">Documentation</h1>
+      <h1 class="text-balance text-4xl font-bold tracking-tight sm:text-5xl">Core Guardian</h1>
       <p class="mt-5 max-w-3xl text-lg leading-relaxed text-muted-foreground">
-        Everything you need to build on this template: a single Cloudflare Worker that serves
-        Astro SSR pages, a Zod-validated Hono API over D1/Drizzle, and stateful agents on the
-        Cloudflare Agents SDK. Start with the <a href="/playbook" class="text-primary hover:underline">Developer Playbook</a>,
-        explore the live API below, or jump straight into a showcase.
+        A Cloudflare spend-governance cockpit on a single Worker. It watches usage across every
+        binding on the account, projects month-end cost against your included allowances, surfaces
+        what needs action, and can halt a runaway before it bleeds — evicting an R2 bucket, dropping
+        a Vectorize index, or breaking the circuit on AI spend.
       </p>
-      <div class="mt-6 flex flex-wrap gap-2">
-        <a href="/playbook" class="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90">Developer Playbook</a>
-        <a href="/showcase/features" class="rounded-lg bg-muted px-4 py-2 text-sm font-semibold transition-colors hover:bg-muted/70">All showcases</a>
-      </div>
+      <p class="mt-4 max-w-3xl text-sm leading-relaxed text-muted-foreground">
+        One Worker serves Astro SSR pages, a Zod-validated Hono API (with a matching MCP surface),
+        and stateful agents. An hourly cron is the only thing that queries Cloudflare's APIs; every
+        page reads materialized D1 state.
+      </p>
     </section>
 
-    <!-- Stack overview -->
-    <section class="mb-16">
-      <h2 class="mb-2 text-2xl font-bold tracking-tight">The stack</h2>
-      <p class="mb-8 max-w-3xl text-sm text-muted-foreground">
-        One Worker, three concerns. Each row maps to a real layer of this codebase.
+    <!-- Table of contents -->
+    <section>
+      <h2 class="mb-2 text-2xl font-bold tracking-tight">Documentation</h2>
+      <p class="mb-6 max-w-3xl text-sm text-muted-foreground">
+        Where to find what. Start with the architecture, then the roadmap for what is planned and
+        the changelog for what has shipped.
       </p>
-      <div class="overflow-hidden rounded-xl bg-card ring-1 ring-border/40">
-        <div class="divide-y divide-border/40">
-          {stackRows.map((row) => (
-            <div class="grid grid-cols-1 gap-1 px-5 py-4 sm:grid-cols-[8rem_14rem_1fr] sm:items-center sm:gap-4">
-              <span class="text-xs font-medium uppercase tracking-wide text-muted-foreground/70">{row.area}</span>
-              <span class="font-mono text-sm text-foreground">{row.tech}</span>
-              <span class="text-sm text-muted-foreground">{row.note}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    </section>
 
-    <!-- Quickstart -->
-    <section class="mb-16">
-      <h2 class="mb-2 text-2xl font-bold tracking-tight">Quickstart</h2>
-      <p class="mb-8 max-w-3xl text-sm text-muted-foreground">
-        Node 22+ and <code class="text-primary">pnpm</code> are required.
-      </p>
-      <CodeBlock client:visible filename="terminal" language="bash" code={quickstart} />
-    </section>
-
-    <!-- Live API docs -->
-    <section class="mb-16">
-      <h2 class="mb-2 text-2xl font-bold tracking-tight">Live API reference</h2>
-      <p class="mb-8 max-w-3xl text-sm text-muted-foreground">
-        The API is self-documenting. The OpenAPI document and both reference UIs are served
-        directly by the Worker.
-      </p>
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {apiSurfaces.map((surface) => (
-          <a
-            href={surface.href}
-            class="group flex flex-col rounded-xl bg-card p-5 ring-1 ring-border/40 transition-colors hover:ring-border/70"
-          >
-            <div class="mb-1 flex items-center justify-between gap-2">
-              <span class="font-mono text-sm text-foreground">{surface.label}</span>
-              <span aria-hidden class="text-muted-foreground transition-transform group-hover:translate-x-0.5">→</span>
-            </div>
-            <span class="text-sm text-muted-foreground">{surface.desc}</span>
-          </a>
+      <ol class="flex flex-col gap-3">
+        {toc.map((item, i) => (
+          <li>
+            <a
+              href={item.href}
+              class="block rounded-xl border border-border/60 bg-background/40 p-5 transition-colors hover:bg-foreground/[0.03]"
+            >
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="font-mono text-xs text-muted-foreground">
+                  {String(i + 1).padStart(2, "0")}
+                </span>
+                <h3 class="text-base font-medium">{item.title}</h3>
+                <Badge variant="outline" class="font-mono text-[10px] text-muted-foreground">
+                  {item.tag}
+                </Badge>
+              </div>
+              <p class="mt-2 text-sm leading-relaxed text-muted-foreground">{item.summary}</p>
+            </a>
+          </li>
         ))}
-      </div>
+      </ol>
     </section>
-
-    <!-- Agent catalog (live) -->
-    <section class="mb-16">
-      <h2 class="mb-2 text-2xl font-bold tracking-tight">Agent catalog</h2>
-      <p class="mb-8 max-w-3xl text-sm text-muted-foreground">
-        Loaded live from <code class="text-primary">GET /api/docs/agents</code> — the same metadata
-        the backend derives from each Durable Object. No mock data.
-      </p>
-      <DocsAgentsSection client:visible />
-
-      <div class="mt-8">
-        <CodeBlock client:visible filename="how this section loads" language="ts" code={fetchAgentsExample} />
-      </div>
-    </section>
-
   </div>
 </BaseLayout>

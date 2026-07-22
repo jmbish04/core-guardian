@@ -7,14 +7,14 @@
  * inline status feedback.
  */
 import BaseLayout from "@/layouts/BaseLayout.astro";
-import { GuardianPanel } from "@/components/dashboard";
+import { ActionItems, AllowancesPanel, AlertsBoard, GuardianPanel } from "@/components/dashboard";
 ---
 
 <BaseLayout
   title="Core Guardian"
   description="Emergency governance cockpit: halt infrastructure spend surges by evicting R2 buckets via lifecycle expiration and dropping runaway Vectorize indexes."
 >
-  <main class="container mx-auto flex max-w-4xl flex-col gap-8 px-4 py-12">
+  <main class="container mx-auto flex max-w-7xl flex-col gap-8 px-4 py-12">
     <header class="flex flex-col gap-2">
       <div class="flex items-center gap-3">
         <span class="text-4xl">🛡️</span>
@@ -26,6 +26,12 @@ import { GuardianPanel } from "@/components/dashboard";
         recorded in the <code class="font-mono">billing_events</code> audit trail.
       </p>
     </header>
+
+    <AlertsBoard client:load />
+
+    <AllowancesPanel client:visible />
+
+    <ActionItems mode="widget" client:load />
 
     <GuardianPanel client:load />
   </main>

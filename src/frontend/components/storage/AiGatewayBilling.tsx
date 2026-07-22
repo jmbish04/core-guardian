@@ -18,6 +18,13 @@ import { AlertTriangleIcon, ExternalLinkIcon, Loader2Icon, RefreshCwIcon } from 
 import { useCallback, useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ApiError, apiGet, apiSend } from "@/lib/api";
@@ -83,9 +90,13 @@ type Invoice = {
 
 const PANEL = "rounded-xl border border-border/60 bg-background/40 p-6";
 
-/** Cloudflare returns invoice/limit amounts in cents, balances in dollars. */
-const cents = (n: number) => `$${(n / 100).toFixed(2)}`;
-const dollars = (n: number) => `$${n.toFixed(2)}`;
+/**
+ * The API returns every AI Gateway money value in dollars — Cloudflare's raw
+ * cents are converted at the backend boundary (`guardian/ai-gateway.ts`), so
+ * one formatter covers all of them. Rendering the raw cents is what made a
+ * $6.40 balance read as "$640".
+ */
+const usd = (n: number) => `$${n.toFixed(2)}`;
 
 export function AiGatewayBilling() {
   const [billing, setBilling] = useState<Billing | null>(null);
@@ -95,6 +106,7 @@ export function AiGatewayBilling() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmRemoveLimit, setConfirmRemoveLimit] = useState(false);
+  const [topupOpen, setTopupOpen] = useState(false);
 
   const [topupAmount, setTopupAmount] = useState("");
   const [topupThreshold, setTopupThreshold] = useState("");
@@ -112,10 +124,10 @@ export function AiGatewayBilling() {
       setGateways(g.gateways);
       setInvoices(inv.invoices);
       setTopupAmount(
-        b.balance.topupConfig.amount ? String(b.balance.topupConfig.amount / 100) : "",
+        b.balance.topupConfig.amount ? String(b.balance.topupConfig.amount) : "",
       );
       setTopupThreshold(
-        b.balance.topupConfig.threshold ? String(b.balance.topupConfig.threshold / 100) : "",
+        b.balance.topupConfig.threshold ? String(b.balance.topupConfig.threshold) : "",
       );
     } catch (err) {
       setError(
@@ -138,10 +150,11 @@ export function AiGatewayBilling() {
     setNotice(null);
     try {
       await apiSend("POST", "/ai-gateway/billing/topup-config", {
-        amount: Math.round(Number(topupAmount) * 100),
-        threshold: Math.round(Number(topupThreshold) * 100),
+        amount: Number(topupAmount),
+        threshold: Number(topupThreshold),
       });
       setNotice("Auto top-up updated.");
+      setTopupOpen(false);
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to update auto top-up.");
@@ -260,7 +273,7 @@ export function AiGatewayBilling() {
       header: "Amount",
       align: "right",
       sortValue: (i) => i.amountDue,
-      render: (i) => <span className="font-mono text-sm tabular-nums">{cents(i.amountDue)}</span>,
+      render: (i) => <span className="font-mono text-sm tabular-nums">{usd(i.amountDue)}</span>,
     },
     {
       key: "status",
@@ -333,11 +346,34 @@ export function AiGatewayBilling() {
           <div className="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
             Credit balance
           </div>
-          <div className="mt-1 text-3xl font-semibold tabular-nums">{dollars(balance.balance)}</div>
+          <div className="mt-1 text-3xl font-semibold tabular-nums">{usd(balance.balance)}</div>
           <div className="mt-0.5 text-xs text-muted-foreground">
             {balance.paymentMethod.brand
               ? `${balance.paymentMethod.brand} ····${balance.paymentMethod.last4}`
               : "no payment method on file"}
+          </div>
+          <div className="mt-3 flex items-center justify-between gap-2 border-t border-border/40 pt-3">
+            <span className="text-xs text-muted-foreground">
+              {topupOn ? (
+                <>
+                  Auto top-up{" "}
+                  <span className="text-emerald-600 dark:text-emerald-400">on</span> ·{" "}
+                  {usd(balance.topupConfig.amount)} at {usd(balance.topupConfig.threshold)}
+                </>
+              ) : (
+                <>
+                  Auto top-up <span className="text-muted-foreground">off</span>
+                </>
+              )}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => setTopupOpen(true)}
+            >
+              Manage
+            </Button>
           </div>
         </div>
 
@@ -346,7 +382,7 @@ export function AiGatewayBilling() {
             Upcoming invoice
           </div>
           <div className="mt-1 text-3xl font-semibold tabular-nums">
-            {cents(invoicePreview.amountDue)}
+            {usd(invoicePreview.amountDue)}
           </div>
           <div className="mt-0.5 text-xs text-muted-foreground">
             {invoicePreview.status ?? "draft"} · {invoicePreview.lines.length} line items
@@ -358,7 +394,7 @@ export function AiGatewayBilling() {
             Spending limit
           </div>
           <div className="mt-1 text-3xl font-semibold tabular-nums">
-            {spendingLimit.enabled ? cents(spendingLimit.amount) : "none"}
+            {spendingLimit.enabled ? usd(spendingLimit.amount) : "none"}
           </div>
           <div className="mt-0.5 text-xs text-muted-foreground">
             {spendingLimit.enabled
@@ -378,68 +414,78 @@ export function AiGatewayBilling() {
         </div>
       </div>
 
-      {/* --- Auto top-up ------------------------------------------------------ */}
-      <div className={PANEL}>
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-base font-medium">Auto top-up</h3>
-            <p className="text-sm text-muted-foreground">
+      {/* --- Auto top-up (modal) --------------------------------------------- */}
+      <Dialog open={topupOpen} onOpenChange={setTopupOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Auto top-up</DialogTitle>
+            <DialogDescription>
               {topupOn
-                ? `Charges ${cents(balance.topupConfig.amount)} when the balance falls below ${cents(balance.topupConfig.threshold)}.`
+                ? `Currently charges ${usd(balance.topupConfig.amount)} when the balance falls below ${usd(balance.topupConfig.threshold)}.`
                 : "Disabled — the balance will not be automatically refilled."}
+            </DialogDescription>
+          </DialogHeader>
+
+          {balance.topupConfig.error && (
+            <p className="flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400">
+              <AlertTriangleIcon className="size-4" />
+              {balance.topupConfig.error}
+              {balance.topupConfig.lastFailedAt
+                ? ` (last failed ${relativeTime(balance.topupConfig.lastFailedAt)})`
+                : ""}
+            </p>
+          )}
+
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="topup-threshold">Trigger when balance is below ($)</Label>
+              <Input
+                id="topup-threshold"
+                value={topupThreshold}
+                onChange={(e) => setTopupThreshold(e.target.value)}
+                inputMode="decimal"
+                placeholder="5.00"
+                className="font-mono"
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="topup-amount">Top up by ($)</Label>
+              <Input
+                id="topup-amount"
+                value={topupAmount}
+                onChange={(e) => setTopupAmount(e.target.value)}
+                inputMode="decimal"
+                placeholder="10.00"
+                className="font-mono"
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Cloudflare minimums: $10.00 top-up, $5.00 threshold.
             </p>
           </div>
-          {topupOn && (
-            <Button variant="ghost" size="sm" onClick={() => void disableTopup()}>
-              Disable
-            </Button>
-          )}
-        </div>
 
-        {balance.topupConfig.error && (
-          <p className="mt-3 flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400">
-            <AlertTriangleIcon className="size-4" />
-            {balance.topupConfig.error}
-            {balance.topupConfig.lastFailedAt
-              ? ` (last failed ${relativeTime(balance.topupConfig.lastFailedAt)})`
-              : ""}
-          </p>
-        )}
-
-        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
-          <div className="flex flex-1 flex-col gap-2">
-            <Label htmlFor="topup-threshold">Trigger when balance is below ($)</Label>
-            <Input
-              id="topup-threshold"
-              value={topupThreshold}
-              onChange={(e) => setTopupThreshold(e.target.value)}
-              inputMode="decimal"
-              placeholder="5.00"
-              className="font-mono"
-            />
+          <div className="flex items-center justify-between gap-2">
+            {topupOn ? (
+              <Button variant="ghost" size="sm" className="text-destructive" onClick={() => void disableTopup()}>
+                Disable
+              </Button>
+            ) : (
+              <span />
+            )}
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={() => setTopupOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={() => void saveTopup()}
+                disabled={Number(topupAmount) < 10 || Number(topupThreshold) < 5}
+              >
+                Save
+              </Button>
+            </div>
           </div>
-          <div className="flex flex-1 flex-col gap-2">
-            <Label htmlFor="topup-amount">Top up by ($)</Label>
-            <Input
-              id="topup-amount"
-              value={topupAmount}
-              onChange={(e) => setTopupAmount(e.target.value)}
-              inputMode="decimal"
-              placeholder="10.00"
-              className="font-mono"
-            />
-          </div>
-          <Button
-            onClick={() => void saveTopup()}
-            disabled={Number(topupAmount) < 10 || Number(topupThreshold) < 5}
-          >
-            Save
-          </Button>
-        </div>
-        <p className="mt-2 text-xs text-muted-foreground">
-          Cloudflare minimums: $10.00 top-up, $5.00 threshold.
-        </p>
-      </div>
+        </DialogContent>
+      </Dialog>
 
       {/* --- Draft invoice line items ---------------------------------------- */}
       <div className={PANEL}>
@@ -453,7 +499,7 @@ export function AiGatewayBilling() {
               <span className="truncate font-mono text-xs">{line.description}</span>
               <span className="shrink-0 font-mono text-xs tabular-nums">
                 <span className="text-muted-foreground">{line.quantity.toLocaleString()} × </span>
-                {cents(line.amount)}
+                {usd(line.amount)}
               </span>
             </li>
           ))}
@@ -498,7 +544,7 @@ export function AiGatewayBilling() {
         title="Remove the spending limit?"
         description={
           <>
-            This removes the {cents(spendingLimit.amount)} {spendingLimit.duration} cap and leaves
+            This removes the {usd(spendingLimit.amount)} {spendingLimit.duration} cap and leaves
             AI Gateway spend uncapped. Cloudflare no longer allows creating or modifying spending
             limits through this API, so Guardian cannot put it back — you would have to recreate it
             as an AI Gateway spend limit in the dashboard.

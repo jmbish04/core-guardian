@@ -1,41 +1,38 @@
 /**
- * @fileoverview Billing telemetry — per-binding usage against safety thresholds.
+ * @fileoverview Billing telemetry — the Guardian cockpit's read surface.
  *
- * Fetches `GET /api/guardian/usage`, which runs one Cloudflare GraphQL
- * Analytics probe per binding type, and renders each metered probe as a usage
- * meter (value vs. the probe's alert threshold). Probes with no analytics
- * dataset, or whose query failed, are listed separately rather than dropped —
- * a governance panel that silently hides a binding is worse than one that
- * admits it cannot see it.
+ * Composes three layers over `GET /api/guardian/usage`, `/guardian/history`
+ * and `/guardian/cron`:
  *
- * Layout follows the shadcn "usage" dashboard block, rebuilt on this repo's
- * local `@/components/ui` primitives.
+ *   1. {@link UsageStats}  — four KPI cells: spend pressure, surges, cron health.
+ *   2. {@link UsageTrend}  — probe picker + hourly trend + per-resource donut.
+ *   3. {@link UsageTable}  — every binding, severity-ordered, unmetered included.
+ *
+ * The selected probe is shared state: clicking a table row re-charts the trend,
+ * and the metric strip drives the same selection. Deltas come from the two
+ * newest snapshots, so they are real hour-over-hour movement rather than a
+ * synthetic baseline.
  */
 
 "use client";
 
-import { AlertTriangleIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { Loader2Icon, RefreshCwIcon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ApiError, apiGet } from "@/lib/api";
-import { compactNumber, humanSize, relativeTime } from "@/lib/format";
+import { compactNumber, formatRatio, humanSize, relativeTime } from "@/lib/format";
 
-type UsageReading = {
-  id: string;
-  label: string;
-  product: string;
-  bindings: string[];
-  unit: string;
-  status: "ok" | "not_metered" | "unavailable";
-  value: number;
+import { pctChange, UsageStats, type StatCell } from "./UsageStats";
+import { UsageTable, type TableReading } from "./UsageTable";
+import { UsageTrend, type TrendSeries } from "./UsageTrend";
+
+type UsageReading = TableReading & {
   breakdown: { label: string; value: number }[];
-  alertThreshold: number | null;
-  surging: boolean;
-  error?: string;
 };
 
 type UsageResponse = { windowHours: number; readings: UsageReading[] };
+type HistoryResponse = { windowHours: number; series: TrendSeries[] };
 
 type CronRun = {
   id: string;
@@ -47,148 +44,43 @@ type CronRun = {
   status: "ok" | "partial" | "error";
   error: string | null;
 };
-
 type CronResponse = { runs: CronRun[]; stale: boolean };
 
-/**
- * Cron heartbeat — the panel's numbers are only as fresh as the last run, so
- * a stopped trigger has to be visible, not inferred from stale values.
- */
-function CronHeartbeat() {
-  const [data, setData] = useState<CronResponse | null>(null);
-
-  useEffect(() => {
-    apiGet<CronResponse>("/guardian/cron", { limit: 24 })
-      .then(setData)
-      .catch(() => setData(null));
-  }, []);
-
-  if (!data) return null;
-
-  const last = data.runs[0];
-  const tone = data.stale
-    ? "bg-rose-500"
-    : last?.status === "ok"
-      ? "bg-emerald-500"
-      : "bg-amber-500";
-
-  return (
-    <span className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
-      <span className={`size-1.5 rounded-full ${tone} ${data.stale ? "" : "animate-pulse"}`} />
-      {last
-        ? data.stale
-          ? `cron stale · last ${relativeTime(last.ranAt)}`
-          : `cron ok · ${relativeTime(last.ranAt)} · ${last.probesOk}/${last.probesOk + last.probesFailed} probes`
-        : "cron has never run"}
-    </span>
-  );
-}
-
-/** Byte-valued units render as sizes; everything else as compact counts. */
-function formatValue(value: number, unit: string): string {
+function fmt(value: number, unit: string): string {
   return unit.includes("bytes") ? humanSize(value) : compactNumber(value);
 }
 
-/** One binding's consumption against its surge threshold. */
-function UsageMeter({ reading }: { reading: UsageReading }) {
-  const threshold = reading.alertThreshold ?? 0;
-  const pct = threshold > 0 ? Math.min(100, (reading.value / threshold) * 100) : 0;
-  // Amber well before the threshold — a governance panel should warn early.
-  const warn = pct >= 70 && !reading.surging;
-
-  return (
-    <li>
-      <div className="flex items-baseline justify-between gap-3">
-        <div className="text-sm font-medium">{reading.label}</div>
-        <div className="font-mono text-xs">
-          <span className="text-foreground">{formatValue(reading.value, reading.unit)}</span>
-          <span className="text-muted-foreground">
-            {" / "}
-            {formatValue(threshold, reading.unit)}
-          </span>
-        </div>
-      </div>
-
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-foreground/[0.06]">
-        <div
-          className={`h-full rounded-full transition-all ${
-            reading.surging ? "bg-rose-500" : warn ? "bg-amber-500" : "bg-foreground/70"
-          }`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-
-      <div className="mt-1 flex items-center justify-between text-xs">
-        <span className="text-muted-foreground">
-          {reading.unit} · threshold {formatValue(threshold, reading.unit)}
-        </span>
-        <span
-          className={`font-mono text-[10px] uppercase tracking-[0.25em] tabular-nums ${
-            reading.surging
-              ? "text-rose-600 dark:text-rose-400"
-              : warn
-                ? "text-amber-600 dark:text-amber-400"
-                : "text-muted-foreground/70"
-          }`}
-        >
-          {reading.surging && <AlertTriangleIcon className="mr-1 inline size-3" />}
-          {Math.round(pct)}% of limit
-        </span>
-      </div>
-
-      {reading.breakdown.length > 0 && (
-        <ul className="mt-2 flex flex-col gap-1">
-          {reading.breakdown.slice(0, 3).map((row) => (
-            <li
-              key={row.label}
-              className="flex items-center justify-between gap-2 text-xs text-muted-foreground"
-            >
-              <span className="truncate font-mono">{row.label}</span>
-              <span className="tabular-nums">{formatValue(row.value, reading.unit)}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </li>
-  );
-}
-
-/** Bindings Cloudflare does not meter, or whose probe failed. */
-function CoverageGaps({ readings }: { readings: UsageReading[] }) {
-  if (readings.length === 0) return null;
-  return (
-    <div className="rounded-xl border border-border/60 bg-background/40 p-6">
-      <div className="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
-        Not measured
-      </div>
-      <ul className="mt-3 flex flex-col gap-2">
-        {readings.map((r) => (
-          <li key={r.id} className="flex items-baseline justify-between gap-3 text-xs">
-            <span className="text-foreground/80">{r.label}</span>
-            <span className="truncate text-right font-mono text-[10px] text-muted-foreground">
-              {r.status === "not_metered" ? "no analytics dataset" : (r.error ?? "unavailable")}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 export function UsageGrid() {
-  const [data, setData] = useState<UsageResponse | null>(null);
+  const [usage, setUsage] = useState<UsageResponse | null>(null);
+  const [history, setHistory] = useState<TrendSeries[]>([]);
+  const [cron, setCron] = useState<CronResponse | null>(null);
+  const [selectedId, setSelectedId] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [unauthorized, setUnauthorized] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setUnauthorized(false);
     try {
-      setData(await apiGet<UsageResponse>("/guardian/usage", { hours: 24 }));
+      // History and cron are supporting context — a failure there should not
+      // blank the panel, so only the usage probe rejects the whole load.
+      const [u, h, c] = await Promise.all([
+        apiGet<UsageResponse>("/guardian/usage", { hours: 24 }),
+        apiGet<HistoryResponse>("/guardian/history", { hours: 168 }).catch(() => null),
+        apiGet<CronResponse>("/guardian/cron", { limit: 24 }).catch(() => null),
+      ]);
+      setUsage(u);
+      setHistory(h?.series ?? []);
+      setCron(c);
+      setSelectedId((prev) => prev || (u.readings.find((r) => r.status === "ok")?.id ?? ""));
     } catch (err) {
+      const is401 = err instanceof ApiError && err.status === 401;
+      setUnauthorized(is401);
       setError(
-        err instanceof ApiError && err.status === 401
-          ? "Sign in to view telemetry — the Guardian API requires an authenticated session."
+        is401
+          ? "The Guardian API requires an authenticated session."
           : err instanceof ApiError
             ? err.message
             : "Failed to load telemetry.",
@@ -202,24 +94,77 @@ export function UsageGrid() {
     void load();
   }, [load]);
 
-  const readings = data?.readings ?? [];
-  const metered = readings.filter((r) => r.status === "ok");
-  const gaps = readings.filter((r) => r.status !== "ok");
-  const surging = metered.filter((r) => r.surging).length;
+  const readings = useMemo(() => usage?.readings ?? [], [usage]);
+  const metered = useMemo(() => readings.filter((r) => r.status === "ok"), [readings]);
+
+  const stats = useMemo<StatCell[]>(() => {
+    const surging = metered.filter((r) => r.surging);
+    const lastRun = cron?.runs[0];
+
+    // Headline "pressure" = the probe closest to its own threshold. Summing raw
+    // values across probes would add rows to requests to bytes, which is
+    // meaningless; a ratio is comparable.
+    const pressure = metered
+      .map((r) => ({ r, pct: r.alertThreshold ? r.value / r.alertThreshold : 0 }))
+      .sort((a, b) => b.pct - a.pct)[0];
+
+    // Hour-over-hour delta for the hottest probe, from its two newest snapshots.
+    const hotSeries = history.find((s) => s.service === pressure?.r.id)?.points ?? [];
+    const hotDelta =
+      hotSeries.length >= 2
+        ? pctChange(hotSeries[hotSeries.length - 1].value, hotSeries[hotSeries.length - 2].value)
+        : null;
+
+    return [
+      {
+        label: "Highest load",
+        value:
+          pressure && pressure.r.alertThreshold
+            ? (formatRatio(pressure.r.value, pressure.r.alertThreshold) ?? "—")
+            : "—",
+        suffix: pressure ? "of limit" : undefined,
+        deltaPct: hotDelta,
+        riseIsBad: true,
+        context: pressure
+          ? `${pressure.r.label} · ${fmt(pressure.r.value, pressure.r.unit)}`
+          : "no metered probes",
+        tone: pressure && pressure.pct >= 1 ? "danger" : pressure && pressure.pct >= 0.7 ? "warning" : "default",
+      },
+      {
+        label: "Surging bindings",
+        value: String(surging.length),
+        suffix: `of ${metered.length}`,
+        context: surging.length > 0 ? surging.map((r) => r.label).join(", ") : "all within threshold",
+        tone: surging.length > 0 ? "danger" : "default",
+      },
+      {
+        label: "Probe coverage",
+        value: String(metered.length),
+        suffix: `of ${readings.length}`,
+        context: `${readings.length - metered.length} not measured by Cloudflare analytics`,
+        tone: "default",
+      },
+      {
+        label: "Cron heartbeat",
+        value: cron?.stale ? "stale" : lastRun ? "ok" : "never",
+        context: lastRun
+          ? `${relativeTime(lastRun.ranAt)} · ${lastRun.probesOk}/${lastRun.probesOk + lastRun.probesFailed} probes · ${(lastRun.durationMs / 1000).toFixed(1)}s`
+          : "the hourly trigger has not fired",
+        tone: cron?.stale ? "danger" : lastRun?.status === "ok" ? "default" : "warning",
+      },
+    ];
+  }, [metered, readings.length, cron, history]);
 
   return (
-    <section className="flex flex-col gap-3">
-      <header className="flex items-end justify-between gap-4">
+    <section className="flex flex-col gap-4">
+      <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
             Core Guardian · Billing Telemetry
           </div>
           <h2 className="mt-1 text-2xl font-semibold tracking-tight">
-            Trailing {data?.windowHours ?? 24}h
+            Trailing {usage?.windowHours ?? 24}h
           </h2>
-          <div className="mt-1">
-            <CronHeartbeat />
-          </div>
         </div>
         <Button
           variant="outline"
@@ -239,36 +184,40 @@ export function UsageGrid() {
 
       {error && (
         <p className="rounded-xl border border-border/60 bg-background/40 p-4 text-sm text-muted-foreground">
-          {error}
+          {error}{" "}
+          {unauthorized && (
+            <a
+              href="/login?next=/dashboard/guardian"
+              className="font-medium text-foreground underline underline-offset-4"
+            >
+              Sign in
+            </a>
+          )}
         </p>
       )}
 
-      {!error && (
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[2fr_1fr]">
-          <div className="rounded-xl border border-border/60 bg-background/40 p-6">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-medium">Consumption vs. safety thresholds</h3>
-              {surging > 0 && (
-                <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-rose-600 dark:text-rose-400">
-                  {surging} surging
-                </span>
-              )}
-            </div>
-            <ul className="mt-4 flex flex-col gap-5">
-              {metered.map((reading) => (
-                <UsageMeter key={reading.id} reading={reading} />
-              ))}
-              {metered.length === 0 && !loading && (
-                <li className="text-sm text-muted-foreground">
-                  No metered readings returned. Check that the API token carries Account Analytics:
-                  Read.
-                </li>
-              )}
-            </ul>
-          </div>
-
-          <CoverageGaps readings={gaps} />
+      {!error && loading && !usage && (
+        <div className="flex items-center gap-2 rounded-xl border border-border/60 bg-background/40 p-6 text-sm text-muted-foreground">
+          <Loader2Icon className="size-4 animate-spin" />
+          Loading telemetry…
         </div>
+      )}
+
+      {!error && usage && (
+        <>
+          <UsageStats cells={stats} />
+
+          {metered.length > 0 && (
+            <UsageTrend
+              probes={metered}
+              series={history}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+            />
+          )}
+
+          <UsageTable readings={readings} selectedId={selectedId} onSelect={setSelectedId} />
+        </>
       )}
     </section>
   );

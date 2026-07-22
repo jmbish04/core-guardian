@@ -36,12 +36,16 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ApiError, apiSend } from "@/lib/api";
+import { humanSize } from "@/lib/format";
 
 import { GuardianAuditLog } from "./GuardianAuditLog";
+import { ResourcePicker } from "./ResourcePicker";
 import { UsageGrid } from "./UsageGrid";
+
+type R2ListResponse = { buckets: { name: string; sizeBytes: number; objectCount: number }[] };
+type VectorizeListResponse = { indexes: { name: string; dimensions: number | null }[] };
 
 /** Envelope returned by both eviction endpoints. */
 type MitigationResult = {
@@ -160,15 +164,19 @@ export function GuardianPanel() {
               }}
             >
               <div className="flex flex-col gap-2">
-                <Label htmlFor="guardian-bucket">Bucket name</Label>
-                <Input
-                  id="guardian-bucket"
+                <Label>Bucket</Label>
+                <ResourcePicker<R2ListResponse>
+                  endpoint="/storage/r2"
                   value={bucketName}
-                  onChange={(e) => setBucketName(e.target.value)}
-                  placeholder="runaway-assets-bucket"
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="font-mono"
+                  onValueChange={setBucketName}
+                  placeholder="Select a bucket…"
+                  emptyLabel="No buckets on this account."
+                  extract={(r) =>
+                    r.buckets.map((b) => ({
+                      value: b.name,
+                      hint: `${humanSize(b.sizeBytes)} · ${b.objectCount} obj`,
+                    }))
+                  }
                 />
               </div>
               <Button
@@ -206,15 +214,19 @@ export function GuardianPanel() {
               }}
             >
               <div className="flex flex-col gap-2">
-                <Label htmlFor="guardian-index">Index name</Label>
-                <Input
-                  id="guardian-index"
+                <Label>Index</Label>
+                <ResourcePicker<VectorizeListResponse>
+                  endpoint="/storage/vectorize"
                   value={indexName}
-                  onChange={(e) => setIndexName(e.target.value)}
-                  placeholder="runaway-embeddings-index"
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="font-mono"
+                  onValueChange={setIndexName}
+                  placeholder="Select an index…"
+                  emptyLabel="No Vectorize indexes on this account."
+                  extract={(r) =>
+                    r.indexes.map((i) => ({
+                      value: i.name,
+                      hint: i.dimensions ? `${i.dimensions}d` : undefined,
+                    }))
+                  }
                 />
               </div>
               <Button

@@ -1,0 +1,95 @@
+---
+/**
+ * `/changelogs/[id]` — one change in full: its scope (the PR description), size,
+ * status, dependencies, and shipped version.
+ *
+ * Static routes are generated from the registry so every entry is prerenderable
+ * and directly linkable.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { Badge } from "@/components/ui/badge";
+import { findEntry, SIZE_LABEL, STATUS_LABEL } from "@/lib/changelog";
+
+// SSR (output: "server") — the route resolves at request time from the param,
+// so no getStaticPaths is needed. Unknown ids fall back to the list.
+const { id } = Astro.params;
+const entry = findEntry(id!);
+if (!entry) return Astro.redirect("/changelogs");
+
+const statusTone: Record<string, string> = {
+  shipped: "border-emerald-500/25 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+  in_progress: "border-amber-500/25 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+  proposed: "border-sky-500/25 bg-sky-500/10 text-sky-600 dark:text-sky-400",
+};
+
+const deps = (entry.depends ?? [])
+  .map((d) => findEntry(d))
+  .filter((d): d is NonNullable<typeof d> => d !== null);
+---
+
+<BaseLayout title={`Changelog — ${entry.title}`} description={entry.summary}>
+  <div class="container mx-auto max-w-3xl px-4 py-16">
+    <a
+      href={entry.status === "shipped" ? "/changelogs" : "/changelogs/preview"}
+      class="mb-6 inline-block text-sm text-muted-foreground transition-colors hover:text-foreground"
+    >
+      ← {entry.status === "shipped" ? "Changelog" : "Preview"}
+    </a>
+
+    <header class="mb-8">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="font-mono text-xs text-muted-foreground">{entry.id.split("-")[0]}</span>
+        <Badge variant="outline" class={statusTone[entry.status]}>{STATUS_LABEL[entry.status]}</Badge>
+        <Badge variant="outline" class="font-mono text-[10px] text-muted-foreground">{entry.phase}</Badge>
+        <Badge variant="outline" class="font-mono text-[10px] text-muted-foreground">{entry.size}</Badge>
+      </div>
+      <h1 class="mt-3 text-3xl font-bold tracking-tight">{entry.title}</h1>
+      <p class="mt-3 text-base leading-relaxed text-muted-foreground">{entry.summary}</p>
+      <div class="mt-4 flex flex-wrap gap-x-6 gap-y-1 font-mono text-xs text-muted-foreground">
+        <span>size: {SIZE_LABEL[entry.size]}</span>
+        {entry.date && <span>shipped: {entry.date}</span>}
+        {entry.version && <span>version: {entry.version}</span>}
+      </div>
+    </header>
+
+    <section class="rounded-xl border border-border/60 bg-background/40 p-6">
+      <h2 class="mb-3 text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">
+        {entry.status === "shipped" ? "What landed" : "Scope"}
+      </h2>
+      <ul class="flex flex-col gap-2">
+        {entry.scope.map((s) => (
+          <li class="flex gap-2 text-sm text-muted-foreground">
+            <span class="mt-2 size-1 shrink-0 rounded-full bg-muted-foreground/40"></span>
+            <span>{s}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
+
+    {deps.length > 0 && (
+      <section class="mt-6">
+        <h2 class="mb-3 text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">
+          Depends on
+        </h2>
+        <ul class="flex flex-col gap-2">
+          {deps.map((d) => (
+            <li>
+              <a
+                href={`/changelogs/${d.id}`}
+                class="flex items-baseline justify-between gap-3 rounded-lg border border-border/60 bg-background/40 px-4 py-3 text-sm transition-colors hover:bg-foreground/[0.03]"
+              >
+                <span>{d.title}</span>
+                <span class="font-mono text-xs text-muted-foreground">{d.id.split("-")[0]}</span>
+              </a>
+            </li>
+          ))}
+        </ul>
+      </section>
+    )}
+
+    <p class="mt-8 text-sm text-muted-foreground">
+      System architecture and the diagrams behind this work live in the
+      <a href="/docs/architecture" class="text-foreground underline underline-offset-4">architecture docs</a>.
+    </p>
+  </div>
+</BaseLayout>

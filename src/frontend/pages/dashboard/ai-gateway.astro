@@ -5,7 +5,7 @@
  * Thin Astro shell over the `<AiGatewayBilling>` React island.
  */
 import BaseLayout from "@/layouts/BaseLayout.astro";
-import { AiGatewayBilling } from "@/components/storage";
+import { AiBudgetMeter, AiGatewayBilling } from "@/components/storage";
 ---
 
 <BaseLayout
@@ -19,6 +19,7 @@ import { AiGatewayBilling } from "@/components/storage";
     >
       ← Core Guardian
     </a>
+    <AiBudgetMeter client:visible />
     <AiGatewayBilling client:load />
   </main>
 </BaseLayout>

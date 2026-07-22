@@ -5,6 +5,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { siteConfig } from "@/lib/config";
 import { AssistantModal } from "@/components/assistant/AssistantModal";
+
+// Core Guardian's home is the Guardian dashboard, not the template landing.
+// The template hero below is kept on disk for reference (per AGENTS.md #22) but
+// is unreachable — `/` short-circuits here.
+return Astro.redirect("/dashboard/guardian");
 ---
 
 <BaseLayout title="Cloudflare Edge Ecosystem" description="Strategic overview of the Cloudflare edge ecosystem">

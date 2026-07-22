@@ -1,0 +1,640 @@
+---
+/**
+ * Core Guardian — architecture and build plan (`/docs/architecture`).
+ *
+ * This page is both the design document and the living documentation for the
+ * Guardian rebuild. It is written to survive a context reset: an agent picking
+ * this repo up cold should be able to read this page and know what is built,
+ * what is not, what was verified against the live Cloudflare API, and which
+ * assumptions were checked and found FALSE.
+ *
+ * Diagrams render via the `Mermaid` island (client:visible — the ~500KB
+ * library is only fetched when a diagram scrolls into view). Prototypes are
+ * static React, deliberately not wired to the API, so the layout can be
+ * reviewed without an authenticated session.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { Badge } from "@/components/ui/badge";
+import { Mermaid } from "@/components/docs/Mermaid";
+import {
+  AlertCardProto,
+  BindingViewportProto,
+  ComboboxProto,
+  CostBasisProto,
+  FormattingProto,
+  OverviewSkeletonProto,
+  ProtoFrame,
+  WorkerGroupedTableProto,
+} from "@/components/docs/Prototypes";
+
+// --- Verified findings -------------------------------------------------------
+// Each of these was checked against the live Cloudflare OpenAPI spec or docs on
+// 2026-07-19 rather than assumed. The FALSE ones invalidate features that were
+// requested, which is exactly why they are listed first.
+const findings: {
+  claim: string;
+  verdict: "true" | "false" | "partial";
+  detail: string;
+  source: string;
+}[] = [
+  {
+    claim: "A Cloudflare API returns unit pricing for D1 / R2 / KV / DO",
+    verdict: "false",
+    detail:
+      "No pricing endpoint exists anywhere in the OpenAPI spec. Unit prices must be curated in-repo, seeded into D1, and re-checked against the docs on a schedule. Every derived dollar figure has to be labelled an estimate with its rate date.",
+    source: "Cloudflare OpenAPI spec — no /pricing path on any product",
+  },
+  {
+    claim: "GET /accounts/{id}/billing/usage covers our metered products",
+    verdict: "false",
+    detail:
+      "It returns only Stream, Images, Rate Limiting, Load Balancing, Argo, Spectrum, workersRequests and workersKVReads. No D1, no R2, no Durable Objects, no Workers AI. GraphQL Analytics stays the source of truth for those; this endpoint is a supplement for Workers requests and KV reads only.",
+    source: "OpenAPI: /accounts/{account_id}/billing/usage response schema",
+  },
+  {
+    claim: "R2 exposes a last-accessed timestamp per object",
+    verdict: "false",
+    detail:
+      "R2 object metadata carries uploaded, size, etag, storage_class and custom_metadata — there is no access time, and lifecycle rules age objects from upload, not from last read. The cleanup advisor can therefore say 'uploaded 3 years ago', never 'not read in 3 years'. Read recency is only available per-bucket in aggregate via r2OperationsAdaptiveGroups.",
+    source: "Cloudflare docs — R2 workers API reference, object metadata",
+  },
+  {
+    claim: "Workers AI per-model pricing is machine-readable",
+    verdict: "true",
+    detail:
+      "GET /accounts/{id}/ai/models/search?format=marketplace returns the OpenRouter provider format, which carries per-token prompt and completion pricing. This is the price source for anything routed through Workers AI, refreshed on the cron.",
+    source: "OpenAPI: /accounts/{account_id}/ai/models/search, format param",
+  },
+  {
+    claim: "AI Gateway exposes real spend, not estimates",
+    verdict: "true",
+    detail:
+      "billing/credit-balance, billing/usage-history, billing/invoice-preview and the spending-limit + auto-topup endpoints are all live and already wired in src/backend/guardian/ai-gateway.ts. AI is the one product where the dashboard can state real dollars.",
+    source: "OpenAPI: /accounts/{account_id}/ai-gateway/billing/*",
+  },
+  {
+    claim: "Browser Rendering can extract structured pricing from a doc page",
+    verdict: "true",
+    detail:
+      "POST /browser-rendering/json takes a prompt or a JSON schema and returns structured data; POST /browser-rendering/markdown returns the page as markdown. This is the dual-extraction path: try /json with a schema first, and if structured extraction fails, fall back to /markdown and have the Worker's own agent do a second pass. The MYBROWSER binding is already wired in wrangler.jsonc.",
+    source: "OpenAPI: /accounts/{account_id}/browser-rendering/{json,markdown}",
+  },
+  {
+    claim: "Included allowances resolve the threshold problem",
+    verdict: "partial",
+    detail:
+      "The Workers Paid allowance table (D1 25B rows/mo, Workers 10M req/mo, etc.) is now curated in src/backend/guardian/allowances.ts and drives a month-end projection instead of guessed absolute thresholds. But several probes measure a unit the allowance does not (DO CPU µs vs GB-s; containers CPU-s vs GB-h disk; R2/KV single totals vs class-split allowances) — those are marked comparable:false and must show raw usage, not a fabricated percent.",
+    source: "User-provided billing table + allowances.ts self-check (D1 → 155%)",
+  },
+  {
+    claim: "The account is small enough to fan out over every worker",
+    verdict: "partial",
+    detail:
+      "183 worker scripts, 365 D1 databases, 141 Vectorize indexes, 20 R2 buckets. A per-worker bindings fan-out is ~183 API calls — fine on an hourly cron with a concurrency cap, far too slow for a page load. Attribution must be materialised into D1 by the cron, not computed on request.",
+    source: "Live account enumeration, 2026-07-19",
+  },
+];
+
+const VERDICT_STYLE: Record<string, string> = {
+  true: "border-emerald-500/25 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+  false: "border-rose-500/25 bg-rose-500/10 text-rose-600 dark:text-rose-400",
+  partial: "border-amber-500/25 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+};
+
+const VERDICT_LABEL: Record<string, string> = {
+  true: "Confirmed",
+  false: "False",
+  partial: "Caveat",
+};
+
+// --- Defect register ---------------------------------------------------------
+const defects: { area: string; symptom: string; cause: string }[] = [
+  {
+    area: "Verification",
+    symptom: "Shipped a dashboard nobody could open; every panel showed 'Sign in to view'.",
+    cause:
+      "Verified with a bearer token from a script, which bypasses the session-cookie gate the browser uses. No login UI existed at all.",
+  },
+  {
+    area: "Pie chart",
+    symptom: "'Where it is going' sliced by raw database UUIDs against an unlabelled 1.3B total.",
+    cause: "Rendered the GraphQL dimension key verbatim instead of resolving it to a resource name.",
+  },
+  {
+    area: "KPI cards",
+    symptom: "'25768% of limit' with an unexplained 21.5% delta in 10px type.",
+    cause:
+      "Ratio printed without bounding or unit context; the threshold it divides by was a guess, not a measured baseline.",
+  },
+  {
+    area: "Alert copy",
+    symptom: "'Surge detected: 45523699 rows read in 1h exceeds threshold 5000000.'",
+    cause:
+      "Raw integers, no resource name, no worker, no cost, no recommendation. Unactionable by construction.",
+  },
+  {
+    area: "Bindings table",
+    symptom: "Horizontal scroll; every binding name for every product listed on an overview page.",
+    cause: "bindings.join(', ') on a page whose job is aggregate, not enumeration.",
+  },
+  {
+    area: "Emergency controls",
+    symptom: "Free-text inputs for bucket and index names.",
+    cause:
+      "Never called the list endpoints that already exist in src/backend/guardian/resources.ts.",
+  },
+  {
+    area: "Navigation",
+    symptom: "New /login page never linked; template demo pages still in the navbar.",
+    cause: "Ignored .agent/rules/startup.md and never updated siteConfig.",
+  },
+  {
+    area: "Docs",
+    symptom: "AGENTS.md and .agent/rules never updated across the whole build.",
+    cause:
+      ".agent/rules/meta-maintenance.md makes this mandatory. It was not done once.",
+  },
+];
+
+---
+
+<BaseLayout
+  title="Core Guardian — Architecture & Plan"
+  description="The design document and living documentation for the Core Guardian rebuild: verified Cloudflare API findings, the defect register, phased architecture, and UI prototypes."
+>
+  <div class="container mx-auto max-w-5xl px-4 py-16">
+
+    <!-- Hero -->
+    <section class="mb-14">
+      <Badge variant="outline" class="mb-4 font-mono text-[11px]">Design Document</Badge>
+      <h1 class="text-balance text-4xl font-bold tracking-tight sm:text-5xl">
+        Core Guardian — architecture &amp; plan
+      </h1>
+      <p class="mt-5 max-w-3xl text-lg leading-relaxed text-muted-foreground">
+        Core Guardian watches Cloudflare spend across every binding on the account and is meant to
+        tell you, in one glance, whether you are bleeding money and what to do about it. The
+        version shipped today does not do that. This page is the reckoning and the rebuild plan.
+      </p>
+      <p class="mt-4 max-w-3xl text-sm leading-relaxed text-muted-foreground">
+        It is written to survive a context reset. Read it cold and you should know what is real,
+        what was verified against the live API, and — most importantly — which assumptions turned
+        out to be <span class="font-medium text-foreground">false</span>.
+      </p>
+    </section>
+
+    <!-- Findings -->
+    <section class="mb-16">
+      <h2 class="mb-2 text-2xl font-bold tracking-tight">Verified before designing</h2>
+      <p class="mb-6 max-w-3xl text-sm text-muted-foreground">
+        Three of these came back false and each one kills or reshapes a requested feature. Finding
+        that out now costs an afternoon; finding out after building costs a rewrite.
+      </p>
+
+      <div class="flex flex-col gap-3">
+        {findings.map((f) => (
+          <div class="rounded-xl border border-border/60 bg-background/40 p-5">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <h3 class="text-sm font-medium">{f.claim}</h3>
+              <Badge variant="outline" class={VERDICT_STYLE[f.verdict]}>
+                {VERDICT_LABEL[f.verdict]}
+              </Badge>
+            </div>
+            <p class="mt-2 text-sm leading-relaxed text-muted-foreground">{f.detail}</p>
+            <p class="mt-2 font-mono text-[11px] text-muted-foreground/70">{f.source}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+
+    <!-- Defects -->
+    <section class="mb-16">
+      <h2 class="mb-2 text-2xl font-bold tracking-tight">What is wrong today</h2>
+      <p class="mb-6 max-w-3xl text-sm text-muted-foreground">
+        Every row is a real defect in the deployed build, paired with the actual cause rather than
+        a euphemism for it.
+      </p>
+
+      <div class="overflow-hidden rounded-xl border border-border/60 bg-background/40">
+        {defects.map((d) => (
+          <div class="grid grid-cols-1 gap-1 border-b border-border/40 px-5 py-4 last:border-b-0 sm:grid-cols-[130px_1fr]">
+            <span class="font-mono text-[11px] uppercase tracking-[0.15em] text-muted-foreground">
+              {d.area}
+            </span>
+            <div>
+              <p class="text-sm">{d.symptom}</p>
+              <p class="mt-1 text-xs text-muted-foreground">{d.cause}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+
+    <!-- System architecture -->
+    <section class="mb-16">
+      <h2 class="mb-2 text-2xl font-bold tracking-tight">System architecture</h2>
+      <p class="mb-2 max-w-3xl text-sm text-muted-foreground">
+        One Worker. The hourly cron is the only thing that talks to Cloudflare's APIs; every page
+        load reads materialised D1 tables. That split is what makes attribution affordable.
+      </p>
+
+      <Mermaid
+        client:visible
+        caption="Collection is asynchronous and cached; the UI never fans out over 183 workers on a page load."
+        chart={`flowchart TB
+    subgraph CF["Cloudflare APIs"]
+        GQL["GraphQL Analytics<br/>*AdaptiveGroups"]
+        REST["REST v4<br/>buckets · databases · scripts"]
+        AIG["AI Gateway Billing<br/>real spend"]
+        MKT["ai/models/search<br/>format=marketplace"]
+    end
+
+    subgraph W["core-guardian Worker"]
+        CRON["scheduled()<br/>hourly 0 * * * *"]
+        API["Hono API<br/>zod-openapi"]
+        SSR["Astro SSR<br/>React islands"]
+        BRK["AI proxy + breaker<br/>Durable Object"]
+    end
+
+    subgraph D1["D1 — materialised state"]
+        SNAP[(usage_snapshots)]
+        ATTR[(worker_bindings<br/>binding_resources)]
+        RATE[(pricing_rates)]
+        ALERT[(alerts)]
+        EVT[(billing_events)]
+    end
+
+    GQL --> CRON
+    REST --> CRON
+    MKT --> CRON
+    AIG --> API
+
+    CRON --> SNAP
+    CRON --> ATTR
+    CRON --> RATE
+    CRON --> ALERT
+    CRON --> EVT
+
+    SNAP --> API
+    ATTR --> API
+    RATE --> API
+    ALERT --> API
+    API --> SSR
+
+    BRK --> RATE
+    BRK --> EVT`}
+      />
+    </section>
+
+    <!-- Alert lifecycle -->
+    <section class="mb-16">
+      <h2 class="mb-2 text-2xl font-bold tracking-tight">Alert lifecycle</h2>
+      <p class="mb-2 max-w-3xl text-sm text-muted-foreground">
+        The shipped version stops at "surge detected". Everything after that arrow is what makes
+        an alert worth reading.
+      </p>
+
+      <Mermaid
+        client:visible
+        caption="Diagnosis, attribution and pricing all happen before the alert is written — so the card can be read and acted on without further digging."
+        chart={`flowchart LR
+    A["Probe reading"] --> B{"Over<br/>threshold?"}
+    B -->|no| Z["No alert"]
+    B -->|yes| C["Attribute<br/>resource + worker"]
+    C --> D["Diagnose<br/>probable cause"]
+    D --> E["Price impact<br/>from pricing_rates"]
+    E --> F["Classify severity"]
+    F --> G["Write alert row"]
+    G --> H["Action card"]
+
+    H --> I["Inspect binding"]
+    H --> J["Retune threshold"]
+    H --> K["Snooze 24h"]
+    H --> L["Mitigate<br/>type-to-confirm"]
+
+    J --> M["Rule updated<br/>stops re-firing"]
+    L --> N["billing_events<br/>audit row"]`}
+      />
+    </section>
+
+    <!-- IA -->
+    <section class="mb-16">
+      <h2 class="mb-2 text-2xl font-bold tracking-tight">Information architecture</h2>
+      <p class="mb-2 max-w-3xl text-sm text-muted-foreground">
+        Three tiers. Binding names never appear above tier three — the overview speaks in
+        account-wide aggregates and dollars.
+      </p>
+
+      <Mermaid
+        client:visible
+        caption="Every tier answers one question: am I OK? · which product? · which resource, and what do I do?"
+        chart={`flowchart TB
+    O["/dashboard<br/>Account overview<br/>alerts · spend · trend"]
+
+    O --> S["/dashboard/storage<br/>D1 · KV · R2 · Catalog · Pipelines"]
+    O --> AI["/dashboard/ai<br/>Workers AI · AI Gateway · Vectorize"]
+    O --> C["/dashboard/compute<br/>Workers · DO · Queues · Workflows"]
+    O --> N["/dashboard/network<br/>Browser Rendering · Containers"]
+
+    S --> D1V["/dashboard/binding/d1/:id"]
+    S --> R2V["/dashboard/binding/r2/:name"]
+    AI --> GWV["/dashboard/binding/gateway/:id"]
+    C --> DOV["/dashboard/binding/do/:name"]
+
+    D1V --> ACT["Trend · attribution · AI insight<br/>archive · delete · nuke worker"]
+    R2V --> ACT
+    GWV --> ACT
+    DOV --> ACT`}
+      />
+    </section>
+
+    <!-- Circuit breaker -->
+    <section class="mb-16">
+      <h2 class="mb-2 text-2xl font-bold tracking-tight">AI proxy &amp; circuit breaker</h2>
+      <p class="mb-2 max-w-3xl text-sm text-muted-foreground">
+        The most invasive piece, and the only one that sits in a live request path. It gets its own
+        phase and its own risk budget: if this breaks, AI calls break.
+      </p>
+
+      <Mermaid
+        client:visible
+        caption="Cost is computed on the response, after output tokens are known. The breaker is a Durable Object because the rolling window must be strongly consistent."
+        chart={`sequenceDiagram
+    participant App as Caller
+    participant W as Worker /api/ai/*
+    participant DO as Breaker DO
+    participant P as Provider
+
+    App->>W: inference request
+    W->>DO: check budget
+    alt breaker open
+        DO-->>W: OPEN
+        W-->>App: 402 + resume link
+    else within budget
+        DO-->>W: OK
+        W->>P: forward via AI Gateway
+        P-->>W: response + usage
+        W->>DO: record cost
+        DO->>DO: roll window
+        alt over budget
+            DO->>DO: trip breaker
+        end
+        W-->>App: response
+    end`}
+      />
+    </section>
+
+    <!-- Pricing pipeline -->
+    <section class="mb-16">
+      <h2 class="mb-2 text-2xl font-bold tracking-tight">Pricing scrape pipeline</h2>
+      <p class="mb-2 max-w-3xl text-sm text-muted-foreground">
+        Cloudflare has no pricing API, so every dollar figure is grounded in a monthly scrape of
+        the pricing docs. Dual extraction means a structured-parse failure degrades to an agentic
+        markdown parse rather than to a blank — and every rate is traceable to the exact page and
+        timestamp it came from.
+      </p>
+
+      <Mermaid
+        client:visible
+        caption="JSON extraction is tried first; a failure falls back to markdown + a Workers AI pass. Both the raw markdown and the parsed rates are retained, so a bad parse can be re-run without re-scraping."
+        chart={`flowchart TB
+    START["Monthly cron"] --> LOOP["For each pricing doc URL<br/>(allowances.ts docUrl)"]
+    LOOP --> BR["Browser Rendering"]
+
+    BR --> JSON["POST /browser-rendering/json<br/>schema = pricing rates"]
+    BR --> MD["POST /browser-rendering/markdown"]
+
+    JSON --> OK{"Structured<br/>parse ok?"}
+    OK -->|yes| RATES["Rate records"]
+    OK -->|no| AGENT["Workers AI extraction<br/>over the markdown"]
+    AGENT --> RATES
+
+    MD --> LOG[("scrape_runs<br/>url · ts · status<br/>markdown · raw json")]
+    JSON --> LOG
+    RATES --> REV[("pricing_revisions<br/>FK → scrape_run<br/>product · metric · price")]
+
+    REV --> DIFF{"Rate<br/>changed?"}
+    DIFF -->|yes| EVT[("billing_events<br/>price drift alert")]
+    DIFF -->|no| DONE["Done"]`}
+      />
+
+      <Mermaid
+        client:visible
+        caption="Every rate record points back at the scrape that produced it. Spend is computed by joining live usage to the latest revision — the price is never a literal in the code."
+        chart={`erDiagram
+    scrape_runs ||--o{ pricing_revisions : produces
+    pricing_revisions ||--o{ billing_events : "triggers on change"
+    pricing_revisions }o--|| usage_snapshots : "prices"
+
+    scrape_runs {
+        text id PK
+        text doc_url
+        int scraped_at
+        text status
+        text markdown
+        text raw_json
+    }
+    pricing_revisions {
+        text id PK
+        text scrape_run_id FK
+        text product
+        text metric
+        real unit_price
+        text currency
+        int effective_from
+    }
+    usage_snapshots {
+        text service
+        text metric
+        real value
+        int timestamp
+    }`}
+      />
+
+      <ProtoFrame
+        client:visible
+        label="Cost-basis page"
+        fixes="There was no cost-basis view at all. Current rates, what changed since the last scrape, and a link from every rate back to the scrape that sourced it."
+      >
+        <CostBasisProto client:visible />
+      </ProtoFrame>
+    </section>
+
+    <!-- Prototypes -->
+    <section class="mb-16">
+      <h2 class="mb-2 text-2xl font-bold tracking-tight">Prototypes</h2>
+      <p class="mb-6 max-w-3xl text-sm text-muted-foreground">
+        Static, using real figures measured from this account on 2026-07-19. Not wired to the API —
+        the point is to argue about the layout before building it, which is the step that was
+        skipped last time.
+      </p>
+
+      <ProtoFrame
+        client:visible
+        label="Alert card — the centrepiece"
+        fixes="'Surge detected: 45523699 rows read in 1h exceeds threshold 5000000.' Names the database and its worker, prices the impact, states the cause and the fix, and puts the four actions in reach."
+      >
+        <AlertCardProto client:visible />
+      </ProtoFrame>
+
+      <ProtoFrame
+        client:visible
+        label="Account overview skeleton"
+        fixes="A page that opened with fourteen identical progress bars. Alerts first, dollars second, product doors third — no binding names anywhere."
+      >
+        <OverviewSkeletonProto client:visible />
+      </ProtoFrame>
+
+      <ProtoFrame
+        client:visible
+        label="Bindings grouped by worker"
+        fixes="A table that scrolled sideways and printed every binding name. Groups by worker script, shows the top three, collapses the rest, and always carries worker health and its deployed URL."
+      >
+        <WorkerGroupedTableProto client:visible />
+      </ProtoFrame>
+
+      <ProtoFrame
+        client:visible
+        label="Binding viewport"
+        fixes="There was no way to focus on one resource. Dedicated URL, attribution in the header, AI insight on the data itself, lifecycle actions in reach."
+      >
+        <BindingViewportProto client:visible />
+      </ProtoFrame>
+
+      <ProtoFrame
+        client:visible
+        label="Emergency controls — combobox"
+        fixes="Free-text bucket and index names on destructive calls. Options come from the live account; a typo can no longer reach the API."
+      >
+        <ComboboxProto client:visible />
+      </ProtoFrame>
+
+      <ProtoFrame
+        client:visible
+        label="Number formatting law"
+        fixes="Raw integers and unbounded percentages everywhere. One helper per intent, chosen by what the number is for."
+      >
+        <FormattingProto client:visible />
+      </ProtoFrame>
+    </section>
+
+    <!-- Phases -->
+    <section class="mb-16">
+      <h2 class="mb-2 text-2xl font-bold tracking-tight">Build order</h2>
+      <p class="mb-6 max-w-3xl text-sm text-muted-foreground">
+        Sequenced by dependency, not by appetite. P1 and P2 are unglamorous and everything
+        interesting depends on both.
+      </p>
+
+      <Mermaid
+        client:visible
+        caption="P0 ships immediately and independently. P5 and P6 are parallel tracks once their prerequisites land."
+        chart={`flowchart LR
+    P0["P0 · Stop the bleeding"]
+    P1["P1 · Attribution graph"]
+    P2["P2 · Pricing catalog"]
+    P3["P3 · Actionable alerts"]
+    P4["P4 · Information architecture"]
+    P5["P5 · Cleanup advisor"]
+    P6["P6 · AI proxy + breaker"]
+
+    P0 --> P1
+    P1 --> P2
+    P1 --> P3
+    P2 --> P3
+    P3 --> P4
+    P1 --> P5
+    P4 --> P5
+    P2 --> P6`}
+      />
+
+      <p class="mt-6 rounded-xl border border-border/60 bg-background/40 p-5 text-sm text-muted-foreground">
+        The per-phase scope now lives on the
+        <a href="/changelogs/preview" class="font-medium text-foreground underline underline-offset-4">changelog preview</a>,
+        broken into PR-sized entries so each piece is tracked and linkable as it ships. This page
+        keeps only the architecture — the diagrams and the reasoning behind them.
+      </p>
+    </section>
+
+    <!-- Working agreement -->
+    <section class="mb-16">
+      <h2 class="mb-2 text-2xl font-bold tracking-tight">Working agreement</h2>
+      <p class="mb-6 max-w-3xl text-sm text-muted-foreground">
+        These become rules in <span class="font-mono">AGENTS.md</span> and
+        <span class="font-mono">.agent/rules/</span> so they outlive this session.
+      </p>
+
+      <div class="flex flex-col gap-3">
+        {[
+          {
+            t: "A page is not verified until it has been opened in a browser, signed in",
+            d: "A script with a bearer token bypasses the session gate real users hit. Screenshot the authenticated page or the work is not done.",
+          },
+          {
+            t: "Never render a raw identifier where a name exists",
+            d: "Resolve databaseId, gateway id and bucket key to human names before they reach a chart, badge or alert.",
+          },
+          {
+            t: "One formatting helper per intent",
+            d: "formatCount for density, formatExact for emphasis, formatRatio for multiples, formatBytes for size. No bare Intl at a call site.",
+          },
+          {
+            t: "Every alert names a resource, an owner and a next step",
+            d: "A number without a resource, a worker and a recommendation is telemetry, not an alert.",
+          },
+          {
+            t: "New page means new nav entry, same commit",
+            d: "Required by .agent/rules/startup.md and violated by /login.",
+          },
+          {
+            t: "Check the Cloudflare docs and OpenAPI tools before assuming an API exists",
+            d: "Three assumptions in this document were false. All three were cheap to check and expensive to discover late.",
+          },
+          {
+            t: "Update AGENTS.md and .agent/rules in the same change that establishes a convention",
+            d: "Mandated by .agent/rules/meta-maintenance.md; not done once across this build.",
+          },
+        ].map((r) => (
+          <div class="rounded-xl border border-border/60 bg-background/40 px-5 py-4">
+            <h3 class="text-sm font-medium">{r.t}</h3>
+            <p class="mt-1 text-sm text-muted-foreground">{r.d}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+
+    <!-- Open questions -->
+    <section>
+      <h2 class="mb-2 text-2xl font-bold tracking-tight">Open questions</h2>
+      <p class="mb-6 max-w-3xl text-sm text-muted-foreground">
+        Answers change the build. Flagged rather than assumed.
+      </p>
+
+      <div class="flex flex-col gap-3">
+        {[
+          {
+            q: "Does the AI proxy fail open or fail closed when the breaker DO is unreachable?",
+            w: "Fail open risks unbounded spend during an outage. Fail closed means a Guardian bug takes down every AI call in the account. This is a business decision, not a technical one.",
+          },
+          {
+            q: "Cleanup advisor without last-access data — is upload age enough?",
+            w: "R2 has no per-object read timestamp. Recommendations can only reason about age since upload plus bucket-level read volume. If that is too weak, the alternative is instrumenting reads ourselves going forward, which only helps future objects.",
+          },
+          {
+            q: "Should P6 replace the existing direct Workers AI calls in this app?",
+            w: "The agents currently call Workers AI directly. Routing them through the breaker makes the metering complete but couples every agent to Guardian's availability.",
+          },
+          {
+            q: "How aggressively should template pages be removed?",
+            w: "Ten showcase pages and the Workspace group are template leftovers. Hiding them from the nav is reversible; deleting them is not.",
+          },
+        ].map((o) => (
+          <div class="rounded-xl border border-border/60 bg-background/40 px-5 py-4">
+            <h3 class="text-sm font-medium">{o.q}</h3>
+            <p class="mt-1 text-sm text-muted-foreground">{o.w}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+
+  </div>
+</BaseLayout>

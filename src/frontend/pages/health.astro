@@ -1,0 +1,25 @@
+---
+/**
+ * `/health` — the diagnostic console.
+ *
+ * Thin Astro shell over the `<HealthConsole>` island: run all checks, see each
+ * pass/fail, and copy a fix prompt for any failure.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { HealthConsole } from "@/components/dashboard";
+---
+
+<BaseLayout
+  title="Health"
+  description="Core Guardian self-diagnostic: D1, Workers AI, Cloudflare REST, GraphQL Analytics, R2, and every agent binding — with a copy-ready fix prompt for any failure."
+>
+  <main class="container mx-auto flex max-w-5xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/guardian"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Core Guardian
+    </a>
+    <HealthConsole client:load />
+  </main>
+</BaseLayout>

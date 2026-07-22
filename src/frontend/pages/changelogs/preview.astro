@@ -1,0 +1,84 @@
+---
+/**
+ * `/changelogs/preview` — staged / proposed work, grouped by PR size.
+ *
+ * This is the tracking board: every required piece of the rebuild is a sized,
+ * proposed entry here before it is built, so nothing is silently dropped. As an
+ * entry ships it flips `status` to `shipped` in `@/lib/changelog` and moves to
+ * `/changelogs`.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { Badge } from "@/components/ui/badge";
+import { proposed, SIZE_LABEL, type PrSize } from "@/lib/changelog";
+
+const entries = proposed();
+
+// Group by PR size, largest effort last so the quick wins read first.
+const ORDER: PrSize[] = ["XS", "S", "M", "L", "XL"];
+const groups = ORDER.map((size) => ({
+  size,
+  items: entries.filter((e) => e.size === size),
+})).filter((g) => g.items.length > 0);
+
+const STATUS_TONE: Record<string, string> = {
+  in_progress: "border-amber-500/25 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+  proposed: "border-sky-500/25 bg-sky-500/10 text-sky-600 dark:text-sky-400",
+};
+---
+
+<BaseLayout
+  title="Changelog — Preview"
+  description="Proposed and staged Core Guardian work, grouped by PR size, so every required piece is tracked before it is built."
+>
+  <div class="container mx-auto max-w-4xl px-4 py-16">
+    <header class="mb-10 flex flex-wrap items-end justify-between gap-4">
+      <div>
+        <Badge variant="outline" class="mb-3 font-mono text-[11px]">Preview</Badge>
+        <h1 class="text-3xl font-bold tracking-tight sm:text-4xl">Staged &amp; proposed</h1>
+        <p class="mt-3 max-w-2xl text-sm text-muted-foreground">
+          The full backlog, grouped by PR size so nothing required goes untracked. Each becomes a
+          branch and a PR when built, then flips to <a href="/changelogs" class="text-foreground underline underline-offset-4">shipped</a>.
+        </p>
+      </div>
+      <span class="font-mono text-xs text-muted-foreground">{entries.length} proposed</span>
+    </header>
+
+    <div class="flex flex-col gap-10">
+      {groups.map((group) => (
+        <section>
+          <div class="mb-3 flex items-baseline gap-3">
+            <h2 class="text-lg font-semibold tracking-tight">{SIZE_LABEL[group.size]}</h2>
+            <span class="font-mono text-xs text-muted-foreground">{group.items.length}</span>
+          </div>
+          <ol class="flex flex-col gap-3">
+            {group.items.map((e) => (
+              <li>
+                <a
+                  href={`/changelogs/${e.id}`}
+                  class="block rounded-xl border border-border/60 bg-background/40 p-5 transition-colors hover:bg-foreground/[0.03]"
+                >
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="font-mono text-xs text-muted-foreground">{e.id.split("-")[0]}</span>
+                    <h3 class="text-base font-medium">{e.title}</h3>
+                    <Badge variant="outline" class={STATUS_TONE[e.status]}>
+                      {e.status === "in_progress" ? "In progress" : "Proposed"}
+                    </Badge>
+                    <Badge variant="outline" class="font-mono text-[10px] text-muted-foreground">
+                      {e.phase}
+                    </Badge>
+                  </div>
+                  <p class="mt-2 text-sm text-muted-foreground">{e.summary}</p>
+                  {e.depends && e.depends.length > 0 && (
+                    <p class="mt-2 font-mono text-[11px] text-muted-foreground/70">
+                      depends: {e.depends.map((d) => d.split("-")[0]).join(", ")}
+                    </p>
+                  )}
+                </a>
+              </li>
+            ))}
+          </ol>
+        </section>
+      ))}
+    </div>
+  </div>
+</BaseLayout>
