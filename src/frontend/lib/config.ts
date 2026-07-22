@@ -56,6 +56,7 @@ export const siteConfig: SiteConfig = {
         { href: "/dashboard/action-items", label: "Action Items" },
         { href: "/dashboard/storage", label: "Data Storage" },
         { href: "/dashboard/ai-gateway", label: "AI Gateway Billing" },
+        { href: "/dashboard/codra", label: "Codra Spend" },
         { href: "/dashboard/cost-basis", label: "Cost Basis" },
         { href: "/dashboard/drive-config", label: "Drive Folders" },
         { href: "/dashboard/alerts", label: "Alert Rules" },

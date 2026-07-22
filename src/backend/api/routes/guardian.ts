@@ -48,6 +48,7 @@ import { archiveD1Database } from "@/backend/guardian/d1-archive";
 import { archiveImages } from "@/backend/guardian/cf-image-archive";
 import { archiveR2Bucket } from "@/backend/guardian/r2-archive";
 import { proposeHotfix } from "@/backend/guardian/hotfix";
+import { getWorkerSpend } from "@/backend/guardian/worker-spend";
 import { scrapeAllPricing, scrapeOneProduct } from "@/backend/guardian/pricing-scrape";
 import {
   getBindingIndex,
@@ -534,6 +535,75 @@ guardianRouter.openapi(
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : "Failed." }, 500);
     }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/guardian/worker/{name}/spend  — CF usage + AI-provider spend
+// ---------------------------------------------------------------------------
+
+guardianRouter.openapi(
+  createRoute({
+    method: "get",
+    path: "/worker/{name}/spend",
+    operationId: "guardianWorkerSpend",
+    summary: "One worker's Cloudflare usage + its AI-Gateway provider spend",
+    description:
+      "Two signals over the window: Cloudflare compute (requests/errors/subrequests/CPU quantiles) for the script, and real AI upstream cost by provider/model from a same-named AI Gateway (or `gateway` override). AI spend is $0 until the worker routes its calls through that gateway — the honest signal that provider billing is not yet visible Cloudflare-side.",
+    request: {
+      params: z.object({ name: z.string() }),
+      query: z.object({
+        gateway: z.string().optional(),
+        hours: z.coerce.number().int().min(1).max(744).optional(),
+      }),
+    },
+    responses: {
+      200: {
+        description: "Worker spend",
+        content: {
+          "application/json": {
+            schema: z.object({
+              worker: z.string(),
+              gateway: z.string(),
+              windowHours: z.number(),
+              cloudflare: z.object({
+                requests: z.number(),
+                errors: z.number(),
+                subrequests: z.number(),
+                cpuTimeP50Us: z.number().nullable(),
+                cpuTimeP99Us: z.number().nullable(),
+              }),
+              ai: z.object({
+                routed: z.boolean(),
+                upstreamCostUsd: z.number(),
+                requests: z.number(),
+                tokensIn: z.number(),
+                tokensOut: z.number(),
+                byModel: z.array(
+                  z.object({
+                    provider: z.string(),
+                    model: z.string(),
+                    costUsd: z.number(),
+                    tokensIn: z.number(),
+                    tokensOut: z.number(),
+                  }),
+                ),
+              }),
+            }),
+          },
+        },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => {
+    const { name } = c.req.valid("param");
+    const { gateway, hours } = c.req.valid("query");
+    const spend = await getWorkerSpend(c.env, name, gateway ?? name, hours ?? 720);
+    return c.json(spend, 200);
   },
 );
 

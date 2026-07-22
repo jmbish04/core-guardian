@@ -10,6 +10,7 @@ export { ActionItems } from "./ActionItems";
 export { AllowancesPanel } from "./AllowancesPanel";
 export { AlertsBoard } from "./AlertsBoard";
 export { BindingDetail } from "./BindingDetail";
+export { WorkerSpendMonitor } from "./WorkerSpendMonitor";
 export { HealthConsole } from "./HealthConsole";
 export { GuardianAuditLog } from "./GuardianAuditLog";
 export { GuardianPanel } from "./GuardianPanel";
