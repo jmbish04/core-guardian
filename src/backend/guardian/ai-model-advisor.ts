@@ -17,6 +17,8 @@ import { and, desc, eq, lte, sql } from "drizzle-orm";
 import { getDb } from "@/backend/db";
 import { aiModelPricing, type AiModelPricingRow } from "@/backend/db/schema";
 
+import { queryGatewayCosts } from "./ai-gateway-costs";
+
 const ADVISOR_MODEL = "@cf/moonshotai/kimi-k2.7-code";
 
 /** Newest price row per (provider, api_model_name). */
@@ -70,6 +72,21 @@ export async function adviseModels(env: Env, req: AdviseRequest): Promise<Advice
   const inTok = req.inputTokens ?? 1000;
   const outTok = req.outputTokens ?? 1000;
 
+  // Blend in what AI Gateway ACTUALLY charged (last 30d) so the advice reflects
+  // real observed cost + any fluctuation, not just advertised list price.
+  const observed = new Map<string, number>();
+  try {
+    const gw = await queryGatewayCosts(env, Date.now() - 30 * 86_400_000, Date.now());
+    for (const g of gw) {
+      if (g.effectivePerMillion !== null) {
+        const key = g.model.toLowerCase();
+        if (!observed.has(key)) observed.set(key, g.effectivePerMillion);
+      }
+    }
+  } catch {
+    /* gateway data is optional context */
+  }
+
   // Compact the catalog for the prompt (with a per-call cost estimate so the
   // model can reason about price directly).
   const catalog = models.map((m) => ({
@@ -80,9 +97,11 @@ export async function adviseModels(env: Env, req: AdviseRequest): Promise<Advice
     inPerM: m.inputPricePerMillion,
     outPerM: m.outputPricePerMillion,
     estCostPerCall: estCost(m, inTok, outTok),
+    // Blended $/1M this account actually paid via AI Gateway, when we've seen it.
+    observedGatewayPerM: observed.get(m.apiModelName.toLowerCase()) ?? null,
   }));
 
-  const prompt = `You advise coding agents on the cheapest capable AI model for a task. Given the request and the live model catalog (prices in USD; estCostPerCall is for the given token estimates), pick the TOP 3 models that best balance capability for the use case against cost. Prefer the cheapest model that is clearly capable.
+  const prompt = `You advise coding agents on the cheapest capable AI model for a task. Given the request and the live model catalog (prices in USD; estCostPerCall is for the given token estimates; observedGatewayPerM is the blended $/1M this account has ACTUALLY paid through AI Gateway when available — trust it over the advertised list price when present), pick the TOP 3 models that best balance capability for the use case against cost. Prefer the cheapest model that is clearly capable.
 
 Return ONLY JSON: {"recommendations":[{"apiModelName":string,"provider":string,"why":string}]} — exactly 3, best first.
 

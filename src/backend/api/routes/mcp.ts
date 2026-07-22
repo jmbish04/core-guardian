@@ -42,6 +42,14 @@ import {
   getUsageHistory,
   listGateways,
 } from "@/backend/guardian/ai-gateway";
+import {
+  createGateway,
+  deleteGateway,
+  getGateway,
+  listGateways as listGatewaysAdmin,
+  updateGateway,
+} from "@/backend/guardian/ai-gateway-admin";
+import { driftCheck, pricingHistory, queryGatewayCosts } from "@/backend/guardian/ai-gateway-costs";
 import { adviseModels, calculateCosts, latestModels } from "@/backend/guardian/ai-model-advisor";
 import { collectUsage } from "@/backend/guardian/collect";
 import {
@@ -500,6 +508,137 @@ const TOOLS: McpTool[] = [
       ["scenarios"],
     ),
     handler: async (env, args) => calculateCosts(env, args?.scenarios ?? []),
+  },
+  {
+    name: "ai_models_pricing_history",
+    title: "Pricing history: advertised vs actual",
+    description:
+      "For given models over a date range, return what providers ADVERTISED (our scraped catalog captured in that window) and/or what Cloudflare's AI Gateway ACTUALLY recorded charging. source defaults to 'both'; use 'scraped' or 'gateway' to narrow. start/end are Unix ms.",
+    inputSchema: schema(
+      {
+        models: { type: "array", items: { type: "string" }, description: "Model names/ids (plural). Empty = all." },
+        start: num("Range start (Unix ms)."),
+        end: num("Range end (Unix ms)."),
+        source: str("both (default) | scraped | gateway."),
+      },
+      ["start", "end"],
+    ),
+    handler: async (env, args) =>
+      pricingHistory(env, args?.models ?? [], args.start, args.end, args?.source ?? "both"),
+  },
+
+  // --- AI Gateway costs + drift -------------------------------------------
+  {
+    name: "ai_gateway_actual_costs",
+    title: "Actual AI Gateway cost by model",
+    description:
+      "Per-model cost Cloudflare ACTUALLY recorded for AI Gateway traffic over a date range (from D1 snapshots), including the blended effective $/1M tokens. start/end are Unix ms; optionally filter models.",
+    inputSchema: schema(
+      {
+        start: num("Range start (Unix ms)."),
+        end: num("Range end (Unix ms)."),
+        models: { type: "array", items: { type: "string" }, description: "Optional model filter." },
+      },
+      ["start", "end"],
+    ),
+    handler: async (env, args) => ({
+      costs: await queryGatewayCosts(env, args.start, args.end, args?.models),
+    }),
+  },
+  {
+    name: "ai_gateway_price_drift",
+    title: "Scraped vs actual price drift",
+    description:
+      "Compare our scraped provider list price against what AI Gateway actually charged per model over a range, flagging models whose actual cost differs from the scraped prediction by more than thresholdPct.",
+    inputSchema: schema(
+      {
+        start: num("Range start (Unix ms)."),
+        end: num("Range end (Unix ms)."),
+        thresholdPct: num("Minimum |drift %| to report. Default 10."),
+      },
+      ["start", "end"],
+    ),
+    handler: async (env, args) => ({
+      findings: await driftCheck(env, args.start, args.end, args?.thresholdPct ?? 10),
+    }),
+  },
+
+  // --- AI Gateway CRUD (manage gateways) ----------------------------------
+  {
+    name: "ai_gateway_list",
+    title: "List AI Gateways",
+    description: "List all AI Gateways on the account with their configuration.",
+    inputSchema: schema(),
+    handler: async (env) => ({ gateways: await listGatewaysAdmin(env) }),
+  },
+  {
+    name: "ai_gateway_get",
+    title: "Get one AI Gateway",
+    description: "Fetch one AI Gateway's full configuration by id.",
+    inputSchema: schema({ id: str("Gateway id.") }, ["id"]),
+    handler: async (env, args) => getGateway(env, args.id),
+  },
+  {
+    name: "ai_gateway_create",
+    title: "Create an AI Gateway",
+    description:
+      "Create an AI Gateway. Only `id` is required; caching, logging, rate-limiting, retries, authentication, and zero-data-retention default to safe values and can be overridden.",
+    destructive: true,
+    inputSchema: schema(
+      {
+        id: str("New gateway id (slug)."),
+        cache_ttl: num("Cache TTL seconds (0 = off)."),
+        collect_logs: bool("Collect request logs."),
+        rate_limiting_interval: num("Rate-limit window seconds (0 = none)."),
+        rate_limiting_limit: num("Max requests per window."),
+        rate_limiting_technique: str("fixed | sliding."),
+        authentication: bool("Require gateway authentication."),
+        logpush: bool("Enable Logpush."),
+      },
+      ["id"],
+    ),
+    handler: async (env, args) => {
+      const gw = await createGateway(env, args);
+      await audit(env, "ai-gateway", `Created gateway ${args.id}`);
+      return gw;
+    },
+  },
+  {
+    name: "ai_gateway_update",
+    title: "Update an AI Gateway",
+    description: "Update an AI Gateway's configuration (merged with its current config).",
+    destructive: true,
+    inputSchema: schema(
+      {
+        id: str("Gateway id to update."),
+        cache_ttl: num("Cache TTL seconds."),
+        collect_logs: bool("Collect request logs."),
+        rate_limiting_interval: num("Rate-limit window seconds."),
+        rate_limiting_limit: num("Max requests per window."),
+        rate_limiting_technique: str("fixed | sliding."),
+        authentication: bool("Require gateway authentication."),
+        logpush: bool("Enable Logpush."),
+      },
+      ["id"],
+    ),
+    handler: async (env, args) => {
+      const { id, ...patch } = args;
+      const gw = await updateGateway(env, id, patch);
+      await audit(env, "ai-gateway", `Updated gateway ${id}`);
+      return gw;
+    },
+  },
+  {
+    name: "ai_gateway_delete",
+    title: "Delete an AI Gateway",
+    description: "Delete an AI Gateway by id. Irreversible.",
+    destructive: true,
+    inputSchema: schema({ id: str("Gateway id to delete.") }, ["id"]),
+    handler: async (env, args) => {
+      await deleteGateway(env, args.id);
+      await audit(env, "ai-gateway", `Deleted gateway ${args.id}`);
+      return { ok: true };
+    },
   },
 ];
 
