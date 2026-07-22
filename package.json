@@ -61,6 +61,7 @@
     "drizzle-zod": "0.8.3",
     "hono": "^4.12.31",
     "lucide-react": "^1.25.0",
+    "mermaid": "^11.16.0",
     "mind-elixir": "5.14.0",
     "platejs": "53.2.4",
     "react": "^19.2.7",
