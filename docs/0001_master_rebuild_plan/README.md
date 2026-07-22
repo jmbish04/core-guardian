@@ -1,5 +1,8 @@
 # Core Guardian — Master Rebuild Plan
 
+## Status
+the Core Guardian rebuild is complete — all 21 tracked changes shipped, browse them at /changelogs.
+
 ## Context
 
 Core Guardian is a Cloudflare spend-governance dashboard on a single Worker (Astro SSR + Hono
