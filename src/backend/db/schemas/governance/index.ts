@@ -1,4 +1,5 @@
 export * from "./action-items";
+export * from "./ai-model-pricing";
 export * from "./alert-rules";
 export * from "./alerts";
 export * from "./billing-events";

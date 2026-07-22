@@ -147,6 +147,25 @@ export const CHANGELOG: ChangeEntry[] = [
     ],
   },
 
+  {
+    id: "0260-ai-model-pricing-catalog",
+    title: "AI model pricing catalog + advisor (weekly cron)",
+    status: "shipped",
+    size: "L",
+    phase: "P8",
+    date: "2026-07-22",
+    version: "0260ship",
+    summary:
+      "A weekly-refreshed, multi-provider AI model + pricing catalog in D1, plus API and MCP tools to list models, advise the cheapest capable model for a use case (via kimi-k2.7-code over the live catalog), and cost usage scenarios time-aware. Built for coding agents optimizing spend.",
+    scope: [
+      "D1 ai_model_pricing (append-only, scraped_at for time-aware lookup): provider, model, api_model_name, description, best_used_for, input/output/cached $ per 1M",
+      "Weekly cron scrapes Anthropic/Google (fetch markdown + gpt-oss json_schema extraction) + OpenAI (deterministic JS-array parse) + Workers AI (models API price property, no neuron math)",
+      "GET /api/ai-models · POST /advise (top-3 via @cf/moonshotai/kimi-k2.7-code) · POST /cost (array of scenarios, price as-of each timestamp) — mirrored as MCP tools ai_models_list/advise/cost",
+      "Verified live: workers-ai 22 / anthropic 15 / google 9 / openai 44 models with correct input+output prices; cost calc exact ($10+$10+$2.50); advise returned qwen3-30b / gpt-5-nano / gemini-flash-lite for cheap high-volume",
+      "ponytail: OpenAI ships a JS array not a table → regex parse beats AI; Workers AI already returns USD/1M so no neuron conversion; provider usage payloads over WASM tiktoken",
+    ],
+  },
+
   // ---- Proposed backlog -------------------------------------------------
   {
     id: "0100-auto-topup-modal",
