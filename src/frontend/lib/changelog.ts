@@ -127,6 +127,26 @@ export const CHANGELOG: ChangeEntry[] = [
     ],
   },
 
+  {
+    id: "0250-codra-spend-monitor",
+    title: "Per-worker spend monitor (codra)",
+    status: "shipped",
+    size: "M",
+    phase: "P8",
+    date: "2026-07-22",
+    version: "0250ship",
+    depends: ["0110-attribution-graph"],
+    summary:
+      "Dedicated spend monitoring for the core-codra code-review worker (which replaces the deprecated Gemini Code Assist) — and a generic per-worker monitor behind it. Tracks Cloudflare compute AND AI-provider cost, and flags plainly when a worker's AI isn't routed through its gateway (so provider billing is invisible Cloudflare-side).",
+    scope: [
+      "GET /api/guardian/worker/{name}/spend — CF compute (requests/errors/subrequests/CPU p50+p99) + AI-Gateway upstream cost by provider/model",
+      "worker-spend.ts: workersInvocationsAdaptive (scriptName filter) + aiGatewayRequestsAdaptiveGroups (gateway filter) in one GraphQL query",
+      "/dashboard/codra + generic WorkerSpendMonitor island",
+      "Verified live: codra = 7,423 requests / 7,753 subrequests / 0 errors / CPU p99 56 ms over 30d",
+      "Finding: codra's `codra` AI Gateway shows $0 — it is NOT routing AI through the gateway, so provider spend is only on Google/OpenAI's dashboards. UI recommends routing through the gateway or the native /api/ai proxy to meter + cap it",
+    ],
+  },
+
   // ---- Proposed backlog -------------------------------------------------
   {
     id: "0100-auto-topup-modal",

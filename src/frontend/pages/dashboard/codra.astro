@@ -1,0 +1,26 @@
+---
+/**
+ * `/dashboard/codra` — spend monitoring for the core-codra code-review worker.
+ *
+ * core-codra replaces the deprecated Gemini Code Assist. This tracks both its
+ * Cloudflare compute and its AI-provider spend (via the same-named `codra` AI
+ * Gateway). Thin shell over the generic <WorkerSpendMonitor> island.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { WorkerSpendMonitor } from "@/components/dashboard";
+---
+
+<BaseLayout
+  title="Codra spend"
+  description="Cloudflare compute + AI-provider spend for the core-codra code-review worker (replaces the deprecated Gemini Code Assist)."
+>
+  <main class="container mx-auto flex max-w-5xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/guardian"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Core Guardian
+    </a>
+    <WorkerSpendMonitor worker="codra" gateway="codra" title="Codra (code review)" client:load />
+  </main>
+</BaseLayout>
