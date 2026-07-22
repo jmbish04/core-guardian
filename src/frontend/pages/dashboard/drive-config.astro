@@ -1,0 +1,24 @@
+---
+/**
+ * `/dashboard/drive-config` — self-service Google Drive archive destinations.
+ *
+ * Thin Astro shell over the `<DriveConfig>` island.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { DriveConfig } from "@/components/storage";
+---
+
+<BaseLayout
+  title="Drive folders"
+  description="Configure the Google Drive folder each archive flow (R2, D1, Images) writes to — paste a URL, the service account's access is validated live."
+>
+  <main class="container mx-auto flex max-w-4xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/guardian"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Core Guardian
+    </a>
+    <DriveConfig client:load />
+  </main>
+</BaseLayout>

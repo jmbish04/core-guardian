@@ -1,0 +1,24 @@
+---
+/**
+ * `/dashboard/cost-basis` — the scraped pricing catalog the spend calc runs on.
+ *
+ * Thin Astro shell over the `<CostBasis>` React island.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { CostBasis } from "@/components/storage";
+---
+
+<BaseLayout
+  title="Cost basis"
+  description="The overage unit rates Core Guardian uses for dollar estimates, scraped monthly from Cloudflare's pricing docs, each labelled with its scrape date."
+>
+  <main class="container mx-auto flex max-w-6xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/guardian"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Core Guardian
+    </a>
+    <CostBasis client:load />
+  </main>
+</BaseLayout>

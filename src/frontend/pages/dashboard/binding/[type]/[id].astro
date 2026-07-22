@@ -1,0 +1,25 @@
+---
+/**
+ * `/dashboard/binding/[type]/[id]` — per-resource detail.
+ *
+ * SSR (output: "server") — params resolve at request time. `type` is the probe
+ * service (d1/r2/kv/vectorize/queue), `id` the specific resource name or id.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { BindingDetail } from "@/components/dashboard";
+
+const { type, id } = Astro.params;
+if (!type || !id) return Astro.redirect("/dashboard/guardian");
+---
+
+<BaseLayout title={`${type} · ${id}`} description={`Per-binding detail for ${type} resource ${id}.`}>
+  <main class="container mx-auto flex max-w-5xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/guardian"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Core Guardian
+    </a>
+    <BindingDetail type={type} id={id} client:load />
+  </main>
+</BaseLayout>

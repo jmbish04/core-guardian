@@ -1,0 +1,21 @@
+---
+/**
+ * Pipelines — Data Storage detail page.
+ *
+ * Thin Astro shell over the `<PipelinesTable>` React island.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { PipelinesTable } from "@/components/storage";
+---
+
+<BaseLayout title="Pipelines" description="Every configured pipeline, its status, and its SQL.">
+  <main class="container mx-auto flex max-w-7xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/storage"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Data Storage
+    </a>
+    <PipelinesTable client:load />
+  </main>
+</BaseLayout>

@@ -1,0 +1,21 @@
+---
+/**
+ * R2 Data Catalogs — Data Storage detail page.
+ *
+ * Thin Astro shell over the `<CatalogsTable>` React island.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { CatalogsTable } from "@/components/storage";
+---
+
+<BaseLayout title="R2 Data Catalogs" description="Buckets with an R2 Data Catalog warehouse enabled.">
+  <main class="container mx-auto flex max-w-7xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/storage"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Data Storage
+    </a>
+    <CatalogsTable client:load />
+  </main>
+</BaseLayout>

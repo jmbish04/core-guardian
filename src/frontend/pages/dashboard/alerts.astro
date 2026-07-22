@@ -1,0 +1,24 @@
+---
+/**
+ * Alert Rules — declarative alert logic and automatic mitigation configuration.
+ *
+ * Thin Astro shell over the `<AlertRules>` React island.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { AlertRules } from "@/components/storage";
+---
+
+<BaseLayout
+  title="Alert Rules"
+  description="Declarative alert rules: bind a usage probe to a threshold, a severity, and an optional automatic mitigation that must be explicitly armed."
+>
+  <main class="container mx-auto flex max-w-4xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/guardian"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Core Guardian
+    </a>
+    <AlertRules client:load />
+  </main>
+</BaseLayout>

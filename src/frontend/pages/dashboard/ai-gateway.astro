@@ -1,0 +1,25 @@
+---
+/**
+ * AI Gateway billing — credits, limits, invoices, and gateway configuration.
+ *
+ * Thin Astro shell over the `<AiGatewayBilling>` React island.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { AiBudgetMeter, AiGatewayBilling } from "@/components/storage";
+---
+
+<BaseLayout
+  title="AI Gateway Billing"
+  description="AI Gateway credit balance, auto top-up, spending limit, upcoming charges by model, invoice history, and per-gateway rate limits."
+>
+  <main class="container mx-auto flex max-w-6xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/guardian"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Core Guardian
+    </a>
+    <AiBudgetMeter client:visible />
+    <AiGatewayBilling client:load />
+  </main>
+</BaseLayout>

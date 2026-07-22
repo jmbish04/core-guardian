@@ -27,10 +27,10 @@ export type SiteConfig = {
 };
 
 export const siteConfig: SiteConfig = {
-  name: "Cloudflare Edge Showcase",
+  name: "Core Guardian",
   description:
-    "Multi-page edge frontend showcase using Astro, React, Shadcn UI, and assistant-ui with Cloudflare Agents SDK",
-  url: "https://example.com",
+    "Cloudflare spend-governance cockpit — monitors usage across every binding, projects month-end cost against included allowances, and halts runaway spend.",
+  url: "https://core-guardian.hacolby.workers.dev",
   author: {
     name: "Author",
     url: "https://example.com",
@@ -38,49 +38,48 @@ export const siteConfig: SiteConfig = {
   links: {
     github: "https://github.com",
   },
+  // Core Guardian is a spend-governance tool, not the demo template it was
+  // staged from. The template's Workspace/Agents showcase pages still exist on
+  // disk (reachable by direct URL, kept for future reuse — e.g. wiring up the
+  // chat agents later) but are intentionally NOT surfaced in the navbar; see
+  // .agent/rules/startup.md. Only routes that exist and belong to the product
+  // are linked. Dead links (e.g. /health before it ships in P7) are added when
+  // the page lands, never before.
   navItems: [
-    { href: "/", label: "Overview" },
-    { href: "/dashboard", label: "Dashboard" },
+    { href: "/dashboard/guardian", label: "Guardian" },
   ],
   navGroups: [
     {
-      label: "Workspace",
+      label: "Dashboards",
       items: [
-        { href: "/projects", label: "Projects" },
-        { href: "/tasks/board", label: "Task Board" },
-        { href: "/tasks", label: "Tasks" },
-        { href: "/notes", label: "Notes" },
-        { href: "/inbox", label: "Inbox" },
-        { href: "/analytics", label: "Analytics" },
+        { href: "/dashboard/guardian", label: "Core Guardian" },
+        { href: "/dashboard/action-items", label: "Action Items" },
+        { href: "/dashboard/storage", label: "Data Storage" },
+        { href: "/dashboard/ai-gateway", label: "AI Gateway Billing" },
+        { href: "/dashboard/cost-basis", label: "Cost Basis" },
+        { href: "/dashboard/drive-config", label: "Drive Folders" },
+        { href: "/dashboard/alerts", label: "Alert Rules" },
+        { href: "/dashboard/notifications-inbox", label: "Alert Inbox" },
       ],
     },
     {
-      label: "Agents",
+      label: "Docs",
       items: [
-        { href: "/chat", label: "Chat" },
-        { href: "/assistant", label: "Assistant" },
-        { href: "/showcase/code-mode", label: "Code Mode" },
-        { href: "/showcase/browser-hitl", label: "Browser HITL" },
-        { href: "/showcase/multi-agent", label: "Multi-Agent" },
-        { href: "/showcase/workflows", label: "Workflows" },
-        { href: "/showcase/artifacts", label: "Artifacts" },
-        { href: "/showcase/mcp", label: "MCP Tools" },
-        { href: "/showcase/thinking", label: "Thinking" },
-        { href: "/showcase/skills", label: "Skills" },
+        { href: "/docs", label: "Overview" },
+        { href: "/docs/architecture", label: "Architecture" },
+        { href: "/changelogs", label: "Changelog" },
+        { href: "/changelogs/preview", label: "Roadmap" },
+        { href: "/openapi.json", label: "OpenAPI" },
+        { href: "/scalar", label: "Scalar" },
+        { href: "/swagger", label: "Swagger" },
       ],
     },
     {
       label: "System",
       items: [
-        { href: "/notifications", label: "Notifications" },
+        { href: "/health", label: "Health" },
+        { href: "/login", label: "Sign in" },
         { href: "/settings", label: "Settings" },
-        { href: "/showcase/features", label: "Platform Features" },
-        { href: "/showcase/utilities", label: "Data Utilities" },
-        { href: "/docs", label: "Documentation" },
-        { href: "/playbook", label: "Playbook" },
-        { href: "/openapi.json", label: "OpenAPI" },
-        { href: "/swagger", label: "Swagger" },
-        { href: "/scalar", label: "Scalar" },
       ],
     },
   ],

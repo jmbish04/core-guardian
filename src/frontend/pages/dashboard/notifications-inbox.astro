@@ -1,0 +1,24 @@
+---
+/**
+ * Cloudflare alert inbox — inbound billing notifications.
+ *
+ * Thin Astro shell over the `<NotificationsInbox>` React island.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { NotificationsInbox } from "@/components/storage";
+---
+
+<BaseLayout
+  title="Alert Inbox"
+  description="Inbound Cloudflare notifications: webhook receiver status, billing notification policies, and the verified raw event log."
+>
+  <main class="container mx-auto flex max-w-5xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/guardian"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Core Guardian
+    </a>
+    <NotificationsInbox client:load />
+  </main>
+</BaseLayout>

@@ -1,11 +1,17 @@
 {
   "name": "core-guardian",
-  "main": "dist/_worker.js/index.js",
+  "main": "src/_worker.ts",
   "compatibility_date": "2026-05-25",
   "compatibility_flags": ["nodejs_compat"],
   "upload_source_maps": true,
   "workers_dev": true,
   "preview_urls": true,
+  // Core Guardian usage evaluation. Hourly, aligned with the GraphQL Analytics
+  // hourly aggregation buckets; hourly crons also get the 15-minute CPU limit
+  // rather than the 30-second request limit.
+  "triggers": {
+    "crons": ["0 * * * *"],
+  },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,
@@ -93,38 +99,26 @@
   "worker_loaders": [
     { "binding": "WORKER_LOADERS" }
   ],
+  // Durable Object migrations.
+  //
+  // This Worker had never been deployed when these were first applied, so the
+  // inherited v1/v2/v3 template history (which created, deleted, then re-created
+  // OrchestratorAgent, and referenced a GoogleDocsAgent this codebase does not
+  // export) described a lineage that never existed — and Cloudflare rejects a
+  // delete-class migration for a class no previously-uploaded version exported.
+  // Collapsed to a single v1 that creates exactly the classes src/_worker.ts
+  // exports today. THIS IS NOW IMMUTABLE: the Worker has shipped under it, so
+  // add new tags additively rather than editing v1.
   "migrations": [
-    // v1 captures the original deployed-class set so wrangler can apply
-    // an additive history. Do NOT rewrite this tag — it is immutable
-    // once a Worker has shipped under it.
     {
       "tag": "v1",
       "new_sqlite_classes": [
-        "OrchestratorAgent",
         "CodeModeAgent",
-        "GoogleDocsAgent",
         "BrowserHitlAgent",
         "WorkflowsAgent",
         "ArtifactAgent",
-      ],
-    },
-    // v2 brings the live Worker in line with the lean template:
-    //   - retire OrchestratorAgent + GoogleDocsAgent (no longer exported)
-    //   - introduce ChatBroker (assistant-ui WebSocket broker)
-    //   - introduce NotificationsAgent (per-session realtime fanout)
-    {
-      "tag": "v2",
-      "deleted_classes": ["OrchestratorAgent", "GoogleDocsAgent"],
-      "new_sqlite_classes": ["ChatBroker", "NotificationsAgent"],
-    },
-    // v3 re-introduces the OrchestratorAgent (re-created additively after v2
-    // retired it) as a live multi-agent coordinator, adds its specialist
-    // sub-agents (ResearcherAgent, CoderAgent), and registers the three new
-    // showcase agents (McpAgent, ThinkingAgent, SkillsAgent). v1/v2 are left
-    // untouched — they are immutable history.
-    {
-      "tag": "v3",
-      "new_sqlite_classes": [
+        "ChatBroker",
+        "NotificationsAgent",
         "OrchestratorAgent",
         "ResearcherAgent",
         "CoderAgent",
@@ -162,6 +156,9 @@
   // plus `npx wrangler email sending enable yourdomain.com`. Add it only if you
   // wire an outbound reply flow.
   "vars": {
+    // Canonical public origin for this Worker. Use this instead of hardcoding
+    // the host anywhere in backend code or scripts.
+    "WORKER_BASE_URL": "https://core-guardian.hacolby.workers.dev",
     "AI_GATEWAY_ID": "default-gateway",
     "MODEL_CHAT": "@cf/openai/gpt-oss-120b",
     "MODEL_EXTRACT": "@cf/openai/gpt-oss-120b",
@@ -173,6 +170,13 @@
     "INBOX_FORWARD_TO": "",
   },
   "kv_namespaces": [
+    {
+      // Astro's session driver injects a `SESSION` binding with no id, which
+      // makes wrangler try to provision one on every deploy and collide with
+      // the namespace it already created. Pin the existing namespace instead.
+      "binding": "SESSION",
+      "id": "13e88a55a4d04ef8aa15cc65e9f80dc8",
+    },
     {
       "binding": "SESSIONS",
       "id": "aba8552a49c64335ba4832d34ce9459d",
@@ -227,14 +231,6 @@
       "binding": "GOOGLE_CREDS_SA_CLIENT_EMAIL",
       "store_id": "8c42fa70938644e0a8a109744467375f",
       "secret_name": "GOOGLE_CREDS_SA_CLIENT_EMAIL",
-    },
-  ],
-  //  wrangler vectorize create core-guardian-career-memory --preset @cf/baai/bge-large-en-v1.5
-  "vectorize": [
-    {
-      "binding": "VECTORIZE_CAREER_MEMORY",
-      "index_name": "core-guardian-career-memory",
-      "remote": true,
     },
   ],
   "r2_buckets": [

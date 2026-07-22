@@ -22,18 +22,26 @@ import { logger } from "hono/logger";
 
 import { authMiddleware } from "./middleware/auth";
 import { errorHandler } from "./middleware/error";
+import { activityRouter } from "./routes/activity";
+import { aiGatewayRouter } from "./routes/ai-gateway";
+import { aiProxyRouter } from "./routes/ai-proxy";
 import { authRouter } from "./routes/auth";
 import { clientErrorRouter } from "./routes/client-error";
+import { alertingRouter, cloudflareWebhookRouter } from "./routes/cloudflare-webhook";
 import { adminRouter, configRouter } from "./routes/config";
+import { dashboardRouter } from "./routes/dashboard";
 import { docsRouter } from "./routes/docs";
+import { driveRouter } from "./routes/drive-config";
+import { guardianRouter, r2Router, vectorizeRouter } from "./routes/guardian";
 import { healthRouter } from "./routes/health";
 import { inboxRouter } from "./routes/inbox";
-import { activityRouter } from "./routes/activity";
-import { dashboardRouter } from "./routes/dashboard";
+import { mcpRouter } from "./routes/mcp";
 import { notificationsRouter } from "./routes/notifications";
 import { projectsRouter } from "./routes/projects";
+import { rulesRouter } from "./routes/rules";
 import { seedRouter } from "./routes/seed";
 import { settingsRouter } from "./routes/settings";
+import { storageRouter } from "./routes/storage";
 import { taskDetailRouter } from "./routes/task-detail";
 import { taskHierarchyRouter } from "./routes/task-hierarchy";
 import { tasksRouter } from "./routes/tasks";
@@ -135,6 +143,27 @@ app.route("/api/notifications", notificationsRouter);
 app.route("/api/dashboard", dashboardRouter);
 app.route("/api/inbox", inboxRouter);
 app.route("/api/seed", seedRouter);
+
+// Core Guardian: usage monitoring + emergency eviction (see routes/guardian.ts).
+app.route("/api/guardian", guardianRouter);
+app.route("/api/r2", r2Router);
+app.route("/api/vectorize", vectorizeRouter);
+app.route("/api/storage", storageRouter);
+app.route("/api/drive", driveRouter);
+app.route("/api/ai", aiProxyRouter);
+app.route("/api/ai-gateway", aiGatewayRouter);
+app.route("/api/rules", rulesRouter);
+app.route("/api/alerting", alertingRouter);
+
+// Inbound Cloudflare notifications. NOT behind guardianAuth — Cloudflare calls
+// this with no session; it authenticates via the cf-webhook-auth shared secret.
+// See routes/cloudflare-webhook.ts for the full security posture.
+app.route("/api/webhooks", cloudflareWebhookRouter);
+
+// MCP server (JSON-RPC over Streamable HTTP) — mounted at both /mcp and
+// /api/mcp so clients can use either form.
+app.route("/mcp", mcpRouter);
+app.route("/api/mcp", mcpRouter);
 
 app.route("/api/__client-error", clientErrorRouter);
 

@@ -1,26 +1,54 @@
 /**
  * @fileoverview Secret + signing-key helpers for the template.
  *
- * Reads values from the Secrets Store bindings declared in `wrangler.jsonc`
- * (which expose an async `.get()`), falling back to plain env vars for local
- * development. Domain-specific helpers (Google service accounts, R2 access
- * keys, third-party integrations) were removed when this repo was slimmed to
- * a template — add your own as you wire new integrations.
+ * Two primitives sit at the bottom of this module:
+ *  - {@link getSecretStoreBinding} — reads a Secrets Store binding (async `.get()`)
+ *  - {@link getSecret} — reads a plain env var / `vars` entry (sync)
+ *
+ * Every named accessor below is `getSecretStoreBinding(...) ?? getSecret(...)`:
+ * Secrets Store wins, plain env vars are the local-dev fallback. Bindings are
+ * declared in `wrangler.jsonc` under `secrets_store_secrets`.
  */
 
 /**
- * Generic helper to read a secret value by binding name.
+ * Reads a Secrets Store binding by name.
  *
- * Precedence:
- * 1. Secrets Store / Secret binding (async `.get()`)
- * 2. Plain env var (string) — local/dev fallback
+ * @param env - Worker env carrying the Secrets Store bindings
+ * @param binding - Binding name as declared in `wrangler.jsonc` (e.g. `CLOUDFLARE_ACCOUNT_ID`)
+ * @returns The secret value, or `undefined` when the binding is absent or is
+ *   not a Secrets Store binding (e.g. a plain string in local dev)
+ *
+ * @example
+ * ```typescript
+ * const token = await getSecretStoreBinding(env, "CLOUDFLARE_WRANGLER_API_TOKEN");
+ * ```
  */
-export async function getSecret(env: Env, key: string): Promise<string | undefined> {
-  const envVal = (env as Record<string, any>)[key];
-  if (envVal && typeof envVal?.get === "function") {
-    return await envVal.get();
+export async function getSecretStoreBinding(
+  env: Env,
+  binding: string,
+): Promise<string | undefined> {
+  const value = (env as Record<string, any>)[binding];
+  if (value && typeof value.get === "function") {
+    return await value.get();
   }
-  return envVal;
+  return undefined;
+}
+
+/**
+ * Reads a plain env var / `vars` entry by name (no Secrets Store round-trip).
+ *
+ * @param env - Worker env
+ * @param binding - Env var name
+ * @returns The string value, or `undefined` when unset or not a string
+ *
+ * @example
+ * ```typescript
+ * const accountId = getSecret(env, "CLOUDFLARE_ACCOUNT_ID");
+ * ```
+ */
+export function getSecret(env: Env, binding: string): string | undefined {
+  const value = (env as Record<string, any>)[binding];
+  return typeof value === "string" ? value : undefined;
 }
 
 /**
@@ -28,32 +56,23 @@ export async function getSecret(env: Env, key: string): Promise<string | undefin
  * signature verification).
  */
 export async function getWorkerApiKey(env: Env): Promise<string | undefined> {
-  if (env.WORKER_API_KEY) {
-    return typeof env.WORKER_API_KEY === "string"
-      ? env.WORKER_API_KEY
-      : await (env.WORKER_API_KEY as any).get();
-  }
-  return getSecret(env, "WORKER_API_KEY");
+  return (await getSecretStoreBinding(env, "WORKER_API_KEY")) ?? getSecret(env, "WORKER_API_KEY");
 }
 
 /** Fetch the Cloudflare API token (Wrangler / provisioning operations). */
 export async function getCloudflareApiToken(env: Env): Promise<string | undefined> {
-  if (env.CLOUDFLARE_WRANGLER_API_TOKEN) {
-    return typeof env.CLOUDFLARE_WRANGLER_API_TOKEN === "string"
-      ? env.CLOUDFLARE_WRANGLER_API_TOKEN
-      : await (env.CLOUDFLARE_WRANGLER_API_TOKEN as any).get();
-  }
-  return getSecret(env, "CLOUDFLARE_WRANGLER_API_TOKEN");
+  return (
+    (await getSecretStoreBinding(env, "CLOUDFLARE_WRANGLER_API_TOKEN")) ??
+    getSecret(env, "CLOUDFLARE_WRANGLER_API_TOKEN")
+  );
 }
 
 /** Fetch the Cloudflare account id. */
 export async function getCloudflareAccountId(env: Env): Promise<string | undefined> {
-  if (env.CLOUDFLARE_ACCOUNT_ID) {
-    return typeof env.CLOUDFLARE_ACCOUNT_ID === "string"
-      ? env.CLOUDFLARE_ACCOUNT_ID
-      : await (env.CLOUDFLARE_ACCOUNT_ID as any).get();
-  }
-  return getSecret(env, "CLOUDFLARE_ACCOUNT_ID");
+  return (
+    (await getSecretStoreBinding(env, "CLOUDFLARE_ACCOUNT_ID")) ??
+    getSecret(env, "CLOUDFLARE_ACCOUNT_ID")
+  );
 }
 
 /**
