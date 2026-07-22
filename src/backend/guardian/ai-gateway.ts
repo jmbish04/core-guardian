@@ -39,6 +39,15 @@ export type CreditBalance = {
  * @param env - Worker env
  * @returns Balance in account currency, payment method, and top-up config
  */
+/**
+ * The AI Gateway billing API returns every monetary amount in **cents**
+ * (`640.19` = $6.40, `5000` = $50.00, invoice line `5` = $0.05). We normalize
+ * to dollars at this boundary so the API, MCP, and frontend all speak dollars —
+ * rendering the raw cents is what made a $6.40 balance read as "$640". Per-token
+ * rate strings (`unit_amount_decimal`) are already dollars and are left alone.
+ */
+const centsToUsd = (n: number | null | undefined): number => (n ?? 0) / 100;
+
 export async function getCreditBalance(env: Env): Promise<CreditBalance> {
   const { result } = await cfApi<{
     balance: number;
@@ -55,15 +64,15 @@ export async function getCreditBalance(env: Env): Promise<CreditBalance> {
   }>(env, "/ai-gateway/billing/credit-balance");
 
   return {
-    balance: result.balance ?? 0,
+    balance: centsToUsd(result.balance),
     hasDefaultPaymentMethod: Boolean(result.has_default_payment_method),
     paymentMethod: {
       brand: result.payment_method?.brand ?? null,
       last4: result.payment_method?.last4 ?? null,
     },
     topupConfig: {
-      amount: result.topup_config?.amount ?? 0,
-      threshold: result.topup_config?.threshold ?? 0,
+      amount: centsToUsd(result.topup_config?.amount),
+      threshold: centsToUsd(result.topup_config?.threshold),
       disabledReason: result.topup_config?.disabledReason || null,
       error: result.topup_config?.error || null,
       lastFailedAt: result.topup_config?.lastFailedAt || null,
@@ -94,7 +103,7 @@ export async function getSpendingLimit(env: Env): Promise<SpendingLimit> {
 
   return {
     enabled: Boolean(result.enabled),
-    amount: result.config?.amount ?? 0,
+    amount: centsToUsd(result.config?.amount),
     duration: result.config?.duration ?? null,
     strategy: result.config?.strategy ?? null,
   };
@@ -129,7 +138,8 @@ export async function getUsageHistory(
 
   return (result.history ?? []).map((h) => ({
     id: h.id,
-    value: h.aggregated_value ?? 0,
+    // aggregated_value is a spend total — cents, like the rest of this API.
+    value: centsToUsd(h.aggregated_value),
     startTime: h.start_time,
     endTime: h.end_time,
   }));
@@ -180,9 +190,9 @@ export async function getInvoiceHistory(
     .map((i) => ({
       id: i.id ?? null,
       status: i.status ?? null,
-      amountDue: i.amount_due ?? 0,
-      amountPaid: i.amount_paid ?? 0,
-      amountRemaining: i.amount_remaining ?? 0,
+      amountDue: centsToUsd(i.amount_due),
+      amountPaid: centsToUsd(i.amount_paid),
+      amountRemaining: centsToUsd(i.amount_remaining),
       currency: i.currency ?? "usd",
       created: i.created ?? null,
       description: i.description ?? null,
@@ -226,8 +236,8 @@ export async function getInvoicePreview(env: Env): Promise<InvoicePreview> {
   }>(env, "/ai-gateway/billing/invoice-preview");
 
   return {
-    amountDue: result.amount_due ?? 0,
-    amountRemaining: result.amount_remaining ?? 0,
+    amountDue: centsToUsd(result.amount_due),
+    amountRemaining: centsToUsd(result.amount_remaining),
     currency: result.currency ?? "usd",
     status: result.status ?? null,
     periodStart: result.period_start ?? null,
@@ -235,7 +245,7 @@ export async function getInvoicePreview(env: Env): Promise<InvoicePreview> {
     lines: (result.invoice_lines ?? [])
       .map((l) => ({
         description: l.description,
-        amount: l.amount ?? 0,
+        amount: centsToUsd(l.amount),
         quantity: l.quantity ?? 0,
         unitAmount: l.pricing?.unit_amount_decimal ?? null,
       }))
@@ -247,21 +257,27 @@ export async function getInvoicePreview(env: Env): Promise<InvoicePreview> {
  * Sets the auto top-up threshold and amount.
  *
  * @param env - Worker env
- * @param amount - Top-up amount in cents (Cloudflare minimum 1000)
- * @param threshold - Balance in cents that triggers a top-up (minimum 500)
- * @returns The stored configuration
+ * @param amountDollars - Top-up amount in dollars (Cloudflare minimum $10)
+ * @param thresholdDollars - Balance in dollars that triggers a top-up (minimum $5)
+ * @returns The stored configuration, in dollars
  */
 export async function setTopupConfig(
   env: Env,
-  amount: number,
-  threshold: number,
+  amountDollars: number,
+  thresholdDollars: number,
 ): Promise<{ amount: number; threshold: number }> {
+  // Dollars in, dollars out — Cloudflare wants cents on the wire.
+  const amount = Math.round(amountDollars * 100);
+  const threshold = Math.round(thresholdDollars * 100);
   const { result } = await cfApi<{ amount: number; threshold: number }>(
     env,
     "/ai-gateway/billing/topup/config",
     { method: "POST", body: JSON.stringify({ amount, threshold }) },
   );
-  return { amount: result.amount ?? amount, threshold: result.threshold ?? threshold };
+  return {
+    amount: centsToUsd(result.amount ?? amount),
+    threshold: centsToUsd(result.threshold ?? threshold),
+  };
 }
 
 /**

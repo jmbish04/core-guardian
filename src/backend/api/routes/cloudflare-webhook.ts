@@ -293,6 +293,13 @@ alertingRouter.openapi(
     const secret = crypto.randomUUID().replaceAll("-", "");
     const receiverUrl = `${c.env.WORKER_BASE_URL}/api/webhooks/cloudflare`;
 
+    // Store the secret BEFORE creating the destination. Cloudflare sends a
+    // signed test request to the receiver *during* creation, and the receiver
+    // fails closed (503) until the secret exists — so storing it afterwards
+    // deadlocks: test → 503 → creation rejected → secret never stored. Roll the
+    // secret back if Cloudflare rejects the destination.
+    await c.env.SESSIONS.put(WEBHOOK_SECRET_KEY, secret);
+
     try {
       const { result } = await cfApi<{ id: string }>(c.env, "/alerting/v3/destinations/webhooks", {
         method: "POST",
@@ -302,10 +309,6 @@ alertingRouter.openapi(
           secret,
         }),
       });
-
-      // Store only after Cloudflare accepted it — otherwise the receiver would
-      // start trusting a secret nothing will ever send.
-      await c.env.SESSIONS.put(WEBHOOK_SECRET_KEY, secret);
 
       await getDb(c.env)
         .insert(billingEvents)
@@ -318,6 +321,9 @@ alertingRouter.openapi(
 
       return c.json({ destinationId: result.id, receiverUrl }, 200);
     } catch (err) {
+      // Creation rejected — undo the pre-stored secret so the receiver returns
+      // to fail-closed rather than trusting a secret nothing will send.
+      await c.env.SESSIONS.delete(WEBHOOK_SECRET_KEY);
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 502);
     }
   },

@@ -407,3 +407,47 @@ export async function listDataCatalogs(env: Env, buckets: string[]): Promise<Dat
   });
   return probed.filter((c): c is DataCatalog => c !== null);
 }
+
+export type VectorizeIndex = {
+  name: string;
+  description: string | null;
+  dimensions: number | null;
+  metric: string | null;
+  createdOn: string | null;
+  workers: { worker: string; binding: string }[];
+};
+
+/**
+ * Lists Vectorize (v2) indexes with their config and worker attribution.
+ *
+ * @param env - Worker env
+ * @returns Indexes sorted by name
+ *
+ * @remarks Mirrors {@link listR2Buckets}. The combobox in the emergency-drop
+ * control reads this so a runaway index is picked from the live account rather
+ * than typed by hand into a destructive call.
+ */
+export async function listVectorizeIndexes(env: Env): Promise<VectorizeIndex[]> {
+  const [{ result }, index] = await Promise.all([
+    cfApi<
+      {
+        name: string;
+        description?: string;
+        created_on?: string;
+        config?: { dimensions?: number; metric?: string };
+      }[]
+    >(env, "/vectorize/v2/indexes"),
+    getBindingIndex(env),
+  ]);
+
+  return (result ?? [])
+    .map((ix) => ({
+      name: ix.name,
+      description: ix.description ?? null,
+      dimensions: ix.config?.dimensions ?? null,
+      metric: ix.config?.metric ?? null,
+      createdOn: ix.created_on ?? null,
+      workers: attribution(index, `vectorize:${ix.name}`),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}

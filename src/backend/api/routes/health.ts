@@ -16,6 +16,8 @@ import { desc, eq } from "drizzle-orm";
 
 import { healthRuns, healthResults } from "@db/schemas";
 import { getDb } from "@/db";
+import { queryAccountAnalytics } from "@/backend/lib/cloudflare-graphql";
+import { cfApi, listR2Buckets } from "@/backend/guardian/resources";
 
 // ---------------------------------------------------------------------------
 // HealthCoordinator
@@ -47,7 +49,7 @@ const AGENT_BINDINGS: DOBindingDescriptor[] = [
 const PING_TIMEOUT_MS = 2000;
 
 type CheckResult = {
-  category: "database" | "ai" | "agents" | "binding";
+  category: "database" | "ai" | "agents" | "binding" | "api" | "google" | "providers";
   name: string;
   status: "ok" | "warn" | "fail" | "skipped" | "timeout";
   message?: string;
@@ -90,6 +92,9 @@ class HealthCoordinator {
     const checks = await Promise.all([
       this.checkD1(),
       this.checkWorkersAI(),
+      this.checkCloudflareRest(),
+      this.checkGraphQL(),
+      this.checkR2(),
       ...AGENT_BINDINGS.map((descriptor) => this.pingAgent(descriptor)),
     ]);
 
@@ -177,6 +182,80 @@ class HealthCoordinator {
         name: "workers_ai_binding",
         status: "fail",
         message: error instanceof Error ? error.message : "Unknown AI binding failure",
+        durationMs: Date.now() - start,
+      };
+    }
+  }
+
+  /** Cloudflare REST reachability + token validity (lists 1 worker script). */
+  private async checkCloudflareRest(): Promise<CheckResult> {
+    const start = Date.now();
+    try {
+      await cfApi<{ id: string }[]>(this.env, "/workers/scripts?per_page=1");
+      return {
+        category: "api",
+        name: "cloudflare_rest",
+        status: "ok",
+        message: "Cloudflare REST API reachable and token valid",
+        durationMs: Date.now() - start,
+      };
+    } catch (error) {
+      return {
+        category: "api",
+        name: "cloudflare_rest",
+        status: "fail",
+        message: error instanceof Error ? error.message : "Cloudflare REST unreachable",
+        durationMs: Date.now() - start,
+      };
+    }
+  }
+
+  /** GraphQL Analytics reachability (trivial account query). */
+  private async checkGraphQL(): Promise<CheckResult> {
+    const start = Date.now();
+    try {
+      await queryAccountAnalytics<{ __typename?: string }>(
+        this.env,
+        `query Ping($accountTag: string!) { viewer { accounts(filter: { accountTag: $accountTag }) { __typename } } }`,
+        {},
+      );
+      return {
+        category: "api",
+        name: "graphql_analytics",
+        status: "ok",
+        message: "GraphQL Analytics API responded",
+        durationMs: Date.now() - start,
+      };
+    } catch (error) {
+      return {
+        category: "api",
+        name: "graphql_analytics",
+        status: "fail",
+        message: error instanceof Error ? error.message : "GraphQL Analytics unreachable",
+        durationMs: Date.now() - start,
+      };
+    }
+  }
+
+  /** R2 access (lists buckets via the account API). */
+  private async checkR2(): Promise<CheckResult> {
+    const start = Date.now();
+    try {
+      const buckets = await listR2Buckets(this.env);
+      return {
+        category: "api",
+        name: "r2_access",
+        status: "ok",
+        message: `R2 reachable — ${buckets.length} buckets`,
+        details: { bucketCount: buckets.length },
+        durationMs: Date.now() - start,
+      };
+    } catch (error) {
+      return {
+        category: "api",
+        name: "r2_access",
+        status: "fail",
+        message: error instanceof Error ? error.message : "R2 unreachable",
         durationMs: Date.now() - start,
       };
     }

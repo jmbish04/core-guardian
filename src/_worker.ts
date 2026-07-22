@@ -49,8 +49,13 @@ import { SkillsAgent } from "./backend/ai/agents/SkillsAgent";
 import { ThinkingAgent } from "./backend/ai/agents/ThinkingAgent";
 import { WorkflowsAgent } from "./backend/ai/agents/WorkflowsAgent";
 import { app as honoApp } from "./backend/api/index";
+import { desc } from "drizzle-orm";
+
+import { getDb } from "./backend/db";
+import { scrapeRuns } from "./backend/db/schema";
 import { handleInboundEmail } from "./backend/email/inbound";
 import { evaluateUsage } from "./backend/guardian/collect";
+import { scrapeAllPricing } from "./backend/guardian/pricing-scrape";
 
 // Re-export Durable Object classes (Pattern B: the @astrojs/cloudflare adapter
 // re-exports these alongside the default handler so Cloudflare resolves every
@@ -86,6 +91,26 @@ async function runGuardianEvaluation(env: Env) {
   } catch (err) {
     console.error(JSON.stringify({ level: "ERROR", source: "guardian.cron", error: String(err) }));
   }
+  // Monthly: refresh the scraped pricing catalog. The cron is hourly, so gate on
+  // 30 days since the last scrape rather than adding a second cron trigger.
+  try {
+    await maybeScrapePricing(env);
+  } catch (err) {
+    console.error(JSON.stringify({ level: "ERROR", source: "guardian.pricing", error: String(err) }));
+  }
+}
+
+const THIRTY_DAYS_MS = 30 * 24 * 3_600_000;
+
+async function maybeScrapePricing(env: Env) {
+  const [latest] = await getDb(env)
+    .select({ ranAt: scrapeRuns.ranAt })
+    .from(scrapeRuns)
+    .orderBy(desc(scrapeRuns.ranAt))
+    .limit(1);
+  if (latest && Date.now() - latest.ranAt < THIRTY_DAYS_MS) return;
+  const { docs, revisions } = await scrapeAllPricing(env);
+  console.warn(JSON.stringify({ level: "INFO", source: "guardian.pricing", docs, revisions }));
 }
 
 /** True for paths the Hono API owns (REST + OpenAPI doc surfaces). */

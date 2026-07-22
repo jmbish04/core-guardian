@@ -14,6 +14,9 @@ import { getDb } from "@/backend/db";
 import { billingEvents, cronRuns, usageSnapshots } from "@/backend/db/schema";
 import { queryAccountAnalytics } from "@/backend/lib/cloudflare-graphql";
 
+import { evaluateAlerts } from "./alerts";
+import { getBindingIndex } from "./resources";
+
 import type { UsageGroup, UsageProbe } from "./probes";
 
 import { USAGE_PROBES } from "./probes";
@@ -139,6 +142,10 @@ export async function evaluateUsage(
   env: Env,
 ): Promise<{ readings: UsageReading[]; alerted: string[]; ruleOutcomes: RuleOutcome[] }> {
   const startedAt = Date.now();
+  // Rebuild the worker→resource binding index so the KV cache the /attribution
+  // route and name resolution read from is refreshed off the request path. The
+  // 183-worker fan-out belongs on the cron, never a page load. Non-fatal.
+  await getBindingIndex(env, true).catch(() => {});
   // One hour of data — matches the cron cadence and the analytics bucket size.
   const readings = await collectUsage(env, 1);
   const db = getDb(env);
@@ -174,6 +181,12 @@ export async function evaluateUsage(
   // Declarative rules run after the static probe thresholds; a rule bound to a
   // service overrides that probe's built-in threshold as the operator's intent.
   const ruleOutcomes = await evaluateRules(env, readings);
+
+  // Allowance-projection alerts — the actionable advisory surface. Non-fatal:
+  // a snapshot write matters more than an advisory.
+  await evaluateAlerts(env, readings, timestamp).catch((err) =>
+    console.warn(JSON.stringify({ level: "WARN", source: "guardian.alerts", error: String(err) })),
+  );
 
   const unavailable = readings.filter((r) => r.status === "unavailable");
 

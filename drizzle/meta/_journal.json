@@ -71,6 +71,34 @@
       "when": 1784488426221,
       "tag": "0009_breezy_pixie",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1784641390102,
+      "tag": "0010_polite_iron_monger",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1784642623943,
+      "tag": "0011_flaky_rhino",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1784644079753,
+      "tag": "0012_silky_medusa",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1784646709945,
+      "tag": "0013_worthless_korvac",
+      "breakpoints": true
     }
   ]
 }

@@ -305,6 +305,62 @@ export const USAGE_PROBES: UsageProbe[] = [
     alertThreshold: 86_400,
   },
 
+  // --- Requested products without an account-level metered dataset ----------
+  // These are declared so the panel shows them as "tracked, not metered"
+  // instead of silently omitting them. Each `note` records WHY there is no
+  // account-scoped number, so the gap is documented rather than mysterious.
+  {
+    id: "email-service",
+    label: "Email Service",
+    product: "Email",
+    bindings: ["(send_email)"],
+    // emailSendingAdaptiveGroups / emailRoutingAdaptive are ZONE-scoped
+    // (viewer.zones, $zoneTag) — the Guardian probe path is account-scoped
+    // (viewer.accounts), so this cannot be pulled here. Per-zone email volume
+    // would need a separate zone-analytics path.
+    unit: "not metered (zone-scoped)",
+    dataset: null,
+    selection: "",
+    value: () => 0,
+    alertThreshold: Number.POSITIVE_INFINITY,
+  },
+  {
+    id: "logpush",
+    label: "Logpush jobs",
+    product: "Logpush",
+    bindings: ["(account-wide)"],
+    // Logpush bills on delivered log volume, exported to R2. The meaningful
+    // signal is the R2 bucket the logs land in — see the Logpush triage
+    // (reads cloudflare-managed-6a40525f), not a usage-adaptive dataset.
+    unit: "not metered (see R2 triage)",
+    dataset: null,
+    selection: "",
+    value: () => 0,
+    alertThreshold: Number.POSITIVE_INFINITY,
+  },
+  {
+    id: "vpc",
+    label: "VPC services",
+    product: "VPC",
+    bindings: ["(account-wide)"],
+    unit: "not metered",
+    dataset: null,
+    selection: "",
+    value: () => 0,
+    alertThreshold: Number.POSITIVE_INFINITY,
+  },
+  {
+    id: "flagship",
+    label: "Flagship",
+    product: "Flagship",
+    bindings: ["(account-wide)"],
+    unit: "not metered",
+    dataset: null,
+    selection: "",
+    value: () => 0,
+    alertThreshold: Number.POSITIVE_INFINITY,
+  },
+
   // --- Bindings with no analytics dataset -----------------------------------
   {
     id: "assets",

@@ -26,6 +26,7 @@ import {
   listPipelines,
   listR2Buckets,
   listR2Objects,
+  listVectorizeIndexes,
 } from "@/backend/guardian/resources";
 
 export const storageRouter = new OpenAPIHono<{ Bindings: Env }>();
@@ -100,8 +101,17 @@ storageRouter.openapi(
               }),
               d1: z.object({ count: z.number(), totalBytes: z.number() }),
               kv: z.object({ count: z.number(), totalBytes: z.number().nullable() }),
-              catalogs: z.object({ count: z.number() }),
-              pipelines: z.object({ count: z.number() }),
+              catalogs: z.object({
+                count: z.number(),
+                // A Data Catalog is backed by an R2 bucket; its storage IS that
+                // bucket's size (cost derives from the R2 rate on /cost-basis).
+                totalBytes: z.number(),
+                items: z.array(z.object({ bucket: z.string(), sizeBytes: z.number() })),
+              }),
+              pipelines: z.object({
+                count: z.number(),
+                items: z.array(z.object({ name: z.string(), status: z.string().nullable() })),
+              }),
               top: z.object({
                 r2: z.array(z.object({ name: z.string(), sizeBytes: z.number() })),
                 d1: z.array(z.object({ name: z.string(), sizeBytes: z.number() })),
@@ -143,8 +153,22 @@ storageRouter.openapi(
         },
         // KV stored size is not exposed by any Cloudflare API.
         kv: { count: namespaces.length, totalBytes: null },
-        catalogs: { count: catalogs.length },
-        pipelines: { count: pipelines.length },
+        catalogs: (() => {
+          const sizeByBucket = new Map(buckets.map((b) => [b.name, b.sizeBytes]));
+          const items = catalogs.map((c) => ({
+            bucket: c.bucket,
+            sizeBytes: sizeByBucket.get(c.bucket) ?? 0,
+          }));
+          return {
+            count: catalogs.length,
+            totalBytes: items.reduce((s, i) => s + i.sizeBytes, 0),
+            items,
+          };
+        })(),
+        pipelines: {
+          count: pipelines.length,
+          items: pipelines.map((p) => ({ name: p.name, status: p.status })),
+        },
         top: {
           r2: buckets.slice(0, 5).map((b) => ({ name: b.name, sizeBytes: b.sizeBytes })),
           d1: databases.slice(0, 5).map((d) => ({ name: d.name, sizeBytes: d.sizeBytes })),
@@ -195,6 +219,41 @@ storageRouter.openapi(
     },
   }),
   async (c) => c.json({ buckets: await listR2Buckets(c.env) }, 200),
+);
+
+storageRouter.openapi(
+  createRoute({
+    method: "get",
+    path: "/vectorize",
+    operationId: "storageListVectorize",
+    summary: "Vectorize indexes with config and bound Workers",
+    responses: {
+      200: {
+        description: "Indexes, by name",
+        content: {
+          "application/json": {
+            schema: z.object({
+              indexes: z.array(
+                z.object({
+                  name: z.string(),
+                  description: z.string().nullable(),
+                  dimensions: z.number().nullable(),
+                  metric: z.string().nullable(),
+                  createdOn: z.string().nullable(),
+                  workers: workersSchema,
+                }),
+              ),
+            }),
+          },
+        },
+      },
+      401: {
+        description: "Unauthorized",
+        content: { "application/json": { schema: errorSchema } },
+      },
+    },
+  }),
+  async (c) => c.json({ indexes: await listVectorizeIndexes(c.env) }, 200),
 );
 
 storageRouter.openapi(

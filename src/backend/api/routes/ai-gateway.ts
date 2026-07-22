@@ -224,9 +224,9 @@ aiGatewayRouter.openapi(
         content: {
           "application/json": {
             schema: z.object({
-              // Cloudflare minimums: 1000 cents top-up, 500 cents threshold.
-              amount: z.number().int().min(1000),
-              threshold: z.number().int().min(500),
+              // Dollars. Cloudflare minimums: $10 top-up, $5 threshold.
+              amount: z.number().min(10),
+              threshold: z.number().min(5),
             }),
           },
         },
@@ -254,7 +254,7 @@ aiGatewayRouter.openapi(
       const stored = await setTopupConfig(c.env, amount, threshold);
       await audit(
         c.env,
-        `Set AI Gateway auto top-up: $${(stored.amount / 100).toFixed(2)} when balance falls below $${(stored.threshold / 100).toFixed(2)}`,
+        `Set AI Gateway auto top-up: $${stored.amount.toFixed(2)} when balance falls below $${stored.threshold.toFixed(2)}`,
       );
       return c.json(stored, 200);
     } catch (err) {
