@@ -52,9 +52,10 @@ import { app as honoApp } from "./backend/api/index";
 import { desc } from "drizzle-orm";
 
 import { getDb } from "./backend/db";
-import { scrapeRuns } from "./backend/db/schema";
+import { aiModelPricing, scrapeRuns } from "./backend/db/schema";
 import { handleInboundEmail } from "./backend/email/inbound";
 import { evaluateUsage } from "./backend/guardian/collect";
+import { scrapeAllModelPricing } from "./backend/guardian/ai-model-pricing";
 import { scrapeAllPricing } from "./backend/guardian/pricing-scrape";
 
 // Re-export Durable Object classes (Pattern B: the @astrojs/cloudflare adapter
@@ -91,16 +92,23 @@ async function runGuardianEvaluation(env: Env) {
   } catch (err) {
     console.error(JSON.stringify({ level: "ERROR", source: "guardian.cron", error: String(err) }));
   }
-  // Monthly: refresh the scraped pricing catalog. The cron is hourly, so gate on
-  // 30 days since the last scrape rather than adding a second cron trigger.
+  // Monthly: refresh the scraped Cloudflare pricing catalog. The cron is hourly,
+  // so gate on 30 days rather than adding a second cron trigger.
   try {
     await maybeScrapePricing(env);
   } catch (err) {
     console.error(JSON.stringify({ level: "ERROR", source: "guardian.pricing", error: String(err) }));
   }
+  // Weekly: refresh the multi-provider AI model-pricing catalog.
+  try {
+    await maybeScrapeModelPricing(env);
+  } catch (err) {
+    console.error(JSON.stringify({ level: "ERROR", source: "guardian.modelPricing", error: String(err) }));
+  }
 }
 
 const THIRTY_DAYS_MS = 30 * 24 * 3_600_000;
+const SEVEN_DAYS_MS = 7 * 24 * 3_600_000;
 
 async function maybeScrapePricing(env: Env) {
   const [latest] = await getDb(env)
@@ -111,6 +119,17 @@ async function maybeScrapePricing(env: Env) {
   if (latest && Date.now() - latest.ranAt < THIRTY_DAYS_MS) return;
   const { docs, revisions } = await scrapeAllPricing(env);
   console.warn(JSON.stringify({ level: "INFO", source: "guardian.pricing", docs, revisions }));
+}
+
+async function maybeScrapeModelPricing(env: Env) {
+  const [latest] = await getDb(env)
+    .select({ scrapedAt: aiModelPricing.scrapedAt })
+    .from(aiModelPricing)
+    .orderBy(desc(aiModelPricing.scrapedAt))
+    .limit(1);
+  if (latest && Date.now() - latest.scrapedAt < SEVEN_DAYS_MS) return;
+  const counts = await scrapeAllModelPricing(env);
+  console.warn(JSON.stringify({ level: "INFO", source: "guardian.modelPricing", counts }));
 }
 
 /** True for paths the Hono API owns (REST + OpenAPI doc surfaces). */

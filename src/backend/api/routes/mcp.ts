@@ -42,6 +42,7 @@ import {
   getUsageHistory,
   listGateways,
 } from "@/backend/guardian/ai-gateway";
+import { adviseModels, calculateCosts, latestModels } from "@/backend/guardian/ai-model-advisor";
 import { collectUsage } from "@/backend/guardian/collect";
 import {
   cfApi,
@@ -429,6 +430,76 @@ const TOOLS: McpTool[] = [
       await audit(env, "ai-gateway", "Disabled auto top-up");
       return { ok: true };
     },
+  },
+
+  // --- AI model catalog + advisory (for coding agents optimizing spend) -----
+  {
+    name: "ai_models_list",
+    title: "List AI models + pricing",
+    description:
+      "List AI models and per-million-token input/output pricing across providers (Anthropic, Google, OpenAI, Cloudflare Workers AI), refreshed weekly. Optionally filter by provider.",
+    inputSchema: schema({ provider: str("Filter to one provider: anthropic | google | openai | workers-ai.") }),
+    handler: async (env, args) => {
+      const rows = await latestModels(env);
+      const models = (args?.provider ? rows.filter((r) => r.provider === args.provider) : rows).map((r) => ({
+        provider: r.provider,
+        model: r.model,
+        apiModelName: r.apiModelName,
+        bestUsedFor: r.bestUsedFor,
+        inputPricePerMillion: r.inputPricePerMillion,
+        outputPricePerMillion: r.outputPricePerMillion,
+      }));
+      return { models };
+    },
+  },
+  {
+    name: "ai_models_advise",
+    title: "Advise: cheapest capable model",
+    description:
+      "Recommend the top-3 cheapest-capable AI models for a use case. Provide the use case, expected frequency, and estimated input/output tokens per call; a Workers AI model weighs the whole live pricing catalog against the request and returns the best-value picks. Use this to pick the cheapest model that can do the job.",
+    inputSchema: schema(
+      {
+        useCase: str("What the model must do (e.g. 'summarize legal docs', 'classify tickets')."),
+        frequency: str("How often it runs (e.g. '100k/day')."),
+        inputTokens: num("Estimated input tokens per call."),
+        outputTokens: num("Estimated output tokens per call."),
+      },
+      ["useCase"],
+    ),
+    handler: async (env, args) =>
+      adviseModels(env, {
+        useCase: String(args?.useCase ?? ""),
+        frequency: args?.frequency,
+        inputTokens: args?.inputTokens,
+        outputTokens: args?.outputTokens,
+      }),
+  },
+  {
+    name: "ai_models_cost",
+    title: "Calculate AI usage cost",
+    description:
+      "Calculate AI usage cost for an array of scenarios. Each scenario is {provider?, model, inputTokens, outputTokens, at?} where `at` is a Unix ms timestamp — the price in effect at that time is used (pricing drifts within a month). Returns per-line cost and the total USD.",
+    inputSchema: schema(
+      {
+        scenarios: {
+          type: "array",
+          description: "Usage scenarios to price.",
+          items: {
+            type: "object",
+            properties: {
+              provider: str("Optional provider to disambiguate."),
+              model: str("api_model_name or display name."),
+              inputTokens: num("Input tokens used."),
+              outputTokens: num("Output tokens used."),
+              at: num("Unix ms of usage (defaults to now)."),
+            },
+            required: ["model", "inputTokens", "outputTokens"],
+          },
+        },
+      },
+      ["scenarios"],
+    ),
+    handler: async (env, args) => calculateCosts(env, args?.scenarios ?? []),
   },
 ];
 
