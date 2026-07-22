@@ -13,6 +13,7 @@ import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 
 import { guardianAuth } from "@/backend/api/routes/guardian";
 import { adviseModels, calculateCosts, latestModels } from "@/backend/guardian/ai-model-advisor";
+import { pricingHistory } from "@/backend/guardian/ai-gateway-costs";
 import {
   PRICING_CACHE_KEY,
   scrapeAllModelPricing,
@@ -222,6 +223,70 @@ aiModelsRouter.openapi(
     },
   }),
   async (c) => c.json(await calculateCosts(c.env, c.req.valid("json").scenarios), 200),
+);
+
+// POST /api/ai-models/pricing-history — advertised (scraped) vs actual (gateway)
+aiModelsRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/pricing-history",
+    operationId: "aiModelsPricingHistory",
+    summary: "Pricing for models over a date range: advertised (scraped) and/or actual (AI Gateway)",
+    description:
+      "Given model names and a date range, returns what each provider ADVERTISED (from our scraped pricing catalog captured in that window) and/or what Cloudflare's AI Gateway ACTUALLY recorded charging (from the snapshotted gateway costs). `source` defaults to both; set 'scraped' or 'gateway' to narrow. Example: query Gemini over 2026-07-31…2026-08-04 to see advertised-vs-actual.",
+    request: {
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              models: z.array(z.string()).default([]),
+              start: z.number(),
+              end: z.number(),
+              source: z.enum(["both", "scraped", "gateway"]).optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "Pricing history from the requested source(s)",
+        content: {
+          "application/json": {
+            schema: z.object({
+              scraped: z.array(
+                z.object({
+                  provider: z.string(),
+                  model: z.string(),
+                  apiModelName: z.string(),
+                  inputPricePerMillion: z.number().nullable(),
+                  outputPricePerMillion: z.number().nullable(),
+                  scrapedAt: z.number(),
+                }),
+              ),
+              gateway: z.array(
+                z.object({
+                  provider: z.string(),
+                  model: z.string(),
+                  gateway: z.string(),
+                  requests: z.number(),
+                  costUsd: z.number(),
+                  tokensIn: z.number(),
+                  tokensOut: z.number(),
+                  effectivePerMillion: z.number().nullable(),
+                }),
+              ),
+            }),
+          },
+        },
+      },
+      401: { description: "Unauthorized", content: { "application/json": { schema: errorResponseSchema } } },
+    },
+  }),
+  async (c) => {
+    const { models, start, end, source } = c.req.valid("json");
+    return c.json(await pricingHistory(c.env, models, start, end, source ?? "both"), 200);
+  },
 );
 
 export { PRICING_CACHE_KEY };

@@ -166,6 +166,28 @@ export const CHANGELOG: ChangeEntry[] = [
     ],
   },
 
+  {
+    id: "0270-ai-gateway-costs-and-crud",
+    title: "AI Gateway actual-cost tracking, drift check + gateway CRUD",
+    status: "shipped",
+    size: "L",
+    phase: "P8",
+    date: "2026-07-22",
+    version: "0270ship",
+    depends: ["0260-ai-model-pricing-catalog"],
+    summary:
+      "The AI Gateway API has no third-party price catalog, but its analytics DO record what Cloudflare actually charged per model. A daily cron snapshots that into D1 (permanent history), a drift check compares it against our scraped list prices, the pricing-history query returns advertised-vs-actual over a date range, and full gateway CRUD lets coding agents manage gateways.",
+    scope: [
+      "D1 ai_gateway_costs (deterministic PK, daily cron snapshot of aiGatewayRequestsAdaptiveGroups — 508 rows live; GraphQL only retains ~31d, D1 keeps forever)",
+      "GET /api/ai-gateway-admin/costs + drift; POST /snapshot — mirrored MCP ai_gateway_actual_costs / ai_gateway_price_drift",
+      "POST /api/ai-models/pricing-history + MCP ai_models_pricing_history: advertised (scraped) vs actual (gateway) over a date range, source=both|scraped|gateway",
+      "Drift is third-party-only (Workers AI @cf bills by neurons, not the catalog token price — comparing bases is apples-to-oranges). Verified: gemini scraped ≈ actual (within 10%), validating the scrape",
+      "Advisor now blends observedGatewayPerM (real paid $/1M) so consultations reflect actual cost + fluctuation",
+      "AI Gateway CRUD (API + MCP: list/get/create/update/delete) — update sends the FULL merged config so a PUT never resets unspecified settings; verified list=20, get, update-preserves-config, create errors correctly at the account's 20-gateway max",
+      "Chosen ingestion: daily cron over GraphQL analytics (no Enterprise Logpush needed); Logpush stays the future per-request upgrade",
+    ],
+  },
+
   // ---- Proposed backlog -------------------------------------------------
   {
     id: "0100-auto-topup-modal",

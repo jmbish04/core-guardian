@@ -52,10 +52,11 @@ import { app as honoApp } from "./backend/api/index";
 import { desc } from "drizzle-orm";
 
 import { getDb } from "./backend/db";
-import { aiModelPricing, scrapeRuns } from "./backend/db/schema";
+import { aiGatewayCosts, aiModelPricing, scrapeRuns } from "./backend/db/schema";
 import { handleInboundEmail } from "./backend/email/inbound";
 import { evaluateUsage } from "./backend/guardian/collect";
 import { scrapeAllModelPricing } from "./backend/guardian/ai-model-pricing";
+import { snapshotGatewayCosts } from "./backend/guardian/ai-gateway-costs";
 import { scrapeAllPricing } from "./backend/guardian/pricing-scrape";
 
 // Re-export Durable Object classes (Pattern B: the @astrojs/cloudflare adapter
@@ -105,6 +106,13 @@ async function runGuardianEvaluation(env: Env) {
   } catch (err) {
     console.error(JSON.stringify({ level: "ERROR", source: "guardian.modelPricing", error: String(err) }));
   }
+  // Daily: snapshot AI Gateway per-model actual cost into D1 (GraphQL retains
+  // only ~31 days; D1 keeps permanent history). Idempotent upsert, safe hourly.
+  try {
+    await maybeSnapshotGatewayCosts(env);
+  } catch (err) {
+    console.error(JSON.stringify({ level: "ERROR", source: "guardian.gatewayCosts", error: String(err) }));
+  }
 }
 
 const THIRTY_DAYS_MS = 30 * 24 * 3_600_000;
@@ -130,6 +138,19 @@ async function maybeScrapeModelPricing(env: Env) {
   if (latest && Date.now() - latest.scrapedAt < SEVEN_DAYS_MS) return;
   const counts = await scrapeAllModelPricing(env);
   console.warn(JSON.stringify({ level: "INFO", source: "guardian.modelPricing", counts }));
+}
+
+const ONE_DAY_MS = 24 * 3_600_000;
+
+async function maybeSnapshotGatewayCosts(env: Env) {
+  const [latest] = await getDb(env)
+    .select({ capturedAt: aiGatewayCosts.capturedAt })
+    .from(aiGatewayCosts)
+    .orderBy(desc(aiGatewayCosts.capturedAt))
+    .limit(1);
+  if (latest && Date.now() - latest.capturedAt < ONE_DAY_MS) return;
+  const rows = await snapshotGatewayCosts(env, 3);
+  console.warn(JSON.stringify({ level: "INFO", source: "guardian.gatewayCosts", rows }));
 }
 
 /** True for paths the Hono API owns (REST + OpenAPI doc surfaces). */
