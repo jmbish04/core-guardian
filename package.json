@@ -50,6 +50,7 @@
     "@shikijs/langs": "^4.3.1",
     "@shikijs/themes": "^4.3.1",
     "@tailwindcss/vite": "^4.3.3",
+    "@zumer/snapdom": "^2.18.0",
     "agents": "0.17.4",
     "ai": "^7.0.31",
     "assistant-stream": "^0.3.26",
