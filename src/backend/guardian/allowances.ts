@@ -30,17 +30,34 @@
 /** How the included allowance resets. */
 export type ResetPeriod = "monthly" | "daily";
 
+/** The account's Workers plan. Governs which allowance + reset apply and how an
+ *  over-allowance projection is framed (paid = billable overage; free = hard cap). */
+export type WorkersPlan = "free" | "paid";
+
 export type Allowance = {
   /** Probe id this allowance grounds (matches USAGE_PROBES). */
   probeId: string;
   /** Included quantity on the Workers Paid plan, expressed in `unit`. */
   paidIncluded: number;
-  /** Included quantity on the Workers Free plan (reference only). */
+  /** Included quantity on the Workers Free plan. */
   freeIncluded: number;
   /** Unit the allowance is expressed in. MUST match the probe's measured unit
    *  when `comparable` is true. */
   unit: string;
+  /** Reset period on the PAID plan. */
   reset: ResetPeriod;
+  /** Reset period on the FREE plan when it differs (free tiers are often daily
+   *  where paid is monthly). Falls back to `reset` when unset. */
+  freeReset?: ResetPeriod;
+  /**
+   * Platform overage price on the Paid plan: `overageUsd` per `overagePer`
+   * units over the included allowance. Set ONLY where the rate is known with
+   * confidence (from the Workers/KV/R2 pricing page or a verified rate) — left
+   * unset otherwise so we never invent a number. When unset, alert cost falls
+   * back to the scraped pricing catalog.
+   */
+  overageUsd?: number;
+  overagePer?: number;
   /**
    * True when the probe's measured value can be divided by `paidIncluded` to
    * get a meaningful fraction. False when the probe measures a different
@@ -76,7 +93,10 @@ export const ALLOWANCES: Record<string, Allowance> = {
     freeIncluded: 5_000_000, // 5M rows read / day
     unit: "rows read",
     reset: "monthly",
+    freeReset: "daily",
     comparable: true,
+    overageUsd: 0.001, // $0.001 per 1M rows read
+    overagePer: 1_000_000,
     docUrl: "https://developers.cloudflare.com/d1/platform/pricing/",
   },
   "r2-storage": {
@@ -87,6 +107,8 @@ export const ALLOWANCES: Record<string, Allowance> = {
     reset: "monthly",
     comparable: true,
     cumulative: false, // a stored level, not a flow — use the latest reading
+    overageUsd: 0.015, // $0.015 per GB-month
+    overagePer: 1024 ** 3,
     docUrl: "https://developers.cloudflare.com/r2/pricing/",
   },
   "r2-operations": {
@@ -105,11 +127,14 @@ export const ALLOWANCES: Record<string, Allowance> = {
   },
   workers: {
     probeId: "workers",
-    paidIncluded: 10_000_000, // 10M requests / month
-    freeIncluded: 3_000_000, // 100k/day ≈ 3M/mo
+    paidIncluded: 10_000_000, // 10M requests / month (paid); free is 100k/DAY
+    freeIncluded: 100_000, // 100k requests / DAY on free
     unit: "requests",
     reset: "monthly",
+    freeReset: "daily",
     comparable: true,
+    overageUsd: 0.3, // $0.30 per 1M requests
+    overagePer: 1_000_000,
     docUrl: "https://www.cloudflare.com/plans/developer-platform/",
   },
   kv: {
@@ -167,6 +192,8 @@ export const ALLOWANCES: Record<string, Allowance> = {
     unit: "neurons",
     reset: "daily",
     comparable: true,
+    overageUsd: 0.011, // $0.011 per 1,000 neurons
+    overagePer: 1_000,
     note: "Resets DAILY, not monthly — the only metered probe that does. Project against end-of-day, not month-end.",
     docUrl: "https://developers.cloudflare.com/workers-ai/platform/pricing/",
   },
@@ -204,6 +231,25 @@ export const ALLOWANCES: Record<string, Allowance> = {
   // Cloudflare-included allowance. Its budget lives in the AI Gateway billing
   // spending-limit API, not this table.
 };
+
+/** The included allowance for a plan. */
+export function includedFor(a: Allowance, plan: WorkersPlan): number {
+  return plan === "free" ? a.freeIncluded : a.paidIncluded;
+}
+
+/** The reset period for a plan (free tiers are often daily where paid is monthly). */
+export function resetFor(a: Allowance, plan: WorkersPlan): ResetPeriod {
+  return plan === "free" ? (a.freeReset ?? a.reset) : a.reset;
+}
+
+/**
+ * Platform overage cost in USD for `overageUnits` over the included allowance,
+ * or null when the rate isn't known (never invented).
+ */
+export function overageCostUsd(a: Allowance, overageUnits: number): number | null {
+  if (a.overageUsd === undefined || a.overagePer === undefined || overageUnits <= 0) return null;
+  return (overageUnits / a.overagePer) * a.overageUsd;
+}
 
 /** Epoch ms at the start of the current billing period. */
 export function periodStart(now: number, reset: ResetPeriod): number {

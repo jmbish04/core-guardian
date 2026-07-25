@@ -52,6 +52,7 @@ import {
 import { driftCheck, pricingHistory, queryGatewayCosts } from "@/backend/guardian/ai-gateway-costs";
 import { adviseModels, calculateCosts, latestModels } from "@/backend/guardian/ai-model-advisor";
 import { collectUsage } from "@/backend/guardian/collect";
+import { getWorkersPlan, setWorkersPlan } from "@/backend/guardian/plan";
 import {
   cfApi,
   listD1Databases,
@@ -437,6 +438,29 @@ const TOOLS: McpTool[] = [
       await cfApi(env, "/ai-gateway/billing/topup/config", { method: "DELETE" });
       await audit(env, "ai-gateway", "Disabled auto top-up");
       return { ok: true };
+    },
+  },
+
+  // --- Plan awareness -----------------------------------------------------
+  {
+    name: "guardian_get_plan",
+    title: "Get the Workers plan",
+    description:
+      "The configured Workers plan (free | paid). On paid, exceeding an included allowance is billable overage (a cost signal); on free it's a hard cap (service degrades). Governs how alerts are graded.",
+    inputSchema: schema(),
+    handler: async (env) => ({ plan: await getWorkersPlan(env) }),
+  },
+  {
+    name: "guardian_set_plan",
+    title: "Set the Workers plan",
+    description: "Set the account's Workers plan to 'free' or 'paid'. Changes how allowance alerts are framed and graded.",
+    destructive: true,
+    inputSchema: schema({ plan: str("free | paid.") }, ["plan"]),
+    handler: async (env, args) => {
+      const plan = args.plan === "free" ? "free" : "paid";
+      await setWorkersPlan(env, plan);
+      await audit(env, "guardian", `Set Workers plan to ${plan}`);
+      return { plan };
     },
   },
 

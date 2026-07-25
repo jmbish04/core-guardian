@@ -42,7 +42,15 @@ import {
   usageSnapshots,
 } from "@/backend/db/schema";
 import { executeActionItem } from "@/backend/guardian/action-items";
-import { ALLOWANCES, allowanceStatus, periodElapsed, periodStart } from "@/backend/guardian/allowances";
+import {
+  ALLOWANCES,
+  includedFor,
+  overageCostUsd,
+  periodElapsed,
+  periodStart,
+  resetFor,
+} from "@/backend/guardian/allowances";
+import { getWorkersPlan, setWorkersPlan } from "@/backend/guardian/plan";
 import { collectUsage, evaluateUsage, type UsageReading } from "@/backend/guardian/collect";
 import { archiveD1Database } from "@/backend/guardian/d1-archive";
 import { archiveImages } from "@/backend/guardian/cf-image-archive";
@@ -432,6 +440,49 @@ guardianRouter.openapi(
 );
 
 // ---------------------------------------------------------------------------
+// GET/PUT /api/guardian/plan  — the account's Workers plan (free | paid)
+// ---------------------------------------------------------------------------
+
+guardianRouter.openapi(
+  createRoute({
+    method: "get",
+    path: "/plan",
+    operationId: "guardianGetPlan",
+    summary: "The configured Workers plan (governs allowance framing: paid=overage, free=cap)",
+    responses: {
+      200: { description: "Plan", content: { "application/json": { schema: z.object({ plan: z.enum(["free", "paid"]) }) } } },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => c.json({ plan: await getWorkersPlan(c.env) }, 200),
+);
+
+guardianRouter.openapi(
+  createRoute({
+    method: "put",
+    path: "/plan",
+    operationId: "guardianSetPlan",
+    summary: "Set the account's Workers plan (free | paid)",
+    request: { body: { content: { "application/json": { schema: z.object({ plan: z.enum(["free", "paid"]) }) } } } },
+    responses: {
+      200: { description: "Updated", content: { "application/json": { schema: z.object({ plan: z.enum(["free", "paid"]) }) } } },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => {
+    const { plan } = c.req.valid("json");
+    await setWorkersPlan(c.env, plan);
+    return c.json({ plan }, 200);
+  },
+);
+
+// ---------------------------------------------------------------------------
 // GET /api/guardian/allowances  — billing period + per-binding used/remaining
 // ---------------------------------------------------------------------------
 
@@ -449,6 +500,7 @@ guardianRouter.openapi(
         content: {
           "application/json": {
             schema: z.object({
+              plan: z.enum(["free", "paid"]),
               period: z.object({
                 monthStart: z.number(),
                 elapsedFraction: z.number(),
@@ -458,11 +510,13 @@ guardianRouter.openapi(
                   service: z.string(),
                   unit: z.string(),
                   comparable: z.boolean(),
+                  reset: z.enum(["monthly", "daily"]),
                   included: z.number(),
                   usedSoFar: z.number(),
                   projected: z.number(),
                   projectedFraction: z.number().nullable(),
                   remaining: z.number().nullable(),
+                  overageCostUsd: z.number().nullable(),
                   note: z.string().optional(),
                 }),
               ),
@@ -484,10 +538,13 @@ guardianRouter.openapi(
     try {
     const now = Date.now();
     const db = getDb(c.env);
+    const plan = await getWorkersPlan(c.env);
 
     const rows = [];
     for (const [service, a] of Object.entries(ALLOWANCES)) {
-      const start = periodStart(now, a.reset);
+      const included = includedFor(a, plan);
+      const reset = resetFor(a, plan);
+      const start = periodStart(now, reset);
       const cumulative = a.cumulative !== false;
       let usedSoFar = 0;
       if (cumulative) {
@@ -507,19 +564,20 @@ guardianRouter.openapi(
         usedSoFar = latest?.value ?? 0;
       }
 
-      const status = allowanceStatus(service, usedSoFar, now);
-      if (!status) continue;
-      const projected = cumulative ? status.projected : usedSoFar;
-      const projectedFraction = a.comparable ? (cumulative ? status.projectedFraction : usedSoFar / a.paidIncluded) : null;
+      const projected = cumulative ? usedSoFar / Math.max(0.01, periodElapsed(now, reset)) : usedSoFar;
+      const projectedFraction = a.comparable ? projected / included : null;
+      const overageUnits = Math.max(0, projected - included);
       rows.push({
         service,
         unit: a.unit,
         comparable: a.comparable,
-        included: a.paidIncluded,
+        reset,
+        included,
         usedSoFar,
         projected,
         projectedFraction,
-        remaining: a.comparable ? Math.max(0, a.paidIncluded - projected) : null,
+        remaining: a.comparable ? Math.max(0, included - projected) : null,
+        overageCostUsd: overageCostUsd(a, overageUnits),
         note: a.note,
       });
     }
@@ -527,6 +585,7 @@ guardianRouter.openapi(
 
     return c.json(
       {
+        plan,
         period: { monthStart: periodStart(now, "monthly"), elapsedFraction: periodElapsed(now, "monthly") },
         allowances: rows,
       },

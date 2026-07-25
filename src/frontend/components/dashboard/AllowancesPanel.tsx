@@ -24,14 +24,20 @@ type Allowance = {
   service: string;
   unit: string;
   comparable: boolean;
+  reset: "monthly" | "daily";
   included: number;
   usedSoFar: number;
   projected: number;
   projectedFraction: number | null;
   remaining: number | null;
+  overageCostUsd: number | null;
   note?: string;
 };
-type Payload = { period: { monthStart: number; elapsedFraction: number }; allowances: Allowance[] };
+type Payload = {
+  plan: "free" | "paid";
+  period: { monthStart: number; elapsedFraction: number };
+  allowances: Allowance[];
+};
 
 const PANEL = "rounded-xl border border-border/60 bg-background/40 p-6";
 
@@ -81,10 +87,22 @@ export function AllowancesPanel({ service }: { service?: string }) {
   return (
     <section className="flex flex-col gap-4">
       {!service && (
-        <div className="flex items-baseline justify-between">
-          <h2 className="text-2xl font-semibold tracking-tight">Included allowances</h2>
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <h2 className="text-2xl font-semibold tracking-tight">Included allowances</h2>
+            <span
+              className={`rounded-full px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.15em] ${
+                data.plan === "paid"
+                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                  : "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+              }`}
+            >
+              {data.plan} plan
+            </span>
+          </div>
           <span className="font-mono text-xs text-muted-foreground">
-            billing month · {Math.round(data.period.elapsedFraction * 100)}% elapsed
+            {data.plan === "paid" ? "over allowance = billable overage" : "over allowance = hard cap"} ·{" "}
+            {Math.round(data.period.elapsedFraction * 100)}% of month elapsed
           </span>
         </div>
       )}
@@ -104,10 +122,9 @@ export function AllowancesPanel({ service }: { service?: string }) {
               tone={toneForFraction(a.projectedFraction ?? 0)}
               facts={[
                 { label: "Projected", value: fmt(a.unit, a.projected) },
-                {
-                  label: "Remaining",
-                  value: a.remaining !== null ? fmt(a.unit, a.remaining) : "—",
-                },
+                a.overageCostUsd !== null && a.overageCostUsd > 0
+                  ? { label: data.plan === "paid" ? "Est. overage" : "Over cap by", value: `$${a.overageCostUsd.toFixed(2)}` }
+                  : { label: "Remaining", value: a.remaining !== null ? fmt(a.unit, a.remaining) : "—" },
                 { label: "Of allowance", value: `${pct}%` },
               ]}
             />
