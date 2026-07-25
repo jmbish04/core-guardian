@@ -188,6 +188,27 @@ export const CHANGELOG: ChangeEntry[] = [
     ],
   },
 
+  {
+    id: "0280-plan-aware-alerts",
+    title: "Free vs Paid plan awareness — overage cost, not cap panic",
+    status: "shipped",
+    size: "M",
+    phase: "P3",
+    date: "2026-07-24",
+    version: "0280ship",
+    depends: ["0130-actionable-alerts"],
+    summary:
+      "On a Paid Workers account, exceeding an included allowance is billable overage — not a hard cap — so alerts should grade by projected cost, not raw percent. Added a plan setting (default paid), platform overage rates, and cost-based severity that stops small overages screaming 'critical'.",
+    scope: [
+      "Plan setting (free | paid, default paid); GET/PUT /api/guardian/plan + MCP guardian_get_plan/set_plan; stored in KV",
+      "Allowance now carries plan-aware includedFor/resetFor (free tiers are often daily where paid is monthly) + known platform overage rates (d1 $0.001/1M rows, r2 $0.015/GB-mo, workers $0.30/1M, workers-ai $0.011/1k neurons)",
+      "Paid severity is COST-based: <$0.50 no alert, <$5 info, <$50 warning, ≥$50 critical. Free severity stays cap-based (fraction to 100%)",
+      "Alert copy reframed: paid = 'billable overage ~$X, expected, not a cap'; free = 'hard cap, service throttles at 100%'",
+      "/allowances + AllowancesPanel show the plan badge + est. overage cost per binding",
+      "Verified live: the two false criticals (r2-storage $0.45, workers-ai) cleared → 1 real warning (workers-ai ~$31/day billable overage); self-check on paid vs free severity bands",
+    ],
+  },
+
   // ---- Proposed backlog -------------------------------------------------
   {
     id: "0100-auto-topup-modal",

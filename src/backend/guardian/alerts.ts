@@ -20,15 +20,49 @@ import { and, gte, sql } from "drizzle-orm";
 import { getDb } from "@/backend/db";
 import { alerts, pricingRevisions, usageSnapshots } from "@/backend/db/schema";
 
-import { allowanceStatus, periodStart, ALLOWANCES } from "./allowances";
+import {
+  includedFor,
+  overageCostUsd,
+  periodElapsed,
+  periodStart,
+  resetFor,
+  ALLOWANCES,
+} from "./allowances";
+import { getWorkersPlan } from "./plan";
 import type { UsageReading } from "./collect";
 import { getBindingIndex } from "./resources";
 
-/** Bands on the projected fraction of the included allowance. */
-function severityFor(fraction: number): "info" | "warning" | "critical" | null {
+type Severity = "info" | "warning" | "critical";
+
+/**
+ * On the FREE plan, exceeding an included allowance means hitting a HARD CAP
+ * (the service degrades/stops), so severity tracks how close to the cap the
+ * projection is.
+ */
+function freeSeverity(fraction: number): Severity | null {
   if (fraction >= 1.0) return "critical";
   if (fraction >= 0.8) return "warning";
   if (fraction >= 0.6) return "info";
+  return null;
+}
+
+/**
+ * On the PAID plan, exceeding an included allowance is BILLABLE OVERAGE, not a
+ * cap — so severity tracks the projected overage COST, not the raw percent. A
+ * $0.45 overage is informational; a large monthly overage is what deserves
+ * attention. When the overage cost is unknown we fall back to the fraction but
+ * never escalate past "warning" without a dollar basis.
+ */
+function paidSeverity(overageUsd: number | null, fraction: number): Severity | null {
+  if (overageUsd !== null) {
+    if (overageUsd >= 50) return "critical";
+    if (overageUsd >= 5) return "warning";
+    if (overageUsd >= 0.5) return "info";
+    return null; // projected overage under 50¢ — not worth an alert on paid
+  }
+  // No cost basis: only surface a genuine, sustained overshoot, capped at warning.
+  if (fraction >= 1.5) return "warning";
+  if (fraction >= 1.0) return "info";
   return null;
 }
 
@@ -109,6 +143,7 @@ export async function evaluateAlerts(env: Env, readings: UsageReading[], now: nu
   });
 
   const index = await getBindingIndex(env).catch(() => null);
+  const plan = await getWorkersPlan(env); // "paid" by default
 
   let raised = 0;
   const activeIds = new Set<string>();
@@ -118,7 +153,10 @@ export async function evaluateAlerts(env: Env, readings: UsageReading[], now: nu
     if (!allowance || !allowance.comparable) continue; // non-comparable → no fabricated percent
     if (reading.status !== "ok") continue;
 
-    const start = periodStart(now, allowance.reset);
+    // Plan-aware: which included allowance + reset period apply.
+    const included = includedFor(allowance, plan);
+    const reset = resetFor(allowance, plan);
+    const start = periodStart(now, reset);
     const isCumulative = allowance.cumulative !== false;
 
     // Flow metrics (rows read, requests) accumulate → SUM the hourly snapshots
@@ -133,18 +171,28 @@ export async function evaluateAlerts(env: Env, readings: UsageReading[], now: nu
         .where(
           and(gte(usageSnapshots.timestamp, start), sql`${usageSnapshots.service} = ${reading.id}`),
         );
-      const status = allowanceStatus(reading.id, total ?? 0, now);
-      if (!status || status.projectedFraction === null) continue;
-      projected = status.projected;
-      projectedFraction = status.projectedFraction;
+      const elapsed = periodElapsed(now, reset);
+      projected = (total ?? 0) / Math.max(0.01, elapsed);
+      projectedFraction = projected / included;
     } else {
       // Latest snapshot is the current stored level; the live reading is fresher.
       const level = reading.value;
       projected = level;
-      projectedFraction = level / allowance.paidIncluded;
+      projectedFraction = level / included;
     }
 
-    const severity = severityFor(projectedFraction);
+    const overageUnits = Math.max(0, projected - included);
+    // Overage cost: prefer the deterministic platform rate on the allowance
+    // (correct units), fall back to the scraped catalog. Bytes → GB for scraped.
+    const overageForScraped = allowance.unit.includes("bytes") ? overageUnits / 1024 ** 3 : overageUnits;
+    const scrapedUnit = allowance.unit.includes("bytes") ? "GB stored" : allowance.unit;
+    const estCostDelta =
+      overageCostUsd(allowance, overageUnits) ??
+      priceOverage(rates, reading.id, scrapedUnit, overageForScraped);
+
+    // Severity depends on the plan: paid = cost of overage, free = closeness to cap.
+    const severity =
+      plan === "free" ? freeSeverity(projectedFraction) : paidSeverity(estCostDelta, projectedFraction);
     if (!severity) continue;
 
     // Name the worst resource + its worker where a breakdown exists.
@@ -166,26 +214,22 @@ export async function evaluateAlerts(env: Env, readings: UsageReading[], now: nu
     }
 
     const pct = Math.round(projectedFraction * 100);
-    const overageUnits = Math.max(0, projected - allowance.paidIncluded);
-    // Unit alignment: the scraped rate is per GB for storage, but the allowance
-    // (and thus the overage) is in bytes. Convert before pricing, else a 32 GB
-    // overage prices as if it were 32 billion GB.
-    const overageForPricing = allowance.unit.includes("bytes")
-      ? overageUnits / 1024 ** 3
-      : overageUnits;
-    // Price against the GB unit when the allowance is bytes, so the rate-metric
-    // keyword match ("GB") lines up.
-    const pricingUnit = allowance.unit.includes("bytes") ? "GB stored" : allowance.unit;
-    const estCostDelta = priceOverage(rates, reading.id, pricingUnit, overageForPricing);
+    const per = reset === "daily" ? "day" : "mo";
+    const costStr = estCostDelta !== null ? `$${estCostDelta.toFixed(2)}` : null;
 
     const cause =
-      `Projected to reach ${pct}% of the ${allowance.paidIncluded.toLocaleString()} ${allowance.unit}/` +
-      `${allowance.reset === "daily" ? "day" : "mo"} included allowance` +
-      (resource !== "(account)" ? `; ${resource} is the top consumer.` : ".");
+      plan === "paid"
+        ? `Projected to ${pct}% of the ${included.toLocaleString()} ${allowance.unit}/${per} included allowance` +
+          (costStr ? ` — ~${costStr} in billable overage this ${per === "day" ? "day" : "month"}` : "") +
+          (resource !== "(account)" ? `; ${resource} is the top consumer.` : ".")
+        : `Projected to ${pct}% of the FREE ${included.toLocaleString()} ${allowance.unit}/${per} cap` +
+          (resource !== "(account)" ? `; ${resource} is the top consumer.` : ".");
     const recommendation =
-      severity === "critical"
-        ? `Projected overage${estCostDelta ? ` ≈ $${estCostDelta.toFixed(2)}` : ""}. Inspect ${resource}${worker ? ` (worker ${worker})` : ""} and cut usage or raise the plan.`
-        : `Trending toward the allowance. Watch ${resource}${worker ? ` (worker ${worker})` : ""}; no action needed yet.`;
+      plan === "free"
+        ? `Free-plan cap — at 100% the service is throttled/stops. Cut ${resource}${worker ? ` (worker ${worker})` : ""} or upgrade to Workers Paid.`
+        : severity === "critical"
+          ? `Sizable projected overage${costStr ? ` (~${costStr})` : ""}. Inspect ${resource}${worker ? ` (worker ${worker})` : ""} and cut usage if the spend isn't intended.`
+          : `Billable overage${costStr ? ` (~${costStr})` : ""} on your Paid plan — expected, not a cap. Watch ${resource}${worker ? ` (worker ${worker})` : ""}.`;
 
     const id = alertId(reading.id, resource);
     activeIds.add(id);
@@ -248,10 +292,17 @@ if (import.meta.main) {
   const eq = (a: unknown, b: unknown, m: string) => {
     if (a !== b) throw new Error(`${m}: got ${a}, want ${b}`);
   };
-  eq(severityFor(1.55), "critical", "155% is critical");
-  eq(severityFor(0.85), "warning", "85% is warning");
-  eq(severityFor(0.65), "info", "65% is info");
-  eq(severityFor(0.4), null, "40% raises nothing");
+  // Free plan: fraction-based (hard cap).
+  eq(freeSeverity(1.55), "critical", "free 155% is critical");
+  eq(freeSeverity(0.85), "warning", "free 85% is warning");
+  eq(freeSeverity(0.65), "info", "free 65% is info");
+  eq(freeSeverity(0.4), null, "free 40% raises nothing");
+  // Paid plan: cost-based (billable overage). A tiny overage is not a crisis.
+  eq(paidSeverity(0.45, 3.99), null, "paid $0.45 overage → no alert");
+  eq(paidSeverity(2, 3.99), "info", "paid $2 overage → info");
+  eq(paidSeverity(20, 5), "warning", "paid $20 overage → warning");
+  eq(paidSeverity(120, 5), "critical", "paid $120 overage → critical");
+  eq(paidSeverity(null, 2.0), "warning", "paid no-cost 200% → capped at warning");
   eq(alertId("d1", "core-remodel"), "d1::core-remodel", "stable id");
 
   const rates = [
