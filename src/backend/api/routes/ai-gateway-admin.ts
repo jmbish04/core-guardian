@@ -16,6 +16,7 @@ import {
   createGateway,
   deleteGateway,
   getGateway,
+  getGatewayLogs,
   listGateways,
   updateGateway,
 } from "@/backend/guardian/ai-gateway-admin";
@@ -149,6 +150,60 @@ aiGatewayAdminRouter.openapi(
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : "Delete failed." }, 500);
     }
+  },
+);
+
+// ---- Request logs (trace external / non-worker AI usage) -------------------
+
+aiGatewayAdminRouter.openapi(
+  createRoute({
+    method: "get",
+    path: "/gateways/{id}/logs",
+    operationId: "aiGatewayLogs",
+    summary: "Recent request logs for a gateway — prompt, user-agent, location, metadata, cost",
+    description:
+      "The way to trace AI usage that isn't attributable to a worker (e.g. a local script hitting the REST API): each log carries the prompt, the caller's user-agent and geo location, any custom metadata (tag your source via the cf-aig-metadata header), plus model/tokens/cost. Requires the gateway to have log collection on and traffic routed through it.",
+    request: {
+      params: z.object({ id: z.string() }),
+      query: z.object({ perPage: z.coerce.number().int().min(1).max(100).optional() }),
+    },
+    responses: {
+      200: {
+        description: "Recent logs, newest first",
+        content: {
+          "application/json": {
+            schema: z.object({
+              logs: z.array(
+                z.object({
+                  id: z.string(),
+                  createdAt: z.string(),
+                  provider: z.string(),
+                  model: z.string(),
+                  requestType: z.string(),
+                  success: z.boolean(),
+                  cached: z.boolean(),
+                  statusCode: z.number().nullable(),
+                  durationMs: z.number().nullable(),
+                  tokensIn: z.number(),
+                  tokensOut: z.number(),
+                  cost: z.number(),
+                  userAgent: z.string().nullable(),
+                  location: z.string().nullable(),
+                  metadata: z.record(z.string(), z.unknown()).nullable(),
+                  prompt: z.string().nullable(),
+                }),
+              ),
+            }),
+          },
+        },
+      },
+      401: unauthorized,
+    },
+  }),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const { perPage } = c.req.valid("query");
+    return c.json({ logs: await getGatewayLogs(c.env, id, perPage ?? 50) }, 200);
   },
 );
 

@@ -209,6 +209,26 @@ export const CHANGELOG: ChangeEntry[] = [
     ],
   },
 
+  {
+    id: "0290-ai-gateway-logs-tracing",
+    title: "AI Gateway logs — trace non-worker / external AI usage",
+    status: "shipped",
+    size: "M",
+    phase: "P8",
+    date: "2026-07-25",
+    version: "0290ship",
+    depends: ["0270-ai-gateway-costs-and-crud"],
+    summary:
+      "Direct Workers AI calls (a worker's env.AI.run without a gateway, or a local script hitting the REST API) are anonymous in analytics. Gateway request logs are the only place to trace them — they carry the prompt, the caller's user-agent + geo location, and custom metadata. Exposed as API + MCP.",
+    scope: [
+      "getGatewayLogs + GET /api/ai-gateway-admin/gateways/{id}/logs + MCP ai_gateway_logs",
+      "Per-request: model, provider, tokens, cost, success, user-agent, location, metadata, prompt (truncated)",
+      "Verified live: user-agent fingerprints the source — cloudflare-worker vs Agents/JavaScript vs google-genai-sdk (an external Node script)",
+      "Finding: the untraced ~$32/day gpt-oss is DIRECT (no gateway) → invisible until routed through one; the fix is to mandate a gateway for all Workers AI so every call is logged with its origin",
+      "Prompt capture requires the gateway's request-body logging to be enabled; metadata tagging via the cf-aig-metadata header is the reliable source label",
+    ],
+  },
+
   // ---- Proposed backlog -------------------------------------------------
   {
     id: "0100-auto-topup-modal",
