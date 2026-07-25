@@ -7,6 +7,7 @@
  */
 import BaseLayout from "@/layouts/BaseLayout.astro";
 import { StorageDashboard } from "@/components/storage";
+import { CostTraceIsland } from "@/components/dashboard";
 ---
 
 <BaseLayout
@@ -27,5 +28,7 @@ import { StorageDashboard } from "@/components/storage";
     </header>
 
     <StorageDashboard client:load />
+
+    <CostTraceIsland scope="attribution" client:visible />
   </main>
 </BaseLayout>
