@@ -46,6 +46,7 @@ import {
   createGateway,
   deleteGateway,
   getGateway,
+  getGatewayLogs,
   listGateways as listGatewaysAdmin,
   updateGateway,
 } from "@/backend/guardian/ai-gateway-admin";
@@ -585,6 +586,18 @@ const TOOLS: McpTool[] = [
     handler: async (env, args) => ({
       findings: await driftCheck(env, args.start, args.end, args?.thresholdPct ?? 10),
     }),
+  },
+
+  {
+    name: "ai_gateway_logs",
+    title: "Trace AI usage via gateway logs",
+    description:
+      "Recent request logs for a gateway — each carries the PROMPT, the caller's user-agent + geo location, custom metadata, model, tokens and cost. This is how you trace AI usage that has no worker (e.g. a local script hitting the REST API): match by prompt content, user-agent, IP/location, or a metadata tag. Requires the traffic to run through the gateway with logging on.",
+    inputSchema: schema(
+      { id: str("Gateway id."), perPage: num("Max logs (1-100). Default 50.") },
+      ["id"],
+    ),
+    handler: async (env, args) => ({ logs: await getGatewayLogs(env, args.id, args?.perPage ?? 50) }),
   },
 
   // --- AI Gateway CRUD (manage gateways) ----------------------------------

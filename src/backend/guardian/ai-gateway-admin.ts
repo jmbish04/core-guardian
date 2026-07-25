@@ -94,3 +94,83 @@ export async function updateGateway(env: Env, id: string, patch: Partial<Gateway
 export async function deleteGateway(env: Env, id: string): Promise<void> {
   await cfApi(env, `/ai-gateway/gateways/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
+
+/**
+ * One AI Gateway request log — the ONLY place to trace who/what made a call
+ * that didn't originate from an attributable worker (e.g. a local script hitting
+ * the REST API). Carries the prompt, the caller's user-agent + location, and any
+ * custom metadata, so external/direct usage can be traced by content or origin.
+ */
+export type GatewayLog = {
+  id: string;
+  createdAt: string;
+  provider: string;
+  model: string;
+  requestType: string;
+  success: boolean;
+  cached: boolean;
+  statusCode: number | null;
+  durationMs: number | null;
+  tokensIn: number;
+  tokensOut: number;
+  cost: number;
+  /** Caller's user-agent — a clue for external (non-worker) traffic. */
+  userAgent: string | null;
+  /** Caller geo/location — another origin clue. */
+  location: string | null;
+  /** Custom metadata attached via the cf-aig-metadata header (tag your source!). */
+  metadata: Record<string, unknown> | null;
+  /** The prompt(s), truncated — trace by content when origin is unknown. */
+  prompt: string | null;
+};
+
+function truncate(v: unknown, n = 500): string | null {
+  if (v === null || v === undefined) return null;
+  const s = typeof v === "string" ? v : JSON.stringify(v);
+  return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+/** Format the geo `location` object into a readable "city, region, country". */
+function formatLocation(loc: unknown): string | null {
+  if (!loc) return null;
+  if (typeof loc === "string") return loc;
+  if (typeof loc === "object") {
+    const o = loc as Record<string, unknown>;
+    const parts = [o.city, o.region, o.country].filter((x) => typeof x === "string");
+    return parts.length ? parts.join(", ") : truncate(o, 80);
+  }
+  return String(loc);
+}
+
+/**
+ * Fetch recent request logs for a gateway. `search` filters by prompt/metadata
+ * substring server-side where supported; otherwise it's applied client-side.
+ */
+export async function getGatewayLogs(
+  env: Env,
+  gatewayId: string,
+  perPage = 50,
+): Promise<GatewayLog[]> {
+  const { result } = await cfApi<any[]>(
+    env,
+    `/ai-gateway/gateways/${encodeURIComponent(gatewayId)}/logs?per_page=${Math.min(perPage, 100)}`,
+  );
+  return (result ?? []).map((r) => ({
+    id: r.id,
+    createdAt: r.created_at,
+    provider: r.provider,
+    model: r.model,
+    requestType: r.request_type,
+    success: Boolean(r.success),
+    cached: Boolean(r.cached),
+    statusCode: r.status_code ?? null,
+    durationMs: r.duration ?? null,
+    tokensIn: r.tokens_in ?? 0,
+    tokensOut: r.tokens_out ?? 0,
+    cost: r.cost ?? 0,
+    userAgent: r.user_agent ?? null,
+    location: formatLocation(r.location),
+    metadata: r.metadata ?? null,
+    prompt: truncate(r.prompts ?? r.request),
+  }));
+}
