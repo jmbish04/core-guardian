@@ -7,7 +7,7 @@
  * Gateway). Thin shell over the generic <WorkerSpendMonitor> island.
  */
 import BaseLayout from "@/layouts/BaseLayout.astro";
-import { WorkerSpendMonitor } from "@/components/dashboard";
+import { CostTraceIsland, WorkerSpendMonitor } from "@/components/dashboard";
 ---
 
 <BaseLayout
@@ -22,5 +22,6 @@ import { WorkerSpendMonitor } from "@/components/dashboard";
       ← Core Guardian
     </a>
     <WorkerSpendMonitor worker="codra" gateway="codra" title="Codra (code review)" client:load />
+    <CostTraceIsland scope="worker" worker="codra" client:visible />
   </main>
 </BaseLayout>

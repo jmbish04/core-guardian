@@ -6,7 +6,7 @@
  * service (d1/r2/kv/vectorize/queue), `id` the specific resource name or id.
  */
 import BaseLayout from "@/layouts/BaseLayout.astro";
-import { BindingDetail } from "@/components/dashboard";
+import { BindingDetail, CostTraceIsland } from "@/components/dashboard";
 
 const { type, id } = Astro.params;
 if (!type || !id) return Astro.redirect("/dashboard/guardian");
@@ -21,5 +21,6 @@ if (!type || !id) return Astro.redirect("/dashboard/guardian");
       ← Core Guardian
     </a>
     <BindingDetail type={type} id={id} client:load />
+    <CostTraceIsland scope="binding" bindingType={type} bindingId={id} client:visible />
   </main>
 </BaseLayout>

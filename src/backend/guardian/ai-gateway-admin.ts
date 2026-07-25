@@ -136,7 +136,9 @@ function formatLocation(loc: unknown): string | null {
   if (typeof loc === "string") return loc;
   if (typeof loc === "object") {
     const o = loc as Record<string, unknown>;
-    const parts = [o.city, o.region, o.country].filter((x) => typeof x === "string");
+    // Real logs carry either caller geo {city,region,country} (external/local
+    // scripts) or the CF datacenter {region,colo} (worker traffic) — surface both.
+    const parts = [o.city, o.region, o.country, o.colo].filter((x) => typeof x === "string");
     return parts.length ? parts.join(", ") : truncate(o, 80);
   }
   return String(loc);
