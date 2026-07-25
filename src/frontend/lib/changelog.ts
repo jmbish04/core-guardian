@@ -228,6 +228,25 @@ export const CHANGELOG: ChangeEntry[] = [
       "Prompt capture requires the gateway's request-body logging to be enabled; metadata tagging via the cf-aig-metadata header is the reliable source label",
     ],
   },
+  {
+    id: "0300-cost-trace-mind-map",
+    title: "Cost-trace mind map + default-gateway rebuilt for tracking/gating",
+    status: "shipped",
+    size: "M",
+    phase: "P4",
+    date: "2026-07-25",
+    version: "0300ship",
+    depends: ["0280-plan-aware-alerts", "0290-ai-gateway-logs-tracing"],
+    summary:
+      "Global mind-map component (mindmapcn / Mind Elixir) usable on any Guardian page, plus a CostTraceIsland that lays out the billables trace — Account → category → binding with USD and a red surge flag — so the whole spend relationship reads at a glance. default-gateway was recreated and tuned for tracking + gating.",
+    scope: [
+      "components/ui/mindmap.tsx (global) + CostTraceMap + pure buildCostTraceData transform (self-checked)",
+      "CostTraceIsland pulls /api/guardian/allowances, groups bindings into Compute/Storage/AI/Messaging, flags projected surges red; on the guardian page",
+      "getGatewayLogs.formatLocation now surfaces the CF datacenter colo too; cf-aig-metadata confirmed landing in the mapped metadata field against a live log",
+      "default-gateway recreated via API: collect_logs on, 10M-row retention w/ DELETE_OLDEST, sliding 1000 req/min runaway breaker, cache off for accurate cost attribution",
+      "Extension point: per-worker attribution + AI-Gateway per-model breakdown nest under the same recursive CostNode tree once P1 lands",
+    ],
+  },
 
   // ---- Proposed backlog -------------------------------------------------
   {
