@@ -54,6 +54,7 @@ import { driftCheck, pricingHistory, queryGatewayCosts } from "@/backend/guardia
 import { adviseModels, calculateCosts, latestModels } from "@/backend/guardian/ai-model-advisor";
 import { collectUsage } from "@/backend/guardian/collect";
 import { getWorkersPlan, setWorkersPlan } from "@/backend/guardian/plan";
+import { listUsageRegistrations, registerDirectUsage } from "@/backend/guardian/register-usage";
 import {
   cfApi,
   listD1Databases,
@@ -588,6 +589,67 @@ const TOOLS: McpTool[] = [
     }),
   },
 
+  {
+    name: "ai_usage_register",
+    title: "Register direct-to-provider AI usage",
+    description:
+      "Manually record AI usage that never ran through an AI Gateway or Workers AI — e.g. a provider API that Cloudflare can't proxy (the Gemini interactions API). The usage lands in the same actual-cost store the gateway snapshot feeds, so cost queries, drift checks, and pricing history include it. Cost is auto-priced from the scraped catalog when costUsd is omitted (returns priced:'unmatched' if the model isn't in the catalog). Repeated calls for the same day/provider/model accumulate.",
+    destructive: true,
+    inputSchema: schema(
+      {
+        worker: str("Originating worker or application — where this usage came from (required, for tracing)."),
+        provider: str("Upstream provider (e.g. google-ai-studio, openai, anthropic)."),
+        model: str("Model id as billed (e.g. gemini-2.0-flash)."),
+        tokensIn: num("Input tokens. Default 0."),
+        tokensOut: num("Output tokens (excluding thinking). Default 0."),
+        tokensThinking: num("Reasoning/thinking tokens, incl. interim thought images (e.g. Gemini). Billed at the output rate. Default 0."),
+        requests: num("Number of requests in this batch. Default 1."),
+        costUsd: num("Explicit USD cost. Omit to price from the scraped catalog."),
+        gateway: str("Synthetic gateway tag for grouping. Default 'direct'."),
+        at: num("Unix ms the usage occurred. Default now (set to backfill a past day)."),
+        operationId: str("Optional operation/request id for correlation."),
+        taskDescription: str("Optional description of what the usage was for."),
+      },
+      ["worker", "provider", "model"],
+    ),
+    handler: async (env, args) => {
+      const result = await registerDirectUsage(env, {
+        worker: args.worker,
+        provider: args.provider,
+        model: args.model,
+        tokensIn: args?.tokensIn,
+        tokensOut: args?.tokensOut,
+        tokensThinking: args?.tokensThinking,
+        requests: args?.requests,
+        costUsd: args?.costUsd,
+        gateway: args?.gateway,
+        at: args?.at,
+        operationId: args?.operationId,
+        taskDescription: args?.taskDescription,
+      });
+      return result;
+    },
+  },
+  {
+    name: "ai_usage_registrations",
+    title: "Trace registered direct AI usage",
+    description:
+      "Read the append-only trace log of manually-registered AI usage (calls that bypassed AI Gateway), newest first. Each row carries the originating worker/application, optional operation id + task description, provider, model, tokens, and cost — so you can trace where direct-to-provider AI spend came from. Optionally filter by worker, provider, or model.",
+    inputSchema: schema({
+      worker: str("Filter to one originating worker/application."),
+      provider: str("Filter to one provider."),
+      model: str("Filter to one model."),
+      limit: num("Max rows. Default 100."),
+    }),
+    handler: async (env, args) => ({
+      registrations: await listUsageRegistrations(env, {
+        worker: args?.worker,
+        provider: args?.provider,
+        model: args?.model,
+        limit: args?.limit,
+      }),
+    }),
+  },
   {
     name: "ai_gateway_logs",
     title: "Trace AI usage via gateway logs",

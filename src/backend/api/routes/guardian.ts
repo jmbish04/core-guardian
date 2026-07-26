@@ -51,6 +51,7 @@ import {
   resetFor,
 } from "@/backend/guardian/allowances";
 import { getWorkersPlan, setWorkersPlan } from "@/backend/guardian/plan";
+import { listUsageRegistrations, registerDirectUsage } from "@/backend/guardian/register-usage";
 import { collectUsage, evaluateUsage, type UsageReading } from "@/backend/guardian/collect";
 import { archiveD1Database } from "@/backend/guardian/d1-archive";
 import { archiveImages } from "@/backend/guardian/cf-image-archive";
@@ -480,6 +481,108 @@ guardianRouter.openapi(
     await setWorkersPlan(c.env, plan);
     return c.json({ plan }, 200);
   },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/guardian/usage/register — record direct-to-provider AI usage that
+// never touched an AI Gateway (e.g. the Gemini interactions API).
+// ---------------------------------------------------------------------------
+
+guardianRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/usage/register",
+    operationId: "guardianRegisterUsage",
+    summary: "Register AI usage that bypassed AI Gateway / Workers AI",
+    description:
+      "Manually record AI usage sent straight to a provider Cloudflare can't proxy, so it lands in the same actual-cost store the gateway snapshot feeds. Cost is auto-priced from the scraped catalog when costUsd is omitted (priced:'unmatched' when the model isn't in the catalog). Repeated calls for the same day/provider/model accumulate.",
+    request: {
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              worker: z.string().min(1),
+              provider: z.string().min(1),
+              model: z.string().min(1),
+              tokensIn: z.number().nonnegative().optional(),
+              tokensOut: z.number().nonnegative().optional(),
+              tokensThinking: z.number().nonnegative().optional(),
+              requests: z.number().int().positive().optional(),
+              costUsd: z.number().nonnegative().optional(),
+              gateway: z.string().min(1).optional(),
+              at: z.number().int().positive().optional(),
+              operationId: z.string().min(1).optional(),
+              taskDescription: z.string().min(1).optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "The accumulated cost row and how it was priced",
+        content: {
+          "application/json": {
+            schema: z.object({
+              registrationId: z.string(),
+              id: z.string(),
+              day: z.string(),
+              worker: z.string(),
+              gateway: z.string(),
+              provider: z.string(),
+              model: z.string(),
+              requests: z.number(),
+              costUsd: z.number(),
+              tokensIn: z.number(),
+              tokensOut: z.number(),
+              tokensThinking: z.number(),
+              priced: z.enum(["explicit", "scraped", "unmatched"]),
+            }),
+          },
+        },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => c.json(await registerDirectUsage(c.env, c.req.valid("json")), 200),
+);
+
+// GET /api/guardian/usage/registrations — trace log of registered direct usage
+guardianRouter.openapi(
+  createRoute({
+    method: "get",
+    path: "/usage/registrations",
+    operationId: "guardianListUsageRegistrations",
+    summary: "Trace log of registered direct-to-provider AI usage",
+    description:
+      "The append-only registration trace, newest first — each row carries the originating worker/application, optional operation id + task description, and the priced cost. Optionally filter by worker, provider, or model.",
+    request: {
+      query: z.object({
+        worker: z.string().min(1).optional(),
+        provider: z.string().min(1).optional(),
+        model: z.string().min(1).optional(),
+        limit: z.coerce.number().int().min(1).max(1000).optional(),
+      }),
+    },
+    responses: {
+      200: {
+        description: "Registration rows, newest first",
+        content: {
+          "application/json": {
+            schema: z.object({ registrations: z.array(z.record(z.string(), z.unknown())) }),
+          },
+        },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => c.json({ registrations: await listUsageRegistrations(c.env, c.req.valid("query")) }, 200),
 );
 
 // ---------------------------------------------------------------------------
