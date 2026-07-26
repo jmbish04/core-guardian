@@ -113,6 +113,13 @@
       "when": 1784752805255,
       "tag": "0015_sparkling_sleeper",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1785077977166,
+      "tag": "0016_slim_karma",
+      "breakpoints": true
     }
   ]
 }
