@@ -10,6 +10,7 @@ CREATE TABLE `ai_usage_registrations` (
 	`cost_usd` real DEFAULT 0 NOT NULL,
 	`tokens_in` real DEFAULT 0 NOT NULL,
 	`tokens_out` real DEFAULT 0 NOT NULL,
+	`tokens_thinking` real DEFAULT 0 NOT NULL,
 	`priced` text NOT NULL,
 	`cost_row_id` text NOT NULL,
 	`at` integer NOT NULL,

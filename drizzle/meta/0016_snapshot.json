@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "0f3db84b-8868-4ee1-8a13-53df7c6ade26",
+  "id": "8648a866-1399-407f-9a1a-009a6d9ddaa9",
   "prevId": "4bf1ad37-8ee4-4301-aad7-58586794fd65",
   "tables": {
     "global_config": {
@@ -991,6 +991,14 @@
         },
         "tokens_out": {
           "name": "tokens_out",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "tokens_thinking": {
+          "name": "tokens_thinking",
           "type": "real",
           "primaryKey": false,
           "notNull": true,

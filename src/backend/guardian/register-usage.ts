@@ -39,6 +39,12 @@ export type RegisterUsageInput = {
   model: string;
   tokensIn?: number;
   tokensOut?: number;
+  /**
+   * Reasoning/thinking tokens (incl. Gemini interim thought images). Billed at
+   * the output rate — priced as output and folded into tokensOut in the
+   * ai_gateway_costs roll-up; kept broken out in the trace log.
+   */
+  tokensThinking?: number;
   requests?: number;
   /** Explicit USD cost. Omit to price from the scraped catalog. */
   costUsd?: number;
@@ -65,7 +71,10 @@ export type RegisterUsageResult = {
   requests: number;
   costUsd: number;
   tokensIn: number;
+  /** Output tokens as the roll-up stores them: caller output + thinking. */
   tokensOut: number;
+  /** Thinking tokens broken out (already included in tokensOut). */
+  tokensThinking: number;
   /** "explicit" (cost given), "scraped" (priced from catalog), or "unmatched". */
   priced: "explicit" | "scraped" | "unmatched";
 };
@@ -110,7 +119,12 @@ export async function registerDirectUsage(
   const gateway = input.gateway?.trim() || "direct";
   const requests = input.requests ?? 1;
   const tokensIn = input.tokensIn ?? 0;
-  const tokensOut = input.tokensOut ?? 0;
+  const tokensOutRaw = input.tokensOut ?? 0;
+  const tokensThinking = input.tokensThinking ?? 0;
+  // Thinking tokens bill at the output rate, so the roll-up's output side is
+  // caller output + thinking (matches how the gateway lumps them). The trace
+  // log keeps the raw split.
+  const tokensOut = tokensOutRaw + tokensThinking;
   const { day, dayStart } = dayBucket(at);
 
   let costUsd = input.costUsd;
@@ -169,7 +183,8 @@ export async function registerDirectUsage(
       requests,
       costUsd,
       tokensIn,
-      tokensOut,
+      tokensOut: tokensOutRaw,
+      tokensThinking,
       priced,
       costRowId: id,
       at,
@@ -197,6 +212,7 @@ export async function registerDirectUsage(
     costUsd: row.costUsd,
     tokensIn: row.tokensIn,
     tokensOut: row.tokensOut,
+    tokensThinking,
     priced,
   };
 }
