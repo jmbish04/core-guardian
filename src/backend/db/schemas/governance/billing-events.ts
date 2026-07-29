@@ -8,7 +8,7 @@
  * @see {@link file://src/backend/api/routes/guardian.ts} for the writers.
  */
 
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { createInsertSchema, createSelectSchema } from "drizzle-zod";
 
 // ---------------------------------------------------------------------------
@@ -29,14 +29,22 @@ export const BILLING_EVENTS_COLUMN_DESCRIPTIONS: Record<string, string> = {
 // Table definition
 // ---------------------------------------------------------------------------
 
-export const billingEvents = sqliteTable("billing_events", {
-  id: text("id").primaryKey(),
-  service: text("service").notNull(),
-  actionTaken: text("action_taken").notNull(),
-  timestamp: integer("timestamp")
-    .notNull()
-    .$defaultFn(() => Date.now()),
-});
+export const billingEvents = sqliteTable(
+  "billing_events",
+  {
+    id: text("id").primaryKey(),
+    service: text("service").notNull(),
+    actionTaken: text("action_taken").notNull(),
+    timestamp: integer("timestamp")
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (t) => [
+    // The audit-log route and the guardian_events MCP tool both `ORDER BY
+    // timestamp DESC LIMIT n` — a full scan + sort without this index.
+    index("idx_billing_events_ts").on(t.timestamp),
+  ],
+);
 
 // ---------------------------------------------------------------------------
 // Zod schemas & types

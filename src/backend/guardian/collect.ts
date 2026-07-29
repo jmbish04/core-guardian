@@ -14,12 +14,11 @@ import { getDb } from "@/backend/db";
 import { billingEvents, cronRuns, usageSnapshots } from "@/backend/db/schema";
 import { queryAccountAnalytics } from "@/backend/lib/cloudflare-graphql";
 
-import { evaluateAlerts } from "./alerts";
-import { getBindingIndex } from "./resources";
-
 import type { UsageGroup, UsageProbe } from "./probes";
 
+import { evaluateAlerts } from "./alerts";
 import { USAGE_PROBES } from "./probes";
+import { getBindingIndex } from "./resources";
 import { evaluateRules, type RuleOutcome } from "./rules";
 
 /** One probe's reading over the requested window. */
@@ -126,7 +125,24 @@ export async function collectUsage(env: Env, hours = 24): Promise<UsageReading[]
   // the buckets rather than slicing one in half.
   start.setUTCMinutes(0, 0, 0);
   end.setUTCMinutes(0, 0, 0);
+  return await collectUsageWindow(env, start, end);
+}
 
+/**
+ * Collects usage for every probe over an explicit [start, end) window. Unlike
+ * {@link collectUsage} (a trailing window from now), this prices a specific
+ * past day — the daily cost rollup passes a UTC day boundary so each reading's
+ * `value` and `breakdown` are that day's totals.
+ *
+ * @param env - Worker env
+ * @param start - window start (aligned to the hour by the caller)
+ * @param end - window end
+ */
+export async function collectUsageWindow(
+  env: Env,
+  start: Date,
+  end: Date,
+): Promise<UsageReading[]> {
   return await Promise.all(
     USAGE_PROBES.map((probe) => runProbe(env, probe, start.toISOString(), end.toISOString())),
   );

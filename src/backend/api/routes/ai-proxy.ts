@@ -13,6 +13,7 @@ import {
   breakGlass,
   getBudgetStatus,
   proxyCall,
+  proxyWorkersAi,
   setBudgetCap,
 } from "@/backend/guardian/ai-proxy";
 
@@ -38,8 +39,14 @@ aiProxyRouter.openapi(
     operationId: "aiBudgetStatus",
     summary: "AI spend budget + circuit-breaker status (monthly rolling)",
     responses: {
-      200: { description: "Budget status", content: { "application/json": { schema: budgetSchema } } },
-      401: { description: "Unauthorized", content: { "application/json": { schema: errorResponseSchema } } },
+      200: {
+        description: "Budget status",
+        content: { "application/json": { schema: budgetSchema } },
+      },
+      401: {
+        description: "Unauthorized",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
     },
   }),
   async (c) => c.json(await getBudgetStatus(c.env, Date.now()), 200),
@@ -57,7 +64,10 @@ aiProxyRouter.openapi(
     },
     responses: {
       200: { description: "Updated", content: { "application/json": { schema: budgetSchema } } },
-      401: { description: "Unauthorized", content: { "application/json": { schema: errorResponseSchema } } },
+      401: {
+        description: "Unauthorized",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
     },
   }),
   async (c) => {
@@ -74,16 +84,101 @@ aiProxyRouter.openapi(
     operationId: "aiBudgetBreakGlass",
     summary: "Temporarily allow spend past the cap for N hours",
     request: {
-      body: { content: { "application/json": { schema: z.object({ hours: z.number().min(1).max(168) }) } } },
+      body: {
+        content: {
+          "application/json": { schema: z.object({ hours: z.number().min(1).max(168) }) },
+        },
+      },
     },
     responses: {
-      200: { description: "Break-glass armed", content: { "application/json": { schema: budgetSchema } } },
-      401: { description: "Unauthorized", content: { "application/json": { schema: errorResponseSchema } } },
+      200: {
+        description: "Break-glass armed",
+        content: { "application/json": { schema: budgetSchema } },
+      },
+      401: {
+        description: "Unauthorized",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
     },
   }),
   async (c) => {
     await breakGlass(c.env, Date.now(), c.req.valid("json").hours);
     return c.json(await getBudgetStatus(c.env, Date.now()), 200);
+  },
+);
+
+// POST /api/ai/workers-ai/{model}  — proxy a Workers AI call, attributed
+aiProxyRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/workers-ai/{model}",
+    operationId: "aiProxyWorkersAi",
+    summary: "Proxy a Workers AI call through this Worker so its neuron spend is attributed",
+    description:
+      "Runs the model on the bound AI binding and registers the usage tagged with the required `origin` (and caller IP), so the spend leaves the daily-cost 'direct / unattributed' bucket. Point endpoints that currently hit the raw Workers AI API here to make their spend traceable. Governed by the same monthly spend breaker as the native proxy.",
+    request: {
+      params: z.object({ model: z.string() }),
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              origin: z
+                .string()
+                .min(1)
+                .describe("Required — where this call comes from (worker/app/endpoint id)."),
+              input: z.any().describe("The model input, forwarded verbatim to env.AI.run."),
+              taskDescription: z.string().optional(),
+              operationId: z.string().optional(),
+              sourceIp: z
+                .string()
+                .optional()
+                .describe("Defaults to the request's CF-Connecting-IP."),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "Model output, plus the registration id + reconstructed cost",
+        content: {
+          "application/json": {
+            schema: z.object({ body: z.any(), registrationId: z.string(), costUsd: z.number() }),
+          },
+        },
+      },
+      400: {
+        description: "Missing origin / bad request",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+      401: {
+        description: "Unauthorized",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+      429: {
+        description: "Budget exceeded — breaker tripped",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+      502: {
+        description: "Workers AI model error",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => {
+    const { model } = c.req.valid("param");
+    const { origin, input, taskDescription, operationId, sourceIp } = c.req.valid("json");
+    const ip = sourceIp ?? c.req.header("CF-Connecting-IP") ?? undefined;
+    const result = await proxyWorkersAi(c.env, model, origin, input, Date.now(), {
+      sourceIp: ip,
+      operationId,
+      taskDescription,
+    });
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    return c.json(
+      { body: result.body, registrationId: result.registrationId, costUsd: result.costUsd },
+      200,
+    );
   },
 );
 
@@ -110,8 +205,14 @@ aiProxyRouter.openapi(
           },
         },
       },
-      400: { description: "Bad request", content: { "application/json": { schema: errorResponseSchema } } },
-      401: { description: "Unauthorized", content: { "application/json": { schema: errorResponseSchema } } },
+      400: {
+        description: "Bad request",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+      401: {
+        description: "Unauthorized",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
       429: {
         description: "Budget exceeded — breaker tripped",
         content: { "application/json": { schema: errorResponseSchema } },

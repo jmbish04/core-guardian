@@ -34,6 +34,7 @@ import type { ExportedHandler } from "@cloudflare/workers-types";
 
 import { handle } from "@astrojs/cloudflare/handler";
 import { routeAgentRequest } from "agents";
+import { desc } from "drizzle-orm";
 
 import { ArtifactAgent } from "./backend/ai/agents/ArtifactAgent";
 import { BrowserHitlAgent } from "./backend/ai/agents/BrowserHitlAgent";
@@ -49,14 +50,13 @@ import { SkillsAgent } from "./backend/ai/agents/SkillsAgent";
 import { ThinkingAgent } from "./backend/ai/agents/ThinkingAgent";
 import { WorkflowsAgent } from "./backend/ai/agents/WorkflowsAgent";
 import { app as honoApp } from "./backend/api/index";
-import { desc } from "drizzle-orm";
-
 import { getDb } from "./backend/db";
-import { aiGatewayCosts, aiModelPricing, scrapeRuns } from "./backend/db/schema";
+import { aiGatewayCosts, aiModelPricing, dailyCost, scrapeRuns } from "./backend/db/schema";
 import { handleInboundEmail } from "./backend/email/inbound";
-import { evaluateUsage } from "./backend/guardian/collect";
-import { scrapeAllModelPricing } from "./backend/guardian/ai-model-pricing";
 import { snapshotGatewayCosts } from "./backend/guardian/ai-gateway-costs";
+import { scrapeAllModelPricing } from "./backend/guardian/ai-model-pricing";
+import { evaluateUsage } from "./backend/guardian/collect";
+import { backfillDailyCost, snapshotDailyCost } from "./backend/guardian/daily-cost";
 import { scrapeAllPricing } from "./backend/guardian/pricing-scrape";
 
 // Re-export Durable Object classes (Pattern B: the @astrojs/cloudflare adapter
@@ -98,20 +98,36 @@ async function runGuardianEvaluation(env: Env) {
   try {
     await maybeScrapePricing(env);
   } catch (err) {
-    console.error(JSON.stringify({ level: "ERROR", source: "guardian.pricing", error: String(err) }));
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.pricing", error: String(err) }),
+    );
   }
   // Weekly: refresh the multi-provider AI model-pricing catalog.
   try {
     await maybeScrapeModelPricing(env);
   } catch (err) {
-    console.error(JSON.stringify({ level: "ERROR", source: "guardian.modelPricing", error: String(err) }));
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.modelPricing", error: String(err) }),
+    );
   }
   // Daily: snapshot AI Gateway per-model actual cost into D1 (GraphQL retains
   // only ~31 days; D1 keeps permanent history). Idempotent upsert, safe hourly.
   try {
     await maybeSnapshotGatewayCosts(env);
   } catch (err) {
-    console.error(JSON.stringify({ level: "ERROR", source: "guardian.gatewayCosts", error: String(err) }));
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.gatewayCosts", error: String(err) }),
+    );
+  }
+  // Daily: roll each service's raw usage up into a reconstructed USD cost so the
+  // panel can chart day-over-day movement. Gated on 1 day like the gateway
+  // snapshot — no second cron trigger. Idempotent upsert, safe hourly.
+  try {
+    await maybeSnapshotDailyCost(env);
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.dailyCost", error: String(err) }),
+    );
   }
 }
 
@@ -151,6 +167,26 @@ async function maybeSnapshotGatewayCosts(env: Env) {
   if (latest && Date.now() - latest.capturedAt < ONE_DAY_MS) return;
   const rows = await snapshotGatewayCosts(env, 3);
   console.warn(JSON.stringify({ level: "INFO", source: "guardian.gatewayCosts", rows }));
+}
+
+async function maybeSnapshotDailyCost(env: Env) {
+  const [latest] = await getDb(env)
+    .select({ capturedAt: dailyCost.capturedAt })
+    .from(dailyCost)
+    .orderBy(desc(dailyCost.capturedAt))
+    .limit(1);
+  if (latest && Date.now() - latest.capturedAt < ONE_DAY_MS) return;
+  // First run: reconstruct up to 30 days of history from the snapshot table so
+  // the trend isn't empty until a month of crons has elapsed.
+  if (!latest) {
+    const backfilled = await backfillDailyCost(env, 30);
+    console.warn(JSON.stringify({ level: "INFO", source: "guardian.dailyCost", backfilled }));
+  }
+  // Re-price yesterday (now complete, with the per-model neuron split) and
+  // today (running total). Upserts keep both idempotent.
+  const yesterday = await snapshotDailyCost(env, Date.now() - ONE_DAY_MS, true);
+  const today = await snapshotDailyCost(env, Date.now(), true);
+  console.warn(JSON.stringify({ level: "INFO", source: "guardian.dailyCost", yesterday, today }));
 }
 
 /** True for paths the Hono API owns (REST + OpenAPI doc surfaces). */

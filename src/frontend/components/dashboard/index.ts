@@ -9,6 +9,7 @@ export { AdminDashboard } from "./AdminDashboard";
 export { ActionItems } from "./ActionItems";
 export { AllowancesPanel } from "./AllowancesPanel";
 export { CostTraceIsland } from "./CostTraceIsland";
+export { DailyCost } from "./DailyCost";
 export { AlertsBoard } from "./AlertsBoard";
 export { BindingDetail } from "./BindingDetail";
 export { WorkerSpendMonitor } from "./WorkerSpendMonitor";

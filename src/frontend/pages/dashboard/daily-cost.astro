@@ -1,0 +1,26 @@
+---
+/**
+ * `/dashboard/daily-cost` — reconstructed daily cost with day-over-day deltas.
+ *
+ * Thin Astro shell over the `<DailyCost>` React island: per-service cost trend,
+ * the flat-vs-climbing delta, and the Workers AI gateway/registered/direct
+ * attribution split (the migration progress surface).
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { DailyCost } from "@/components/dashboard";
+---
+
+<BaseLayout
+  title="Daily cost"
+  description="Reconstructed daily Cloudflare cost per service with day-over-day change, and the Workers AI gateway/registered/direct attribution split — estimates off scraped overage rates, not billed figures."
+>
+  <main class="container mx-auto flex max-w-6xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/guardian"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Core Guardian
+    </a>
+    <DailyCost client:load />
+  </main>
+</BaseLayout>

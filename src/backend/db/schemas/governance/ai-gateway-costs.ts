@@ -15,7 +15,7 @@
  * @see {@link file://src/backend/guardian/ai-gateway-costs.ts} for the writer.
  */
 
-import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { createInsertSchema, createSelectSchema } from "drizzle-zod";
 
 export const AI_GATEWAY_COSTS_TABLE_DESCRIPTION =
@@ -35,21 +35,29 @@ export const AI_GATEWAY_COSTS_COLUMN_DESCRIPTIONS: Record<string, string> = {
   capturedAt: "Unix ms this snapshot row was written/updated.",
 };
 
-export const aiGatewayCosts = sqliteTable("ai_gateway_costs", {
-  id: text("id").primaryKey(),
-  day: text("day").notNull(),
-  dayStart: integer("day_start").notNull(),
-  gateway: text("gateway").notNull(),
-  provider: text("provider").notNull(),
-  model: text("model").notNull(),
-  requests: integer("requests").notNull().default(0),
-  costUsd: real("cost_usd").notNull().default(0),
-  tokensIn: real("tokens_in").notNull().default(0),
-  tokensOut: real("tokens_out").notNull().default(0),
-  capturedAt: integer("captured_at")
-    .notNull()
-    .$defaultFn(() => Date.now()),
-});
+export const aiGatewayCosts = sqliteTable(
+  "ai_gateway_costs",
+  {
+    id: text("id").primaryKey(),
+    day: text("day").notNull(),
+    dayStart: integer("day_start").notNull(),
+    gateway: text("gateway").notNull(),
+    provider: text("provider").notNull(),
+    model: text("model").notNull(),
+    requests: integer("requests").notNull().default(0),
+    costUsd: real("cost_usd").notNull().default(0),
+    tokensIn: real("tokens_in").notNull().default(0),
+    tokensOut: real("tokens_out").notNull().default(0),
+    capturedAt: integer("captured_at")
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (t) => [
+    // The daily-cost report and drift check filter `dayStart >= cutoff` (+ provider) —
+    // a range scan this index serves directly.
+    index("idx_ai_gateway_costs_day_start").on(t.dayStart),
+  ],
+);
 
 export const insertAiGatewayCostSchema = createInsertSchema(aiGatewayCosts);
 export const selectAiGatewayCostSchema = createSelectSchema(aiGatewayCosts);

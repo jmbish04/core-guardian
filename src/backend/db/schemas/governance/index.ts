@@ -6,6 +6,7 @@ export * from "./alert-rules";
 export * from "./alerts";
 export * from "./billing-events";
 export * from "./cron-runs";
+export * from "./daily-cost";
 export * from "./drive-folders";
 export * from "./pricing";
 export * from "./usage-snapshots";

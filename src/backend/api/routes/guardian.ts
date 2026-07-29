@@ -50,15 +50,20 @@ import {
   periodStart,
   resetFor,
 } from "@/backend/guardian/allowances";
-import { getWorkersPlan, setWorkersPlan } from "@/backend/guardian/plan";
-import { listUsageRegistrations, registerDirectUsage } from "@/backend/guardian/register-usage";
-import { collectUsage, evaluateUsage, type UsageReading } from "@/backend/guardian/collect";
-import { archiveD1Database } from "@/backend/guardian/d1-archive";
 import { archiveImages } from "@/backend/guardian/cf-image-archive";
-import { archiveR2Bucket } from "@/backend/guardian/r2-archive";
+import { collectUsage, evaluateUsage, type UsageReading } from "@/backend/guardian/collect";
+import { calculateOperations } from "@/backend/guardian/cost-calculator";
+import { archiveD1Database } from "@/backend/guardian/d1-archive";
+import {
+  backfillDailyCost,
+  getDailyCostReport,
+  snapshotDailyCost,
+} from "@/backend/guardian/daily-cost";
 import { proposeHotfix } from "@/backend/guardian/hotfix";
-import { getWorkerSpend } from "@/backend/guardian/worker-spend";
+import { getWorkersPlan, setWorkersPlan } from "@/backend/guardian/plan";
 import { scrapeAllPricing, scrapeOneProduct } from "@/backend/guardian/pricing-scrape";
+import { archiveR2Bucket } from "@/backend/guardian/r2-archive";
+import { listUsageRegistrations, registerDirectUsage } from "@/backend/guardian/register-usage";
 import {
   getBindingIndex,
   listD1Databases,
@@ -66,6 +71,7 @@ import {
   listR2Objects,
   listVectorizeIndexes,
 } from "@/backend/guardian/resources";
+import { getWorkerSpend } from "@/backend/guardian/worker-spend";
 import { verifySessionCookie } from "@/backend/lib/cookies";
 import {
   getCloudflareAccountId,
@@ -264,7 +270,8 @@ async function resolveBreakdownNames(env: Env, readings: UsageReading[]): Promis
     if (!map) continue;
     reading.breakdown = reading.breakdown.map((row) => ({
       value: row.value,
-      label: map.get(row.label) ?? (row.label.length > 12 ? `${row.label.slice(0, 8)}…` : row.label),
+      label:
+        map.get(row.label) ?? (row.label.length > 12 ? `${row.label.slice(0, 8)}…` : row.label),
     }));
   }
 }
@@ -426,7 +433,10 @@ guardianRouter.openapi(
     // Group in JS rather than SQL: the row count here is bounded by
     // (probes × hours) — ~2.4k at the 720h ceiling, far cheaper to bucket in
     // memory than to round-trip D1 once per probe.
-    const byService = new Map<string, { service: string; metric: string; points: { t: number; value: number }[] }>();
+    const byService = new Map<
+      string,
+      { service: string; metric: string; points: { t: number; value: number }[] }
+    >();
     for (const row of rows) {
       let series = byService.get(row.service);
       if (!series) {
@@ -441,6 +451,192 @@ guardianRouter.openapi(
 );
 
 // ---------------------------------------------------------------------------
+// GET /api/guardian/daily-cost  — reconstructed daily cost + day-over-day delta
+// POST /api/guardian/daily-cost/snapshot — reprice on demand (no waiting on cron)
+// ---------------------------------------------------------------------------
+
+const dailyCostReportSchema = z.object({
+  days: z.array(z.string()),
+  services: z.array(
+    z.object({
+      service: z.string(),
+      product: z.string(),
+      unit: z.string(),
+      points: z.array(
+        z.object({ day: z.string(), rawUsage: z.number(), costUsd: z.number().nullable() }),
+      ),
+      deltaUsd: z.number().nullable(),
+      totalUsd: z.number(),
+    }),
+  ),
+  totalByDay: z.array(z.object({ day: z.string(), costUsd: z.number() })),
+  totalDeltaUsd: z.number().nullable(),
+  workersAiModels: z.object({
+    day: z.string(),
+    models: z.array(
+      z.object({ model: z.string(), neurons: z.number(), costUsd: z.number().nullable() }),
+    ),
+  }),
+  workersAiAttribution: z.array(
+    z.object({
+      day: z.string(),
+      reconstructedUsd: z.number(),
+      gatewayUsd: z.number(),
+      registeredUsd: z.number(),
+      directUsd: z.number(),
+      coverage: z.number().nullable(),
+    }),
+  ),
+});
+
+guardianRouter.openapi(
+  createRoute({
+    method: "get",
+    path: "/daily-cost",
+    operationId: "guardianDailyCost",
+    summary:
+      "Reconstructed daily cost per service with day-over-day delta + Workers AI attribution",
+    description:
+      "Replays the `daily_cost` rollup: one reconstructed USD figure per service per UTC day (raw usage priced against the curated overage rates), with a day-over-day delta so a climbing line is visible against a flat one. Includes the Workers AI neuron split by model and the USD attribution reconciliation (reconstructed − gateway − registered = direct/unattributed — the traffic still hitting the raw Cloudflare AI API).",
+    request: {
+      query: z.object({
+        days: z.coerce.number().int().min(2).max(90).default(30).optional(),
+      }),
+    },
+    responses: {
+      200: {
+        description: "Per-service daily cost series + Workers AI attribution",
+        content: { "application/json": { schema: dailyCostReportSchema } },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => c.json(await getDailyCostReport(c.env, c.req.valid("query").days ?? 30), 200),
+);
+
+guardianRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/daily-cost/snapshot",
+    operationId: "guardianDailyCostSnapshot",
+    summary: "Reconstruct daily cost now (backfill history + reprice yesterday & today)",
+    description:
+      "On-demand equivalent of the daily cron step. Backfills `backfillDays` of history from `usage_snapshots` (no GraphQL), then reprices yesterday and today with the live per-model neuron split. Idempotent.",
+    request: {
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({ backfillDays: z.number().int().min(0).max(90).default(30) }),
+          },
+        },
+        required: false,
+      },
+    },
+    responses: {
+      200: {
+        description: "Rows written",
+        content: {
+          "application/json": {
+            schema: z.object({ backfilled: z.number(), yesterday: z.number(), today: z.number() }),
+          },
+        },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => {
+    const backfillDays = c.req.valid("json")?.backfillDays ?? 30;
+    const backfilled = backfillDays > 0 ? await backfillDailyCost(c.env, backfillDays) : 0;
+    const yesterday = await snapshotDailyCost(c.env, Date.now() - 86_400_000, true);
+    const today = await snapshotDailyCost(c.env, Date.now(), true);
+    return c.json({ backfilled, yesterday, today }, 200);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/guardian/cost/calculate — price arbitrary operations for callers
+// ---------------------------------------------------------------------------
+
+const aiOperationSchema = z.object({
+  kind: z.literal("ai"),
+  provider: z.string().optional(),
+  model: z.string(),
+  tokensIn: z.number().min(0).optional(),
+  tokensOut: z.number().min(0).optional(),
+  tokensThinking: z.number().min(0).optional(),
+  requests: z.number().min(0).optional(),
+  at: z.number().optional(),
+});
+const cfOperationSchema = z.object({
+  kind: z.literal("cf"),
+  service: z
+    .string()
+    .describe("Probe id: d1, r2-storage, r2-operations, workers-ai, durable-objects-requests, …"),
+  units: z
+    .number()
+    .min(0)
+    .describe("Quantity in the service's native unit (rows, bytes, neurons, requests)."),
+});
+const costResultLineSchema = z.object({
+  kind: z.enum(["ai", "cf"]),
+  label: z.string(),
+  unit: z.string(),
+  units: z.number(),
+  costUsd: z.number().nullable(),
+  basis: z.string(),
+  rate: z.object({ usd: z.number(), per: z.number() }).nullable(),
+  matched: z.boolean().optional(),
+  error: z.string().optional(),
+});
+
+guardianRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/cost/calculate",
+    operationId: "guardianCostCalculate",
+    summary:
+      "Price arbitrary usage operations (AI tokens, D1/R2/DO/Workers AI units) for a calling worker",
+    description:
+      "Stateless calculator other workers call to turn an operation into USD. `ai` ops price by model × tokens from the scraped catalog (thinking tokens billed as output). `cf` ops price `units` at the MARGINAL Cloudflare overage rate for the given service id (an upper bound while under the pooled allowance). Returns one priced line per operation plus the total; a line that can't be priced comes back with costUsd null and an error. Does not record — use /usage/registrations or the Workers AI proxy to persist.",
+    request: {
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              operations: z
+                .array(z.discriminatedUnion("kind", [aiOperationSchema, cfOperationSchema]))
+                .min(1)
+                .max(100),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "Priced lines + total USD",
+        content: {
+          "application/json": {
+            schema: z.object({ lines: z.array(costResultLineSchema), totalUsd: z.number() }),
+          },
+        },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => c.json(await calculateOperations(c.env, c.req.valid("json").operations), 200),
+);
+
+// ---------------------------------------------------------------------------
 // GET/PUT /api/guardian/plan  — the account's Workers plan (free | paid)
 // ---------------------------------------------------------------------------
 
@@ -451,7 +647,10 @@ guardianRouter.openapi(
     operationId: "guardianGetPlan",
     summary: "The configured Workers plan (governs allowance framing: paid=overage, free=cap)",
     responses: {
-      200: { description: "Plan", content: { "application/json": { schema: z.object({ plan: z.enum(["free", "paid"]) }) } } },
+      200: {
+        description: "Plan",
+        content: { "application/json": { schema: z.object({ plan: z.enum(["free", "paid"]) }) } },
+      },
       401: {
         description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
         content: { "application/json": { schema: errorResponseSchema } },
@@ -467,9 +666,16 @@ guardianRouter.openapi(
     path: "/plan",
     operationId: "guardianSetPlan",
     summary: "Set the account's Workers plan (free | paid)",
-    request: { body: { content: { "application/json": { schema: z.object({ plan: z.enum(["free", "paid"]) }) } } } },
+    request: {
+      body: {
+        content: { "application/json": { schema: z.object({ plan: z.enum(["free", "paid"]) }) } },
+      },
+    },
     responses: {
-      200: { description: "Updated", content: { "application/json": { schema: z.object({ plan: z.enum(["free", "paid"]) }) } } },
+      200: {
+        description: "Updated",
+        content: { "application/json": { schema: z.object({ plan: z.enum(["free", "paid"]) }) } },
+      },
       401: {
         description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
         content: { "application/json": { schema: errorResponseSchema } },
@@ -582,7 +788,8 @@ guardianRouter.openapi(
       },
     },
   }),
-  async (c) => c.json({ registrations: await listUsageRegistrations(c.env, c.req.valid("query")) }, 200),
+  async (c) =>
+    c.json({ registrations: await listUsageRegistrations(c.env, c.req.valid("query")) }, 200),
 );
 
 // ---------------------------------------------------------------------------
@@ -639,61 +846,71 @@ guardianRouter.openapi(
   }),
   async (c) => {
     try {
-    const now = Date.now();
-    const db = getDb(c.env);
-    const plan = await getWorkersPlan(c.env);
+      const now = Date.now();
+      const db = getDb(c.env);
+      const plan = await getWorkersPlan(c.env);
 
-    const rows = [];
-    for (const [service, a] of Object.entries(ALLOWANCES)) {
-      const included = includedFor(a, plan);
-      const reset = resetFor(a, plan);
-      const start = periodStart(now, reset);
-      const cumulative = a.cumulative !== false;
-      let usedSoFar = 0;
-      if (cumulative) {
-        const [{ total }] = await db
-          .select({ total: sql<number>`COALESCE(SUM(${usageSnapshots.value}), 0)` })
-          .from(usageSnapshots)
-          .where(and(gte(usageSnapshots.timestamp, start), sql`${usageSnapshots.service} = ${service}`));
-        usedSoFar = total ?? 0;
-      } else {
-        // Level metric: the most recent snapshot is the current stored level.
-        const [latest] = await db
-          .select({ value: usageSnapshots.value })
-          .from(usageSnapshots)
-          .where(sql`${usageSnapshots.service} = ${service}`)
-          .orderBy(desc(usageSnapshots.timestamp))
-          .limit(1);
-        usedSoFar = latest?.value ?? 0;
+      const rows = [];
+      for (const [service, a] of Object.entries(ALLOWANCES)) {
+        const included = includedFor(a, plan);
+        const reset = resetFor(a, plan);
+        const start = periodStart(now, reset);
+        const cumulative = a.cumulative !== false;
+        let usedSoFar = 0;
+        if (cumulative) {
+          const [{ total }] = await db
+            .select({ total: sql<number>`COALESCE(SUM(${usageSnapshots.value}), 0)` })
+            .from(usageSnapshots)
+            .where(
+              and(
+                gte(usageSnapshots.timestamp, start),
+                sql`${usageSnapshots.service} = ${service}`,
+              ),
+            );
+          usedSoFar = total ?? 0;
+        } else {
+          // Level metric: the most recent snapshot is the current stored level.
+          const [latest] = await db
+            .select({ value: usageSnapshots.value })
+            .from(usageSnapshots)
+            .where(sql`${usageSnapshots.service} = ${service}`)
+            .orderBy(desc(usageSnapshots.timestamp))
+            .limit(1);
+          usedSoFar = latest?.value ?? 0;
+        }
+
+        const projected = cumulative
+          ? usedSoFar / Math.max(0.01, periodElapsed(now, reset))
+          : usedSoFar;
+        const projectedFraction = a.comparable ? projected / included : null;
+        const overageUnits = Math.max(0, projected - included);
+        rows.push({
+          service,
+          unit: a.unit,
+          comparable: a.comparable,
+          reset,
+          included,
+          usedSoFar,
+          projected,
+          projectedFraction,
+          remaining: a.comparable ? Math.max(0, included - projected) : null,
+          overageCostUsd: overageCostUsd(a, overageUnits),
+          note: a.note,
+        });
       }
+      rows.sort((x, y) => (y.projectedFraction ?? -1) - (x.projectedFraction ?? -1));
 
-      const projected = cumulative ? usedSoFar / Math.max(0.01, periodElapsed(now, reset)) : usedSoFar;
-      const projectedFraction = a.comparable ? projected / included : null;
-      const overageUnits = Math.max(0, projected - included);
-      rows.push({
-        service,
-        unit: a.unit,
-        comparable: a.comparable,
-        reset,
-        included,
-        usedSoFar,
-        projected,
-        projectedFraction,
-        remaining: a.comparable ? Math.max(0, included - projected) : null,
-        overageCostUsd: overageCostUsd(a, overageUnits),
-        note: a.note,
-      });
-    }
-    rows.sort((x, y) => (y.projectedFraction ?? -1) - (x.projectedFraction ?? -1));
-
-    return c.json(
-      {
-        plan,
-        period: { monthStart: periodStart(now, "monthly"), elapsedFraction: periodElapsed(now, "monthly") },
-        allowances: rows,
-      },
-      200,
-    );
+      return c.json(
+        {
+          plan,
+          period: {
+            monthStart: periodStart(now, "monthly"),
+            elapsedFraction: periodElapsed(now, "monthly"),
+          },
+          allowances: rows,
+        },
+        200,
+      );
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : "Failed." }, 500);
     }
@@ -792,7 +1009,12 @@ guardianRouter.openapi(
               resourceCount: z.number(),
               byType: z.record(z.string(), z.number()),
               resources: z.array(
-                z.object({ type: z.string(), id: z.string(), name: z.string(), binding: z.string() }),
+                z.object({
+                  type: z.string(),
+                  id: z.string(),
+                  name: z.string(),
+                  binding: z.string(),
+                }),
               ),
             }),
           },
@@ -823,7 +1045,8 @@ guardianRouter.openapi(
       if (!mine) continue;
       const [type, ...rest] = key.split(":");
       const id = rest.join(":");
-      const resolved = type === "d1" ? (d1Names.get(id) ?? id) : type === "kv" ? (kvNames.get(id) ?? id) : id;
+      const resolved =
+        type === "d1" ? (d1Names.get(id) ?? id) : type === "kv" ? (kvNames.get(id) ?? id) : id;
       resources.push({ type, id, name: resolved, binding: mine.binding });
       byType[type] = (byType[type] ?? 0) + 1;
     }
@@ -979,7 +1202,11 @@ guardianRouter.openapi(
                 z.object({ prefix: z.string(), objects: z.number(), bytes: z.number() }),
               ),
               largest: z.array(
-                z.object({ key: z.string(), size: z.number(), lastModified: z.string().nullable() }),
+                z.object({
+                  key: z.string(),
+                  size: z.number(),
+                  lastModified: z.string().nullable(),
+                }),
               ),
             }),
           },
@@ -1030,7 +1257,14 @@ guardianRouter.openapi(
     largest.sort((a, b) => b.size - a.size);
 
     return c.json(
-      { bucket, scannedObjects: scanned, totalBytes, truncated, prefixes, largest: largest.slice(0, 15) },
+      {
+        bucket,
+        scannedObjects: scanned,
+        totalBytes,
+        truncated,
+        prefixes,
+        largest: largest.slice(0, 15),
+      },
       200,
     );
   },
@@ -1350,7 +1584,11 @@ guardianRouter.openapi(
           "application/json": {
             schema: z.object({
               items: z.array(actionItemSchema),
-              counts: z.object({ pending: z.number(), inProgress: z.number(), complete: z.number() }),
+              counts: z.object({
+                pending: z.number(),
+                inProgress: z.number(),
+                complete: z.number(),
+              }),
             }),
           },
         },
@@ -1472,7 +1710,9 @@ guardianRouter.openapi(
     const filtered = status === "all" ? normalized : normalized.filter((r) => r.status === status);
 
     const SEV_RANK = { critical: 0, warning: 1, info: 2 } as const;
-    filtered.sort((a, b) => SEV_RANK[a.severity] - SEV_RANK[b.severity] || b.updatedAt - a.updatedAt);
+    filtered.sort(
+      (a, b) => SEV_RANK[a.severity] - SEV_RANK[b.severity] || b.updatedAt - a.updatedAt,
+    );
 
     const counts = { critical: 0, warning: 0, info: 0 };
     for (const r of normalized) if (r.status === "active") counts[r.severity]++;
@@ -1521,16 +1761,27 @@ guardianRouter.openapi(
     const { action, hours } = c.req.valid("json");
     const now = Date.now();
     const db = getDb(c.env);
-    const [existing] = await db.select().from(alerts).where(sql`${alerts.id} = ${id}`).limit(1);
+    const [existing] = await db
+      .select()
+      .from(alerts)
+      .where(sql`${alerts.id} = ${id}`)
+      .limit(1);
     if (!existing) return c.json({ error: "No such alert" }, 404);
 
     const patch =
       action === "snooze"
-        ? { status: "snoozed" as const, snoozedUntil: now + (hours ?? 24) * 3_600_000, updatedAt: now }
+        ? {
+            status: "snoozed" as const,
+            snoozedUntil: now + (hours ?? 24) * 3_600_000,
+            updatedAt: now,
+          }
         : action === "resolve"
           ? { status: "resolved" as const, snoozedUntil: null, updatedAt: now }
           : { status: "active" as const, snoozedUntil: null, updatedAt: now };
-    await db.update(alerts).set(patch).where(sql`${alerts.id} = ${id}`);
+    await db
+      .update(alerts)
+      .set(patch)
+      .where(sql`${alerts.id} = ${id}`);
     return c.json({ ok: true }, 200);
   },
 );

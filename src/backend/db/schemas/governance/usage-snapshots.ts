@@ -8,7 +8,7 @@
  * @see {@link file://src/backend/guardian/collect.ts} for the writer.
  */
 
-import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { createInsertSchema, createSelectSchema } from "drizzle-zod";
 
 // ---------------------------------------------------------------------------
@@ -31,16 +31,27 @@ export const USAGE_SNAPSHOTS_COLUMN_DESCRIPTIONS: Record<string, string> = {
 // Table definition
 // ---------------------------------------------------------------------------
 
-export const usageSnapshots = sqliteTable("usage_snapshots", {
-  id: text("id").primaryKey(),
-  service: text("service").notNull(),
-  metric: text("metric").notNull(),
-  value: real("value").notNull().default(0),
-  windowHours: integer("window_hours").notNull().default(1),
-  timestamp: integer("timestamp")
-    .notNull()
-    .$defaultFn(() => Date.now()),
-});
+export const usageSnapshots = sqliteTable(
+  "usage_snapshots",
+  {
+    id: text("id").primaryKey(),
+    service: text("service").notNull(),
+    metric: text("metric").notNull(),
+    value: real("value").notNull().default(0),
+    windowHours: integer("window_hours").notNull().default(1),
+    timestamp: integer("timestamp")
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (t) => [
+    // Every reader filters/sorts on timestamp (history window, daily rollup) or
+    // on service+timestamp (the allowances endpoint sums per service — ~a dozen
+    // scans per request). Without these, each read is a full-table scan and this
+    // append-only, never-pruned table drives most of the account's D1 rows-read.
+    index("idx_usage_snapshots_ts").on(t.timestamp),
+    index("idx_usage_snapshots_service_ts").on(t.service, t.timestamp),
+  ],
+);
 
 // ---------------------------------------------------------------------------
 // Zod schemas & types

@@ -55,6 +55,21 @@ export function compactNumber(n: number): string {
 }
 
 /**
+ * Compact every number ≥ 1000 embedded in a free-text string — for audit
+ * sentences the backend writes with exact values:
+ * `"Surge detected: 64714460 rows read in 1h exceeds threshold 5000000."` →
+ * `"Surge detected: 64.7M rows read in 1h exceeds threshold 5M."`. Small
+ * numbers ("1h", request counts) are left untouched. The stored value stays
+ * exact; this is display-only.
+ */
+export function compactNumbersInText(text: string): string {
+  return text.replace(/\d+(?:\.\d+)?/g, (m) => {
+    const n = Number(m);
+    return Number.isFinite(n) && n >= 1000 ? compactNumber(n) : m;
+  });
+}
+
+/**
  * Density count — the default for any metered quantity in a table cell, meter,
  * or chart axis where space is tight. `45,523,699` → `45.5M`. Optional unit is
  * appended with a thin space: `formatCount(45.5e6, "rows")` → `45.5M rows`.

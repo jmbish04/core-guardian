@@ -56,6 +56,11 @@ export type RegisterUsageInput = {
   operationId?: string;
   /** Optional human description of what the usage was for. */
   taskDescription?: string;
+  /** Optional origin IP of the caller. CF analytics never exposes a caller IP
+   *  for AI inference, so this is the only place origin IP can be captured —
+   *  self-reported by the caller (or filled from the request's CF-Connecting-IP
+   *  when the registration arrives over HTTP). */
+  sourceIp?: string;
 };
 
 export type RegisterUsageResult = {
@@ -131,7 +136,13 @@ export async function registerDirectUsage(
   let priced: RegisterUsageResult["priced"] = "explicit";
   if (costUsd === undefined) {
     const { lines } = await calculateCosts(env, [
-      { provider: input.provider, model: input.model, inputTokens: tokensIn, outputTokens: tokensOut, at },
+      {
+        provider: input.provider,
+        model: input.model,
+        inputTokens: tokensIn,
+        outputTokens: tokensOut,
+        at,
+      },
     ]);
     costUsd = lines[0].costUsd ?? 0;
     priced = lines[0].matched ? "scraped" : "unmatched";
@@ -177,6 +188,7 @@ export async function registerDirectUsage(
       worker: input.worker,
       operationId: input.operationId ?? null,
       taskDescription: input.taskDescription ?? null,
+      sourceIp: input.sourceIp ?? null,
       gateway,
       provider: input.provider,
       model: input.model,
