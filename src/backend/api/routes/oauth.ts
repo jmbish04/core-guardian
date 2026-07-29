@@ -36,10 +36,11 @@ import {
 } from "@/backend/lib/crypto";
 import { getCookieSigningKey, getWorkerApiKey } from "@/backend/utils/secrets";
 
-/** Access-token lifetime (30 days) — matches the practical session horizon. */
-const ACCESS_TTL_SECONDS = 60 * 60 * 24 * 30;
-/** Registered DCR clients persist for 30 days; clients re-register if evicted. */
-const CLIENT_TTL_SECONDS = 60 * 60 * 24 * 30;
+/** Access-token lifetime (1 year). */
+const ACCESS_TTL_SECONDS = 60 * 60 * 24 * 365;
+/** Registered DCR clients persist as long as a token can (1 year), so a client
+ * is never evicted out from under a still-valid token. */
+const CLIENT_TTL_SECONDS = 60 * 60 * 24 * 365;
 /** Auth codes are single-use and short-lived. */
 const CODE_TTL_SECONDS = 60;
 
