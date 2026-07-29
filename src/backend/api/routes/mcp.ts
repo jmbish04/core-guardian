@@ -11,12 +11,17 @@
  * server-side confirmation checks as their REST equivalents — an MCP client is
  * not a trusted caller just because it speaks MCP.
  *
- * Authentication reuses {@link guardianAuth}: a bearer `WORKER_API_KEY` or a
- * signed session cookie.
+ * Authentication is handled by {@link mcpAuth}: one-click OAuth (discovery + DCR
+ * + PKCE, see `routes/oauth.ts`), a signed session cookie, or a bearer
+ * `WORKER_API_KEY` fallback. An unauthenticated request gets a 401 carrying the
+ * `WWW-Authenticate` challenge that starts OAuth discovery.
  *
  * @example
  * ```jsonc
- * // claude_desktop_config.json / .mcp.json
+ * // OAuth (no token to paste): the client discovers /.well-known and registers.
+ * { "mcpServers": { "core-guardian": { "url": "https://core-guardian.hacolby.workers.dev/mcp" } } }
+ *
+ * // Or the scripted bearer fallback:
  * {
  *   "mcpServers": {
  *     "core-guardian": {
@@ -31,7 +36,7 @@
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { desc, eq } from "drizzle-orm";
 
-import { guardianAuth } from "@/backend/api/routes/guardian";
+import { mcpAuth } from "@/backend/api/routes/oauth";
 import { getDb } from "@/backend/db";
 import { alertRules, billingEvents, cronRuns, usageSnapshots } from "@/backend/db/schema";
 import {
@@ -66,7 +71,7 @@ import {
 import { seedDefaultRules } from "@/backend/guardian/rules";
 
 export const mcpRouter = new OpenAPIHono<{ Bindings: Env }>();
-mcpRouter.use("*", guardianAuth);
+mcpRouter.use("*", mcpAuth);
 
 const PROTOCOL_VERSION = "2025-06-18";
 

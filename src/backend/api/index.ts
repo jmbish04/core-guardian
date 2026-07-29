@@ -39,6 +39,7 @@ import { healthRouter } from "./routes/health";
 import { inboxRouter } from "./routes/inbox";
 import { mcpRouter } from "./routes/mcp";
 import { notificationsRouter } from "./routes/notifications";
+import { oauthRouter, wellKnownRouter } from "./routes/oauth";
 import { projectsRouter } from "./routes/projects";
 import { rulesRouter } from "./routes/rules";
 import { seedRouter } from "./routes/seed";
@@ -168,6 +169,12 @@ app.route("/api/webhooks", cloudflareWebhookRouter);
 // /api/mcp so clients can use either form.
 app.route("/mcp", mcpRouter);
 app.route("/api/mcp", mcpRouter);
+
+// MCP OAuth: discovery metadata (root .well-known) + authorize/token/register.
+// Public — these ARE the auth surface, so they sit outside guardianAuth. See
+// routes/oauth.ts. Paths are also whitelisted in _worker.ts `isApiPath`.
+app.route("/.well-known", wellKnownRouter);
+app.route("/oauth", oauthRouter);
 
 app.route("/api/__client-error", clientErrorRouter);
 

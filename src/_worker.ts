@@ -195,6 +195,8 @@ function isApiPath(pathname: string): boolean {
     pathname.startsWith("/api/") ||
     pathname === "/mcp" ||
     pathname.startsWith("/mcp/") ||
+    pathname.startsWith("/oauth/") ||
+    pathname.startsWith("/.well-known/oauth-") ||
     pathname === "/openapi.json" ||
     pathname === "/swagger" ||
     pathname === "/scalar" ||
