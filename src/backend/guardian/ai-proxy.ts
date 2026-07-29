@@ -17,6 +17,8 @@
  * Limits; this KV breaker governs the native path the gateway never sees.
  */
 
+import { registerDirectUsage } from "@/backend/guardian/register-usage";
+
 const CAP_KEY = "ai:budget:cap"; // monthly USD cap
 const BREAKER_KEY = "ai:breaker"; // "armed" | "tripped" | "break-glass:<untilMs>"
 const PRICES_KEY = "ai:prices"; // { model: { in: $/1M, out: $/1M } }
@@ -42,11 +44,18 @@ const PROVIDERS: Record<string, Provider> = {
   openai: {
     url: () => "https://api.openai.com/v1/chat/completions",
     headers: (key) => ({ Authorization: `Bearer ${key}`, "Content-Type": "application/json" }),
-    usage: (j) => ({ inTok: j?.usage?.prompt_tokens ?? 0, outTok: j?.usage?.completion_tokens ?? 0 }),
+    usage: (j) => ({
+      inTok: j?.usage?.prompt_tokens ?? 0,
+      outTok: j?.usage?.completion_tokens ?? 0,
+    }),
   },
   anthropic: {
     url: () => "https://api.anthropic.com/v1/messages",
-    headers: (key) => ({ "x-api-key": key, "anthropic-version": "2023-06-01", "Content-Type": "application/json" }),
+    headers: (key) => ({
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+      "Content-Type": "application/json",
+    }),
     usage: (j) => ({ inTok: j?.usage?.input_tokens ?? 0, outTok: j?.usage?.output_tokens ?? 0 }),
   },
   google: {
@@ -159,7 +168,13 @@ export async function proxyCall(
   // Breaker check BEFORE touching the provider.
   const status = await getBudgetStatus(env, now);
   if (status.breaker === "tripped") {
-    return { ok: false, status: 429, error: "AI budget exceeded — breaker tripped.", spent: status.spent, cap: status.cap ?? undefined };
+    return {
+      ok: false,
+      status: 429,
+      error: "AI budget exceeded — breaker tripped.",
+      spent: status.spent,
+      cap: status.cap ?? undefined,
+    };
   }
 
   const res = await fetch(p.url(model), {
@@ -186,6 +201,90 @@ export async function proxyCall(
   return { ok: true, status: res.status, body: json, cost, spent };
 }
 
+export type WorkersAiProxyResult =
+  | { ok: true; status: 200; body: unknown; registrationId: string; costUsd: number }
+  | { ok: false; status: 400 | 429 | 502; error: string };
+
+/**
+ * Proxy a Cloudflare Workers AI call through this Worker so the usage is
+ * attributed. Unlike {@link proxyCall} (native providers via their own key),
+ * this runs the model on the bound `AI` binding and, crucially, REQUIRES an
+ * `origin` — the endpoint/worker the call is on behalf of. It then registers
+ * the call via {@link registerDirectUsage} (gateway tag `proxy`), so the
+ * neuron spend moves out of the daily-cost "direct / unattributed" bucket and
+ * carries its origin + IP.
+ *
+ * This is the migration target for endpoints hitting the raw Workers AI API:
+ * point them here and their spend becomes attributable.
+ *
+ * @param model - Workers AI model id (e.g. "@cf/meta/llama-3.1-8b-instruct")
+ * @param origin - REQUIRED. Where the call comes from (worker/app/endpoint id)
+ * @param input - the model input, forwarded verbatim to `env.AI.run`
+ * @param now - epoch ms (passed in for testability / correct day bucket)
+ * @param opts - sourceIp / operationId / taskDescription for the trace log
+ */
+export async function proxyWorkersAi(
+  env: Env,
+  model: string,
+  origin: string,
+  input: unknown,
+  now: number,
+  opts: { sourceIp?: string; operationId?: string; taskDescription?: string } = {},
+): Promise<WorkersAiProxyResult> {
+  if (!origin?.trim()) {
+    return {
+      ok: false,
+      status: 400,
+      error: "Missing required 'origin' — where this call comes from.",
+    };
+  }
+  // Shared spend governor: refuse before touching the model when tripped.
+  const status = await getBudgetStatus(env, now);
+  if (status.breaker === "tripped") {
+    return { ok: false, status: 429, error: "AI budget exceeded — breaker tripped." };
+  }
+
+  let out: unknown;
+  try {
+    // Generic passthrough: model id + input shape vary per model, so the bound
+    // AI type can't be statically satisfied here — this is an arbitrary relay.
+    out = await (env.AI as { run: (m: string, i: unknown) => Promise<unknown> }).run(model, input);
+  } catch (err) {
+    return { ok: false, status: 502, error: err instanceof Error ? err.message : String(err) };
+  }
+
+  // Best-effort token counts — LLM responses carry `usage`; embeddings/vision
+  // may not. Attribution (origin) is the point; exact tokens are a bonus.
+  const usage =
+    (out && typeof out === "object"
+      ? (out as { usage?: Record<string, number> }).usage
+      : undefined) ?? {};
+  const tokensIn = usage.prompt_tokens ?? usage.promptTokens ?? 0;
+  const tokensOut = usage.completion_tokens ?? usage.completionTokens ?? 0;
+
+  const reg = await registerDirectUsage(env, {
+    worker: origin,
+    provider: "workers-ai",
+    model,
+    tokensIn,
+    tokensOut,
+    requests: 1,
+    gateway: "proxy",
+    sourceIp: opts.sourceIp,
+    operationId: opts.operationId,
+    taskDescription: opts.taskDescription,
+    at: now,
+  });
+
+  return {
+    ok: true,
+    status: 200,
+    body: out,
+    registrationId: reg.registrationId,
+    costUsd: reg.costUsd,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Self-check — pure pricing + month-key logic. Never runs in the Worker.
 // ---------------------------------------------------------------------------
@@ -195,7 +294,11 @@ if (import.meta.main) {
   };
   const prices = { "gpt-4o": { in: 2.5, out: 10 } };
   // 1M in + 1M out = $2.50 + $10.00 = $12.50
-  eq(priceCall(prices, "gpt-4o-2024-08-06", 1_000_000, 1_000_000).toFixed(2), "12.50", "prefix-match price");
+  eq(
+    priceCall(prices, "gpt-4o-2024-08-06", 1_000_000, 1_000_000).toFixed(2),
+    "12.50",
+    "prefix-match price",
+  );
   eq(priceCall(prices, "unknown-model", 1_000_000, 0), 0, "unknown model → 0");
   eq(monthKey(Date.UTC(2026, 6, 21)), "ai:cost:2026-07", "month key");
   // eslint-disable-next-line no-console

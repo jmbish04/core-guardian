@@ -20,12 +20,14 @@ export const AI_MODEL_PRICING_COLUMN_DESCRIPTIONS: Record<string, string> = {
   id: "Unique row id (UUID v4).",
   provider: "anthropic | google | openai | workers-ai.",
   model: "Human display name (e.g. 'Claude Sonnet 4.5', 'GPT-4o').",
-  api_model_name: "Exact id to pass to the API/SDK (e.g. 'claude-sonnet-4-5', '@cf/openai/gpt-oss-120b').",
+  api_model_name:
+    "Exact id to pass to the API/SDK (e.g. 'claude-sonnet-4-5', '@cf/openai/gpt-oss-120b').",
   description: "Short description of the model.",
   best_used_for: "What the model is best suited for (agentic, coding, cheap bulk, vision, etc.).",
   input_price_per_million: "USD per 1M input tokens.",
   output_price_per_million: "USD per 1M output tokens.",
-  cached_input_price_per_million: "USD per 1M cached input tokens, if the provider offers prompt caching.",
+  cached_input_price_per_million:
+    "USD per 1M cached input tokens, if the provider offers prompt caching.",
   currency: "ISO currency (USD).",
   source_url: "Where the price was scraped from.",
   scraped_at: "Unix ms this row was captured — the pricing's effective time.",

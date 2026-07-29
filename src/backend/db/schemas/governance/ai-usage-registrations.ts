@@ -14,7 +14,7 @@
  * @see {@link file://src/backend/db/schemas/governance/ai-gateway-costs.ts} for the roll-up.
  */
 
-import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { createInsertSchema, createSelectSchema } from "drizzle-zod";
 
 export const AI_USAGE_REGISTRATIONS_TABLE_DESCRIPTION =
@@ -25,6 +25,8 @@ export const AI_USAGE_REGISTRATIONS_COLUMN_DESCRIPTIONS: Record<string, string> 
   worker: "Originating worker or application — where the AI usage came from (required).",
   operationId: "Optional caller-supplied operation/request id for correlation.",
   taskDescription: "Optional human description of what the usage was for.",
+  sourceIp:
+    "Optional origin IP of the caller (self-reported — CF analytics does not expose it for AI inference).",
   gateway: "Synthetic gateway tag the usage was grouped under (default 'direct').",
   provider: "Upstream provider (openai, anthropic, google-ai-studio, …).",
   model: "Model id as billed.",
@@ -32,33 +34,45 @@ export const AI_USAGE_REGISTRATIONS_COLUMN_DESCRIPTIONS: Record<string, string> 
   costUsd: "USD cost recorded for this batch.",
   tokensIn: "Input tokens.",
   tokensOut: "Output tokens (as reported by the caller, excluding thinking).",
-  tokensThinking: "Reasoning/thinking tokens, incl. interim thought images. Billed at the output rate; folded into tokensOut in the ai_gateway_costs roll-up, kept separate here.",
+  tokensThinking:
+    "Reasoning/thinking tokens, incl. interim thought images. Billed at the output rate; folded into tokensOut in the ai_gateway_costs roll-up, kept separate here.",
   priced: "How cost was set: explicit | scraped | unmatched.",
   costRowId: "The ai_gateway_costs row id this registration accumulated into.",
   at: "Unix ms the usage occurred.",
   createdAt: "Unix ms this row was written.",
 };
 
-export const aiUsageRegistrations = sqliteTable("ai_usage_registrations", {
-  id: text("id").primaryKey(),
-  worker: text("worker").notNull(),
-  operationId: text("operation_id"),
-  taskDescription: text("task_description"),
-  gateway: text("gateway").notNull().default("direct"),
-  provider: text("provider").notNull(),
-  model: text("model").notNull(),
-  requests: integer("requests").notNull().default(0),
-  costUsd: real("cost_usd").notNull().default(0),
-  tokensIn: real("tokens_in").notNull().default(0),
-  tokensOut: real("tokens_out").notNull().default(0),
-  tokensThinking: real("tokens_thinking").notNull().default(0),
-  priced: text("priced").notNull(),
-  costRowId: text("cost_row_id").notNull(),
-  at: integer("at").notNull(),
-  createdAt: integer("created_at")
-    .notNull()
-    .$defaultFn(() => Date.now()),
-});
+export const aiUsageRegistrations = sqliteTable(
+  "ai_usage_registrations",
+  {
+    id: text("id").primaryKey(),
+    worker: text("worker").notNull(),
+    operationId: text("operation_id"),
+    taskDescription: text("task_description"),
+    sourceIp: text("source_ip"),
+    gateway: text("gateway").notNull().default("direct"),
+    provider: text("provider").notNull(),
+    model: text("model").notNull(),
+    requests: integer("requests").notNull().default(0),
+    costUsd: real("cost_usd").notNull().default(0),
+    tokensIn: real("tokens_in").notNull().default(0),
+    tokensOut: real("tokens_out").notNull().default(0),
+    tokensThinking: real("tokens_thinking").notNull().default(0),
+    priced: text("priced").notNull(),
+    costRowId: text("cost_row_id").notNull(),
+    at: integer("at").notNull(),
+    createdAt: integer("created_at")
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (t) => [
+    // `listUsageRegistrations` sorts by `at` (with optional worker filter) and the
+    // daily-cost attribution scans `at >= cutoff` — both full scans without an
+    // index on this per-AI-call, unbounded table.
+    index("idx_ai_usage_reg_at").on(t.at),
+    index("idx_ai_usage_reg_worker").on(t.worker),
+  ],
+);
 
 export const insertAiUsageRegistrationSchema = createInsertSchema(aiUsageRegistrations);
 export const selectAiUsageRegistrationSchema = createSelectSchema(aiUsageRegistrations);

@@ -27,7 +27,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ApiError, apiGet } from "@/lib/api";
-import { relativeTime, shortDate } from "@/lib/format";
+import { compactNumbersInText, relativeTime, shortDate } from "@/lib/format";
 
 type BillingEvent = {
   id: string;
@@ -143,7 +143,9 @@ export function GuardianAuditLog({ refreshKey = 0 }: { refreshKey?: number }) {
                     <div>{shortDate(event.timestamp)}</div>
                   </TableCell>
                   <TableCell className="font-mono text-xs">{event.service}</TableCell>
-                  <TableCell className="text-sm">{event.actionTaken}</TableCell>
+                  <TableCell className="text-sm">
+                    {compactNumbersInText(event.actionTaken)}
+                  </TableCell>
                   <TableCell className="pe-4">
                     <OutcomeBadge event={event} />
                   </TableCell>

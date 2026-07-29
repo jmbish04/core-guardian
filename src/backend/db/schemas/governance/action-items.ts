@@ -30,7 +30,8 @@ export const ACTION_ITEMS_COLUMN_DESCRIPTIONS: Record<string, string> = {
   resource_name: "Human name of the source resource.",
   title: "Short label shown in the dashboard widget.",
   description: "What will happen and why.",
-  audit: "JSON: the archive verification (drive file id/url, bytes, match) that justifies this item.",
+  audit:
+    "JSON: the archive verification (drive file id/url, bytes, match) that justifies this item.",
   drive_url: "Link to the archive in Drive, if any.",
   status: "pending | in_progress | complete | failed.",
   verify_result: "Result of the post-action verification (e.g. 'source no longer exists').",
