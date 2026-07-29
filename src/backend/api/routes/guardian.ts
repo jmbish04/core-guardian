@@ -52,6 +52,7 @@ import {
 } from "@/backend/guardian/allowances";
 import { archiveImages } from "@/backend/guardian/cf-image-archive";
 import { collectUsage, evaluateUsage, type UsageReading } from "@/backend/guardian/collect";
+import { calculateOperations } from "@/backend/guardian/cost-calculator";
 import { archiveD1Database } from "@/backend/guardian/d1-archive";
 import {
   backfillDailyCost,
@@ -556,6 +557,83 @@ guardianRouter.openapi(
     const today = await snapshotDailyCost(c.env, Date.now(), true);
     return c.json({ backfilled, yesterday, today }, 200);
   },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/guardian/cost/calculate — price arbitrary operations for callers
+// ---------------------------------------------------------------------------
+
+const aiOperationSchema = z.object({
+  kind: z.literal("ai"),
+  provider: z.string().optional(),
+  model: z.string(),
+  tokensIn: z.number().min(0).optional(),
+  tokensOut: z.number().min(0).optional(),
+  tokensThinking: z.number().min(0).optional(),
+  requests: z.number().min(0).optional(),
+  at: z.number().optional(),
+});
+const cfOperationSchema = z.object({
+  kind: z.literal("cf"),
+  service: z
+    .string()
+    .describe("Probe id: d1, r2-storage, r2-operations, workers-ai, durable-objects-requests, …"),
+  units: z
+    .number()
+    .min(0)
+    .describe("Quantity in the service's native unit (rows, bytes, neurons, requests)."),
+});
+const costResultLineSchema = z.object({
+  kind: z.enum(["ai", "cf"]),
+  label: z.string(),
+  unit: z.string(),
+  units: z.number(),
+  costUsd: z.number().nullable(),
+  basis: z.string(),
+  rate: z.object({ usd: z.number(), per: z.number() }).nullable(),
+  matched: z.boolean().optional(),
+  error: z.string().optional(),
+});
+
+guardianRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/cost/calculate",
+    operationId: "guardianCostCalculate",
+    summary:
+      "Price arbitrary usage operations (AI tokens, D1/R2/DO/Workers AI units) for a calling worker",
+    description:
+      "Stateless calculator other workers call to turn an operation into USD. `ai` ops price by model × tokens from the scraped catalog (thinking tokens billed as output). `cf` ops price `units` at the MARGINAL Cloudflare overage rate for the given service id (an upper bound while under the pooled allowance). Returns one priced line per operation plus the total; a line that can't be priced comes back with costUsd null and an error. Does not record — use /usage/registrations or the Workers AI proxy to persist.",
+    request: {
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              operations: z
+                .array(z.discriminatedUnion("kind", [aiOperationSchema, cfOperationSchema]))
+                .min(1)
+                .max(100),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "Priced lines + total USD",
+        content: {
+          "application/json": {
+            schema: z.object({ lines: z.array(costResultLineSchema), totalUsd: z.number() }),
+          },
+        },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => c.json(await calculateOperations(c.env, c.req.valid("json").operations), 200),
 );
 
 // ---------------------------------------------------------------------------
