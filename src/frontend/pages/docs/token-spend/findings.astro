@@ -1,0 +1,72 @@
+---
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { Mermaid } from "@/components/docs/Mermaid";
+---
+
+<BaseLayout title="Findings: AI Token Spend & Analytics">
+  <div class="container py-10 max-w-4xl mx-auto space-y-8">
+    <div>
+      <h1 class="text-4xl font-bold tracking-tight">Findings: AI Token Spend & Analytics</h1>
+      <p class="text-xl text-muted-foreground mt-4">
+        Based on the transcript from "The AI Daily Brief" regarding AI token spend management, and an analysis of the core-guardian codebase, here are the findings.
+      </p>
+    </div>
+
+    <section class="space-y-4">
+      <h2 class="text-2xl font-semibold tracking-tight border-b pb-2">Industry Context</h2>
+      <ul class="list-disc pl-6 space-y-2">
+        <li><strong>The "Agentic Era":</strong> Companies are increasingly using AI agents, which leads to high variability and complexity in token consumption. Agentic tasks can consume 5-30x more tokens than a simple chat.</li>
+        <li><strong>Token Economics is Universal:</strong> Every company dealing with AI is facing similar questions regarding token economics and billing management.</li>
+        <li><strong>Need for Robust Analytics:</strong> As usage scales, simply tracking aggregate cost isn't enough; organizations need deeper analytics to identify billing issues, anomalies, and inefficiencies in token usage.</li>
+        <li><strong>Cost per Task:</strong> The industry is moving away from "cost per token" to "Useful Intelligence Per Dollar" or "cost per accepted task" because different models use completely different tokenizers (e.g., a "cheaper" model might require 3x the iterations, costing more per task).</li>
+      </ul>
+
+      <h3 class="text-xl font-medium mt-6">Token Categorization</h3>
+      <p>Tokens generally fall into three categories:</p>
+
+      <div class="my-6 p-4 border rounded-lg bg-slate-50 dark:bg-slate-900/50">
+        <Mermaid client:visible graph={`
+          pie title Token Categorization & Action Strategy
+            "Tokens that Teach (Defend)" : 20
+            "Tokens that Produce (Protect)" : 50
+            "Tokens that Spin (Eliminate)" : 30
+        `} />
+      </div>
+
+      <ul class="list-disc pl-6 space-y-2">
+        <li><strong>Tokens that Teach:</strong> Experimentation, learning, and teaching the AI context (defend these).</li>
+        <li><strong>Tokens that Produce:</strong> Successful work that ships (protect these).</li>
+        <li><strong>Tokens that Spin:</strong> Machines talking to themselves, unused automations, and inefficient loops (eliminate these).</li>
+      </ul>
+    </section>
+
+    <section class="space-y-4">
+      <h2 class="text-2xl font-semibold tracking-tight border-b pb-2">Current State of core-guardian</h2>
+
+      <div class="my-6 p-4 border rounded-lg bg-slate-50 dark:bg-slate-900/50">
+        <Mermaid client:visible graph={`
+          graph TD
+            A[Cloudflare GraphQL API] -->|Daily Cron Snapshot| B(ai_gateway_costs D1 Table)
+            B --> C{Current Analytics}
+            C --> D[Aggregate Cost Tracking]
+            C --> E[Drift Detection vs Scraped Pricing]
+            C --> F[effectivePerMillion calculation]
+
+            G[Missing Capabilities] --> H[Granular/Session-Level Analysis]
+            G --> I[Usage Anomaly Signals e.g. I/O Ratio Spikes]
+
+            style C fill:#dcfce7,stroke:#22c55e,color:#0f172a
+            style G fill:#fee2e2,stroke:#ef4444,color:#0f172a
+        `} />
+      </div>
+
+      <ul class="list-disc pl-6 space-y-2">
+        <li><strong>Data Collection:</strong> <code>core-guardian</code> successfully snapshots daily AI Gateway costs from Cloudflare GraphQL analytics, storing per-model, per-provider request counts, token counts, and cost data.</li>
+        <li><strong>Drift Detection:</strong> It has a <code>driftCheck</code> function that compares actual gateway costs to expected costs based on scraped list prices. This is a great feature for identifying pricing changes or caching discrepancies.</li>
+        <li><strong>Basic Metrics:</strong> It calculates an <code>effectivePerMillion</code> (blended effective USD per 1M tokens), which is a useful high-level metric.</li>
+        <li><strong>Gap - Session/Granular Analysis:</strong> The current analytics are aggregated daily at the model/provider/gateway level. It lacks granular session-level or request-level ratio calculations that could identify specific instances of "runaway agents" or billing anomalies.</li>
+        <li><strong>Gap - Anomaly Signals:</strong> While <code>driftCheck</code> finds <em>pricing</em> anomalies, there are no explicit signals for <em>usage</em> anomalies (e.g., sudden spikes in input-to-output ratios, or unusually high token consumption for a given task type).</li>
+      </ul>
+    </section>
+  </div>
+</BaseLayout>
