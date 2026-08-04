@@ -1,0 +1,87 @@
+---
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { Mermaid } from "@/components/docs/Mermaid";
+---
+
+<BaseLayout title="Recommendations: AI Token Spend Analytics">
+  <div class="container py-10 max-w-4xl mx-auto space-y-8">
+    <div>
+      <h1 class="text-4xl font-bold tracking-tight">Recommendations to Improve ROI of Analytics</h1>
+      <p class="text-xl text-muted-foreground mt-4">
+        To improve the ROI of token spend analytics in core-guardian and address the challenges of the "agentic era" mentioned in the podcast, we recommend the following enhancements.
+      </p>
+    </div>
+
+    <section class="space-y-4">
+      <h2 class="text-2xl font-semibold tracking-tight border-b pb-2">1. Implement Session & Request-Level Ratios</h2>
+      <p>Currently, data is aggregated daily. We need to introduce metrics that help identify specific problematic patterns.</p>
+
+      <div class="my-6 p-4 border rounded-lg bg-slate-50 dark:bg-slate-900/50">
+        <Mermaid client:visible graph={`
+          graph LR
+            A[Gateway Cost Data] --> B{Calculate Ratios}
+            B --> C[Input-to-Output Ratio IOR]
+            B --> D[Cost per Request CPR]
+            B --> E[Tokens per Request TPR]
+
+            C --> F[High: Possible Spin/Stuck Agent<br/>Low: Verbose/Hallucinations]
+            D --> G[Spikes: Complex Queries<br/>Expensive Substitutions]
+            E --> H[Normalize usage vs volume]
+        `} />
+      </div>
+
+      <ul class="list-disc pl-6 space-y-2">
+        <li><strong>Input-to-Output Ratio (IOR):</strong> Calculate <code>tokensIn / tokensOut</code>. A very high IOR (e.g., thousands to one) might indicate an agent stuck reading large contexts without producing useful output (a "spin" state). A very low IOR might indicate hallucinations or overly verbose responses.</li>
+        <li><strong>Cost per Request (CPR):</strong> Calculate <code>costUsd / requests</code>. Significant spikes in CPR for a specific model/gateway indicate queries are suddenly becoming much more complex (longer context) or more expensive models are being substituted.</li>
+        <li><strong>Tokens per Request (TPR):</strong> Calculate <code>(tokensIn + tokensOut) / requests</code>. This helps normalize usage against volume.</li>
+      </ul>
+    </section>
+
+    <section class="space-y-4">
+      <h2 class="text-2xl font-semibold tracking-tight border-b pb-2">2. Develop Anomaly Signals for "Tokens that Spin"</h2>
+      <p>Go beyond <code>driftCheck</code> (which focuses on pricing) to detect <em>usage</em> anomalies, specifically targeting "spin."</p>
+
+      <ul class="list-disc pl-6 space-y-2">
+        <li><strong>Zero-Output Detection:</strong> Flag models or gateways where <code>tokensIn</code> is high but <code>tokensOut</code> is near zero (or an extreme ratio). This is the hallmark of an internal monologue or a broken loop.</li>
+        <li><strong>Z-Score Tracking:</strong> Track the historical mean and standard deviation of IOR, CPR, and TPR for each (provider, model, gateway) combination. Flag any daily aggregate that exceeds a certain Z-score (e.g., > 3 standard deviations from the norm).</li>
+        <li><strong>Velocity Alerts (Weekend Test):</strong> Detect rapid increases in token consumption during expected off-hours or compared to rolling averages.</li>
+        <li><strong>Identify Common Spin Causes:</strong> Build heuristics to look for:
+          <ul class="list-disc pl-6 mt-2">
+            <li><strong>Pre-prompt tax:</strong> Overly bloated system prompts running repeatedly.</li>
+            <li><strong>Immortal conversations:</strong> Sessions carrying too much old history.</li>
+            <li><strong>Unfiltered data retrieval:</strong> Pulling massive data sets instead of specific rows.</li>
+          </ul>
+        </li>
+      </ul>
+    </section>
+
+    <section class="space-y-4">
+      <h2 class="text-2xl font-semibold tracking-tight border-b pb-2">3. Shift Towards "Cost Per Accepted Task"</h2>
+      <ul class="list-disc pl-6 space-y-2">
+        <li><strong>Task-Level Tagging:</strong> Enhance the tracking to associate AI Gateway requests with specific internal "tasks" or "jobs" so cost can be evaluated against value delivered, rather than just raw API calls.</li>
+      </ul>
+    </section>
+
+    <section class="space-y-4">
+      <h2 class="text-2xl font-semibold tracking-tight border-b pb-2">4. Actionable Reporting and Auditing</h2>
+
+      <div class="my-6 p-4 border rounded-lg bg-slate-50 dark:bg-slate-900/50">
+        <Mermaid client:visible graph={`
+          graph TD
+            A[New Ratios & Signals] --> B[Auditing Tool]
+            B --> C[Identify Stale Automations]
+            B --> D[Flag Inefficient Loops]
+
+            A --> E[Dashboard Updates]
+            E --> F[Display CPR, TPR, IOR]
+            E --> G[Visual Flags for 'Potential Spin']
+        `} />
+      </div>
+
+      <ul class="list-disc pl-6 space-y-2">
+        <li><strong>Provide a <code>/doctor</code> equivalent:</strong> Build an auditing tool that analyzes a user's or team's usage and points out stale automations or highly inefficient loops.</li>
+        <li><strong>Update Dashboards:</strong> Modify reporting endpoints to return these new ratios alongside the raw numbers, and visually flag extreme ratios as "Potential Spin."</li>
+      </ul>
+    </section>
+  </div>
+</BaseLayout>

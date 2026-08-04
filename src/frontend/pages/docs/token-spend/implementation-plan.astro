@@ -1,0 +1,139 @@
+---
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { Mermaid } from "@/components/docs/Mermaid";
+---
+
+<BaseLayout title="Implementation Plan: Token Spend Analytics">
+  <div class="container py-10 max-w-4xl mx-auto space-y-8">
+    <div>
+      <h1 class="text-4xl font-bold tracking-tight">Implementation Plan: Enhancing Token Spend Analytics</h1>
+      <p class="text-xl text-muted-foreground mt-4">
+        This plan outlines the steps to build the recommended ratio calculations and anomaly signals into <code>core-guardian</code>.
+      </p>
+    </div>
+
+    <div class="my-6 p-4 border rounded-lg bg-slate-50 dark:bg-slate-900/50">
+      <Mermaid client:visible graph={`
+        gantt
+          title Implementation Phases
+          dateFormat  YYYY-MM-DD
+
+          section Phase 1: Data Models
+          Update GatewayCostRange Type :a1, 2026-08-01, 2d
+          Update queryGatewayCosts Function :a2, after a1, 3d
+
+          section Phase 2: Anomaly Signals
+          Define Anomaly Types :b1, after a2, 1d
+          Create detectUsageAnomalies :b2, after b1, 4d
+          Integrate Signals to APIs :b3, after b2, 2d
+
+          section Phase 3: Task Costing & UI
+          Tagging Infrastructure :c1, after b3, 5d
+          Auditing Dashboard UI :c2, after c1, 5d
+      `} />
+    </div>
+
+    <section class="space-y-4">
+      <h2 class="text-2xl font-semibold tracking-tight border-b pb-2">Phase 1: Enriching Existing Data Models (Backend)</h2>
+
+      <ol class="list-decimal pl-6 space-y-4">
+        <li>
+          <strong>Update <code>GatewayCostRange</code> Type:</strong>
+          <ul class="list-disc pl-6 mt-2">
+            <li>File: <code>src/backend/guardian/ai-gateway-costs.ts</code></li>
+            <li>Add new calculated fields to the <code>GatewayCostRange</code> type:
+              <ul class="list-disc pl-6">
+                <li><code>inputOutputRatio: number | null</code></li>
+                <li><code>costPerRequest: number | null</code></li>
+                <li><code>tokensPerRequest: number | null</code></li>
+              </ul>
+            </li>
+          </ul>
+        </li>
+        <li>
+          <strong>Update <code>queryGatewayCosts</code> Function:</strong>
+          <ul class="list-disc pl-6 mt-2">
+            <li>File: <code>src/backend/guardian/ai-gateway-costs.ts</code></li>
+            <li>Modify the return mapping to calculate the new ratios:
+              <ul class="list-disc pl-6">
+                <li><code>inputOutputRatio</code>: <code>c.tokensOut > 0 ? c.tokensIn / c.tokensOut : null</code></li>
+                <li><code>costPerRequest</code>: <code>c.requests > 0 ? c.costUsd / c.requests : null</code></li>
+                <li><code>tokensPerRequest</code>: <code>c.requests > 0 ? (c.tokensIn + c.tokensOut) / c.requests : null</code></li>
+              </ul>
+            </li>
+          </ul>
+        </li>
+      </ol>
+    </section>
+
+    <section class="space-y-4">
+      <h2 class="text-2xl font-semibold tracking-tight border-b pb-2">Phase 2: Building Anomaly Signals for "Spin"</h2>
+
+      <div class="my-6 p-4 border rounded-lg bg-slate-50 dark:bg-slate-900/50">
+        <Mermaid client:visible graph={`
+          flowchart TD
+            A[Daily Analytics Run] --> B{detectUsageAnomalies}
+            B --> C[Check Zero-Output Logic<br/>IOR > 1000]
+            B --> D[Compute Z-Scores for<br/>IOR, CPR, TPR]
+
+            C --> |True| E[Flag HIGH_IOR / ZERO_OUTPUT]
+            D --> |Deviation > 3σ| F[Flag COST_SPIKE / etc]
+
+            E --> G[Insights Dashboard API]
+            F --> G
+        `} />
+      </div>
+
+      <ol class="list-decimal pl-6 space-y-4">
+        <li>
+          <strong>Define Anomaly Types:</strong>
+          <ul class="list-disc pl-6 mt-2">
+            <li>File: <code>src/backend/guardian/ai-gateway-costs.ts</code> (or a new file <code>analytics-signals.ts</code>)</li>
+            <li>Define types for <code>UsageAnomaly</code>:
+              <ul class="list-disc pl-6">
+                <li><code>type</code>: 'HIGH_IOR' | 'COST_SPIKE' | 'ZERO_OUTPUT' | 'HIGH_PRE_PROMPT_TAX'</li>
+                <li><code>severity</code>: 'LOW' | 'MEDIUM' | 'HIGH'</li>
+                <li><code>details</code>: string (explanation of the anomaly)</li>
+              </ul>
+            </li>
+          </ul>
+        </li>
+        <li>
+          <strong>Create <code>detectUsageAnomalies</code> Function:</strong>
+          <ul class="list-disc pl-6 mt-2">
+            <li>This function will analyze historical and current data to flag instances of "spin".</li>
+            <li><strong>Zero-Output Logic:</strong> Flag if <code>inputOutputRatio</code> > 1000 (configurable threshold).</li>
+            <li><strong>Z-Score Logic:</strong> Compute baselines for IOR, CPR, and TPR, and flag significant deviations.</li>
+            <li><em>Implementation Detail:</em> We may need to query the database for a broader date range to establish baselines before comparing against the most recent period.</li>
+          </ul>
+        </li>
+        <li>
+          <strong>Integrate Signals into Existing Flows:</strong>
+          <ul class="list-disc pl-6 mt-2">
+            <li>Expose the <code>detectUsageAnomalies</code> output via a new "Insights" dashboard API so the frontend can consume it and warn users about potential wasteful loops.</li>
+          </ul>
+        </li>
+      </ol>
+    </section>
+
+    <section class="space-y-4">
+      <h2 class="text-2xl font-semibold tracking-tight border-b pb-2">Phase 3: Task-Based Costing & Frontend Auditing (Future)</h2>
+
+      <ol class="list-decimal pl-6 space-y-4">
+        <li>
+          <strong>Tagging Infrastructure:</strong>
+          <ul class="list-disc pl-6 mt-2">
+            <li>Update the Cloudflare AI Gateway integration (if possible) or the wrapper to pass custom tags representing "Task ID" or "Job Type".</li>
+            <li>Update <code>snapshotGatewayCosts</code> to aggregate by these new tags to calculate "Cost per Task."</li>
+          </ul>
+        </li>
+        <li>
+          <strong>Auditing Dashboard:</strong>
+          <ul class="list-disc pl-6 mt-2">
+            <li>Create a frontend view similar to Anthropic's <code>/doctor</code> command that highlights the anomalies found in Phase 2, explicitly pointing out "Tokens that Spin" vs "Tokens that Produce."</li>
+          </ul>
+        </li>
+      </ol>
+    </section>
+  </div>
+</BaseLayout>
