@@ -10,13 +10,14 @@
 
 "use client";
 
-import { Loader2Icon, RefreshCwIcon, Trash2Icon } from "lucide-react";
+import { ArchiveIcon, Loader2Icon, RefreshCwIcon, Trash2Icon } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ApiError, apiGet, apiSend } from "@/lib/api";
 import { humanSize, relativeTime } from "@/lib/format";
 
+import { ArchiveD1Dialog } from "./ArchiveD1Dialog";
 import { ConfirmDeleteDialog } from "./ConfirmDeleteDialog";
 import { BoundWorkers, ResourceTable, type Column } from "./ResourceTable";
 
@@ -126,12 +127,18 @@ type D1Row = {
   workers: Worker[];
 };
 
+/**
+ * D1 database inventory table. Each row can be archived to Drive (SQL + JSONL +
+ * a Python reconstruct script, via {@link ArchiveD1Dialog}) or hard-deleted
+ * behind the type-to-confirm barrier.
+ */
 export function D1Table() {
   const { rows, loading, error, reload, setError } = useResource<D1Row>(
     "d1",
     useCallback((body) => body.databases as D1Row[], []),
   );
   const [pending, setPending] = useState<D1Row | null>(null);
+  const [archiving, setArchiving] = useState<D1Row | null>(null);
 
   async function remove(row: D1Row) {
     try {
@@ -180,7 +187,20 @@ export function D1Table() {
       key: "actions",
       header: "",
       align: "right",
-      render: (r) => <DeleteCell label={r.name} onClick={() => setPending(r)} />,
+      render: (r) => (
+        <div className="flex items-center justify-end gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label={`Archive ${r.name}`}
+            onClick={() => setArchiving(r)}
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <ArchiveIcon className="size-4" />
+          </Button>
+          <DeleteCell label={r.name} onClick={() => setPending(r)} />
+        </div>
+      ),
     },
   ];
 
@@ -224,6 +244,11 @@ export function D1Table() {
           ) : null
         }
         onConfirm={() => (pending ? remove(pending) : Promise.resolve())}
+      />
+      <ArchiveD1Dialog
+        target={archiving}
+        onOpenChange={(open) => !open && setArchiving(null)}
+        onDeleted={() => void reload()}
       />
     </section>
   );

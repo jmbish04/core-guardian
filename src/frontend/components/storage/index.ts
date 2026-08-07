@@ -5,6 +5,7 @@
  */
 
 export { AiBudgetMeter } from "./AiBudgetMeter";
+export { ArchiveD1Dialog } from "./ArchiveD1Dialog";
 export { AiGatewayBilling } from "./AiGatewayBilling";
 export { AlertRules } from "./AlertRules";
 export { ConfirmDeleteDialog } from "./ConfirmDeleteDialog";
