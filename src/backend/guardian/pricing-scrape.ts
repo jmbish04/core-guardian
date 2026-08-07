@@ -5,9 +5,10 @@
  * Cloudflare's pricing docs (developers.cloudflare.com) are static,
  * server-rendered pages: the full rate table is present in the HTML on a plain
  * `fetch()`, no browser required. So each doc is fetched, stripped to text, and
- * handed to Workers AI to extract the rate rows. (Browser Rendering was the
- * original plan, but it renders + runs an LLM server-side, which is both slower
- * and needs a Browser-Rendering-scoped token — pure overkill for static HTML.)
+ * handed to a json_schema-structured Workers AI call ({@link generateStructuredOutput})
+ * to extract the rate rows. (Browser Rendering was the original plan, but it
+ * renders + runs an LLM server-side, which is both slower and needs a
+ * Browser-Rendering-scoped token — pure overkill for static HTML.)
  *
  * Each scrape writes one `scrape_runs` row (keeping the stripped text for audit
  * and re-extraction) and appends the extracted rates to `pricing_revisions`,
@@ -16,6 +17,9 @@
  * @see {@link file://src/backend/db/schemas/governance/pricing.ts} for the tables.
  */
 
+import { z } from "zod";
+
+import { generateStructuredOutput } from "@/backend/ai/providers";
 import { getDb } from "@/backend/db";
 import { pricingRevisions, scrapeRuns } from "@/backend/db/schema";
 
@@ -84,45 +88,22 @@ function cleanRates(raw: unknown): Rate[] {
   return out;
 }
 
-/** JSON schema forcing gpt-oss to emit clean, parseable rate rows. */
-const RATE_RESPONSE_SCHEMA = {
-  type: "json_schema",
-  json_schema: {
-    type: "object",
-    properties: {
-      rates: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            metric: { type: "string" },
-            unitPrice: { type: "number" },
-            perUnits: { type: "number" },
-            included: { type: ["number", "null"] },
-          },
-          required: ["metric", "unitPrice", "perUnits"],
-        },
-      },
-    },
-    required: ["rates"],
-  },
-} as const;
+/** Structured-output contract forcing the model to emit clean rate rows. */
+const RATE_SCHEMA = z.object({
+  rates: z.array(
+    z.object({
+      metric: z.string(),
+      unitPrice: z.number(),
+      perUnits: z.number(),
+      included: z.number().nullish(),
+    }),
+  ),
+});
 
-/** Reads the text output across Workers AI shapes (gpt-oss uses OpenAI choices). */
-function readAiText(res: any): string {
-  return (
-    res?.response ??
-    res?.result?.response ??
-    res?.choices?.[0]?.message?.content ??
-    res?.result?.choices?.[0]?.message?.content ??
-    ""
-  );
-}
-
-/** Workers AI pulls the rate table out of the stripped page text. */
+/** Workers AI pulls the rate table out of the stripped page text — via a
+ * json_schema structured call, Zod-validated, no text-parse (AGENTS.md §25). */
 async function extractRates(env: Env, text: string): Promise<Rate[]> {
-  const model = (env as any).MODEL_EXTRACT || "@cf/openai/gpt-oss-120b";
-  const prompt = `Extract Cloudflare overage pricing rows from this pricing page text into the required JSON.
+  const prompt = `Extract Cloudflare overage pricing rows from this pricing page text.
 - metric: the metered dimension, e.g. "rows read", "GB stored per month", "requests".
 - unitPrice: the USD overage price number, e.g. 0.001 for "$0.001 / million rows".
 - perUnits: how many metric units unitPrice covers, e.g. 1000000 for a "/ million" rate, 1 for a per-single-unit rate.
@@ -131,30 +112,16 @@ Ignore flat plan fees ($5/month) and free-tier-only rows. One row per metered di
 
 Page text:
 ${text.slice(0, 14000)}`;
-  let res: any;
   try {
-    res = await env.AI.run(model, {
+    const result = await generateStructuredOutput(env, {
       messages: [{ role: "user", content: prompt }],
+      schema: RATE_SCHEMA,
+      schemaName: "CloudflareRates",
       max_tokens: 2048,
-      response_format: RATE_RESPONSE_SCHEMA,
     });
+    return cleanRates(result);
   } catch {
     return [];
-  }
-  const raw: string = readAiText(res);
-  if (!raw) return [];
-  // With json_schema the whole response is the JSON object; still guard with a
-  // brace-slice for models that prepend reasoning.
-  try {
-    return cleanRates(JSON.parse(raw));
-  } catch {
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (!match) return [];
-    try {
-      return cleanRates(JSON.parse(match[0]));
-    } catch {
-      return [];
-    }
   }
 }
 

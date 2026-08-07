@@ -12,6 +12,7 @@ interface __BaseEnv_Env {
 	CLOUDFLARE_WRANGLER_API_TOKEN: SecretsStoreSecret;
 	WORKER_API_KEY: SecretsStoreSecret;
 	AI_GATEWAY_TOKEN: SecretsStoreSecret;
+	OPEN_ROUTER_API_KEY: SecretsStoreSecret;
 	GOOGLE_CREDS_SA_PRIVATE_KEY_PT_1: SecretsStoreSecret;
 	GOOGLE_CREDS_SA_PRIVATE_KEY_PT_2: SecretsStoreSecret;
 	GOOGLE_CREDS_SA_CLIENT_EMAIL: SecretsStoreSecret;

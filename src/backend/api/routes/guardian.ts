@@ -52,7 +52,16 @@ import {
 } from "@/backend/guardian/allowances";
 import { archiveImages } from "@/backend/guardian/cf-image-archive";
 import { collectUsage, evaluateUsage, type UsageReading } from "@/backend/guardian/collect";
+import {
+  getBillableUsageReport,
+  syncBillableUsage,
+} from "@/backend/guardian/billable-usage";
 import { calculateOperations } from "@/backend/guardian/cost-calculator";
+import { refreshModelCatalog } from "@/backend/guardian/model-catalog";
+import {
+  getRecommendations,
+  syncRecommendationAlerts,
+} from "@/backend/guardian/model-recommendations";
 import { archiveD1Database } from "@/backend/guardian/d1-archive";
 import {
   backfillDailyCost,
@@ -556,6 +565,213 @@ guardianRouter.openapi(
     const yesterday = await snapshotDailyCost(c.env, Date.now() - 86_400_000, true);
     const today = await snapshotDailyCost(c.env, Date.now(), true);
     return c.json({ backfilled, yesterday, today }, 200);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET  /api/guardian/billable-usage       — actual billed cost + estimate recon
+// POST /api/guardian/billable-usage/sync  — pull from the API now
+// ---------------------------------------------------------------------------
+
+const billableUsageReportSchema = z.object({
+  currency: z.string(),
+  days: z.array(z.string()),
+  services: z.array(
+    z.object({
+      service: z.string(),
+      family: z.string(),
+      unit: z.string(),
+      points: z.array(z.object({ day: z.string(), quantity: z.number(), costUsd: z.number() })),
+      deltaUsd: z.number().nullable(),
+      totalUsd: z.number(),
+    }),
+  ),
+  totalByDay: z.array(z.object({ day: z.string(), costUsd: z.number() })),
+  totalActualUsd: z.number(),
+  totalDeltaUsd: z.number().nullable(),
+  reconcile: z.array(
+    z.object({
+      day: z.string(),
+      estimateUsd: z.number(),
+      actualUsd: z.number(),
+      deltaUsd: z.number(),
+      accuracy: z.number().nullable(),
+    }),
+  ),
+  windowAccuracy: z.number().nullable(),
+});
+
+guardianRouter.openapi(
+  createRoute({
+    method: "get",
+    path: "/billable-usage",
+    operationId: "guardianBillableUsage",
+    summary: "Actual billed cost per Cloudflare product, with estimate-vs-actual reconciliation",
+    description:
+      "Replays the `billable_usage` table sourced from Cloudflare's Billable Usage API (the real charged amounts, unlike the reconstructed `daily_cost` estimate). Returns one billed-cost series per product with a day-over-day delta, plus a per-day reconciliation of Guardian's reconstructed estimate against the real bill (`accuracy` = 1 − |estimate−actual|/actual) and a window-level accuracy figure — the trust signal for every other cost number in the panel.",
+    request: {
+      query: z.object({
+        days: z.coerce.number().int().min(2).max(90).default(30).optional(),
+      }),
+    },
+    responses: {
+      200: {
+        description: "Per-product billed series + estimate reconciliation",
+        content: { "application/json": { schema: billableUsageReportSchema } },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => c.json(await getBillableUsageReport(c.env, c.req.valid("query").days ?? 30), 200),
+);
+
+guardianRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/billable-usage/sync",
+    operationId: "guardianBillableUsageSync",
+    summary: "Pull actual billed usage from the Cloudflare Billable Usage API now",
+    description:
+      "On-demand equivalent of the daily cron step: fetches the trailing `days` window from the Billable Usage API and upserts it into `billable_usage`. Idempotent. Requires the Cloudflare API token to carry the `Billing: Read` permission; a 502 here usually means that scope is missing.",
+    request: {
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({ days: z.number().int().min(1).max(90).default(35) }),
+          },
+        },
+        required: false,
+      },
+    },
+    responses: {
+      200: {
+        description: "Rows written",
+        content: { "application/json": { schema: z.object({ rows: z.number() }) } },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+      502: {
+        description: "The Billable Usage API rejected the request (often a missing Billing:Read scope)",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => {
+    const days = c.req.valid("json")?.days ?? 35;
+    try {
+      const rows = await syncBillableUsage(c.env, days);
+      return c.json({ rows }, 200);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 502);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET  /api/guardian/model-recommendations — cheaper-but-capable model swaps
+// POST /api/guardian/model-catalog/refresh — repull the candidate catalog now
+// ---------------------------------------------------------------------------
+
+const recommendationSchema = z.object({
+  id: z.string(),
+  currentModel: z.string(),
+  currentProvider: z.string(),
+  currentTier: z.enum(["small", "mid", "frontier"]),
+  observedRequests: z.number(),
+  avgInTokens: z.number(),
+  avgOutTokens: z.number(),
+  observedMonthlyUsd: z.number(),
+  suggestedModel: z.string(),
+  suggestedProvider: z.string(),
+  suggestedTier: z.enum(["small", "mid", "frontier"]),
+  suggestedMonthlyUsd: z.number(),
+  monthlySavingsUsd: z.number(),
+  savingsPct: z.number(),
+  rationale: z.string(),
+  basis: z.enum(["tier", "prompt-classified"]),
+});
+
+guardianRouter.openapi(
+  createRoute({
+    method: "get",
+    path: "/model-recommendations",
+    operationId: "guardianModelRecommendations",
+    summary: "Cheaper-but-capable model swaps for the account's observed AI usage",
+    description:
+      "Looks at what Guardian observed the account actually running per model (requests + tokens + cost, from AI Gateway and the Worker's usage registrations) and, against the merged OpenRouter + AI Pricing Guru + scraped catalog, recommends models that are at least as capable (equal-or-higher tier) but cheaper for that exact token mix. Each rec carries the projected monthly saving. `classify=true` opts into sampling stored task descriptions and asking Workers AI for the minimum tier each workload needs — which can unlock a cheaper model the blunt tier floor would block (one inference call; reads task descriptions, never raw provider prompts).",
+    request: {
+      query: z.object({
+        days: z.coerce.number().int().min(1).max(90).default(30).optional(),
+        // NOT z.coerce.boolean() — that maps the string "false" to true. Opt-in
+        // only when the literal string "true" is passed.
+        classify: z.enum(["true", "false"]).default("false").optional(),
+        minSavings: z.coerce.number().min(0).default(0.01).optional(),
+      }),
+    },
+    responses: {
+      200: {
+        description: "Recommendations sorted by projected monthly saving",
+        content: {
+          "application/json": {
+            schema: z.object({
+              days: z.number(),
+              classified: z.boolean(),
+              catalogSize: z.number(),
+              totalMonthlySavingsUsd: z.number(),
+              recommendations: z.array(recommendationSchema),
+            }),
+          },
+        },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => {
+    const q = c.req.valid("query");
+    return c.json(
+      await getRecommendations(c.env, {
+        days: q.days ?? 30,
+        classifyPrompts: q.classify === "true",
+        minSavingsUsd: q.minSavings ?? 0.01,
+      }),
+      200,
+    );
+  },
+);
+
+guardianRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/model-catalog/refresh",
+    operationId: "guardianModelCatalogRefresh",
+    summary: "Repull the merged model-pricing candidate catalog now (also daily on cron)",
+    description:
+      "Fetches OpenRouter + AI Pricing Guru + the scraped catalog, merges and re-caches them in KV, then refreshes the advisory recommendation alerts (≥$5/mo savings) in the alerts feed. Idempotent; the recommendation engine reads this cache. OpenRouter is skipped when OPEN_ROUTER_API_KEY is unset — the catalog still builds from the other sources.",
+    responses: {
+      200: {
+        description: "Candidate models cached + recommendation alerts refreshed",
+        content: {
+          "application/json": { schema: z.object({ models: z.number(), alerts: z.number() }) },
+        },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => {
+    const models = (await refreshModelCatalog(c.env)).length;
+    const alerts = await syncRecommendationAlerts(c.env);
+    return c.json({ models, alerts }, 200);
   },
 );
 

@@ -274,8 +274,13 @@ export async function evaluateAlerts(env: Env, readings: UsageReading[], now: nu
     raised++;
   }
 
-  // Auto-resolve alerts that no longer project over their band this run.
-  const active = await db.select({ id: alerts.id }).from(alerts).where(sql`${alerts.status} != 'resolved'`);
+  // Auto-resolve alerts that no longer project over their band this run. Scoped
+  // to the usage alerts this function owns — model-advisor alerts have their own
+  // lifecycle (see syncRecommendationAlerts) and must survive this sweep.
+  const active = await db
+    .select({ id: alerts.id })
+    .from(alerts)
+    .where(sql`${alerts.status} != 'resolved' AND ${alerts.service} != 'model-advisor'`);
   for (const a of active) {
     if (!activeIds.has(a.id)) {
       await db.update(alerts).set({ status: "resolved", updatedAt: now }).where(sql`${alerts.id} = ${a.id}`);

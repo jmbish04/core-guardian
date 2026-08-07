@@ -1,0 +1,25 @@
+---
+/**
+ * Model advisor — cheaper-but-capable model swaps over observed AI usage.
+ *
+ * Thin Astro shell over the `<ModelAdvisor>` React island (full variant). The
+ * dashboard widget links here with a `#rec-…` hash to focus a single rec.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { ModelAdvisor } from "@/components/dashboard";
+---
+
+<BaseLayout
+  title="Model Advisor"
+  description="Cheaper AI models that are at least as capable for what you actually run, priced against your observed token mix — with optional task-prompt analysis."
+>
+  <main class="container mx-auto flex max-w-5xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/guardian"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Core Guardian
+    </a>
+    <ModelAdvisor variant="full" client:load />
+  </main>
+</BaseLayout>

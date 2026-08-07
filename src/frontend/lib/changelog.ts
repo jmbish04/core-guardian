@@ -59,6 +59,44 @@ export const STATUS_LABEL: Record<ChangeStatus, string> = {
 export const CHANGELOG: ChangeEntry[] = [
   // ---- Shipped ----------------------------------------------------------
   {
+    id: "0320-model-advisor",
+    title: "Model advisor — cheaper-but-capable model recommendations",
+    status: "shipped",
+    size: "L",
+    date: "2026-08-07",
+    phase: "P8",
+    summary:
+      "Proactive cost advisor: looks at what Guardian observed the account actually running per model, then recommends models that are at least as capable but cheaper for that exact token mix — with projected monthly savings. Widget + dedicated page + API.",
+    scope: [
+      "model-catalog.ts: merges OpenRouter (Bearer OPEN_ROUTER_API_KEY) + AI Pricing Guru + the scraped catalog into one candidate pool with a coarse capability tier; KV-cached, daily cron refresh",
+      "model-recommendations.ts: observed usage (gateway + registrations) → cheaper-but-equal-or-higher-tier swaps, priced against the observed token mix; opt-in `classify` samples stored task descriptions for the minimum viable tier (never raw provider prompts)",
+      "GET /api/guardian/model-recommendations, POST /api/guardian/model-catalog/refresh",
+      "ModelAdvisor: dashboard widget (top swaps → deep-link) + /dashboard/recommendations full page",
+      "High-value swaps (≥$5/mo) surface as advisory alerts in the alerts feed (snooze/resolve) — NOT the destructive action_items queue",
+      "Comma/format pass: neutral flat sparkline for $0 rows (DailyCost + BillableUsage), grouped counts on storage stat tiles",
+    ],
+    depends: ["0310-billable-usage-api", "0260-ai-model-pricing-catalog"],
+  },
+  {
+    id: "0310-billable-usage-api",
+    title: "Billable Usage API — actual billed cost + estimate reconciliation",
+    status: "shipped",
+    size: "M",
+    date: "2026-08-07",
+    phase: "P8",
+    version: "0f7bb8e4",
+    summary:
+      "Cloudflare shipped the first real cost API (Agents Week). Guardian now stores the actual charged amount per product per day and reconciles it against its own reconstructed estimate — a live accuracy score for every cost number in the panel.",
+    scope: [
+      "billable-usage.ts: REST client for /accounts/{id}/billable-usage (reuses the GraphQL Secrets Store token; needs Billing:Read)",
+      "billable_usage table (migration 0019): actual ContractedCost per product/charge-period, deterministic PK for idempotent daily sync",
+      "GET /api/guardian/billable-usage: per-product billed series + day-over-day delta + estimate-vs-actual reconciliation (accuracy = 1 − |est−actual|/actual)",
+      "POST /api/guardian/billable-usage/sync: on-demand pull (502 surfaces a missing Billing:Read scope)",
+      "Daily cron hook (gated 1d, non-fatal) alongside the reconstructed daily_cost snapshot",
+    ],
+    depends: ["0240-catalogs-pipelines-cost"],
+  },
+  {
     id: "0001-p0-polish-and-nav",
     title: "P0 — Legibility & navigation",
     status: "shipped",

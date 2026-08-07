@@ -3,6 +3,7 @@ export * from "./ai-gateway-costs";
 export * from "./ai-model-pricing";
 export * from "./ai-usage-registrations";
 export * from "./alert-rules";
+export * from "./billable-usage";
 export * from "./alerts";
 export * from "./billing-events";
 export * from "./cron-runs";

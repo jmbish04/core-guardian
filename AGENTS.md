@@ -43,6 +43,7 @@ This repository relies heavily on AI agents for rapid prototyping and feature ge
 22. **New page ⇒ nav entry same change** (`siteConfig`, `src/frontend/lib/config.ts`). Never link a non-existent route. Template/showcase pages stay on disk but hidden from the navbar.
 23. **Check `cloudflare-docs`/`cloudflare-api` MCP before assuming an API exists.** Verified-false here: no pricing-tier API; `/billing/usage` omits D1/R2/DO/AI; R2 has no last-access timestamp.
 24. **Guardian plan:** `/docs/architecture` + `docs/0001_master_rebuild_plan/`. Governance = % of monthly allowance projected to period end (`guardian/allowances.ts`), not guessed thresholds.
+25. **Structured model output ⇒ `json_schema`, never text-parse.** Any time a model must return JSON, call `generateStructuredOutput(env, { schema })` from `@/backend/ai/providers` — it sends `response_format: { type: "json_schema" }` and returns a Zod-validated object. NEVER call a text-generation method (`env.AI.run` for prose, any `generateText`) and then `JSON.parse` / regex-strip the reply. Banned pattern: `raw.match(/\{[\s\S]*\}/)` then `JSON.parse`. The schema is the contract and the endpoint must enforce it; a free-text reply we hope is JSON is not structured output.
 
 ## Template App Surface (reference implementation)
 

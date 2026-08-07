@@ -13,7 +13,7 @@ import { DatabaseIcon, HardDriveIcon, LayersIcon, Loader2Icon, TableIcon } from 
 import { useEffect, useState } from "react";
 
 import { ApiError, apiGet } from "@/lib/api";
-import { humanSize } from "@/lib/format";
+import { formatExact, humanSize } from "@/lib/format";
 
 type Summary = {
   r2: { count: number; totalBytes: number; totalObjects: number };
@@ -121,18 +121,18 @@ export function StorageDashboard() {
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         <StatTile
           label="R2"
-          value={String(data.r2.count)}
-          sub={`${humanSize(data.r2.totalBytes)} · ${data.r2.totalObjects.toLocaleString()} objects`}
+          value={formatExact(data.r2.count)}
+          sub={`${humanSize(data.r2.totalBytes)} · ${formatExact(data.r2.totalObjects)} objects`}
         />
-        <StatTile label="D1" value={String(data.d1.count)} sub={humanSize(data.d1.totalBytes)} />
+        <StatTile label="D1" value={formatExact(data.d1.count)} sub={humanSize(data.d1.totalBytes)} />
         <StatTile
           label="KV"
-          value={String(data.kv.count)}
+          value={formatExact(data.kv.count)}
           // Cloudflare exposes no stored-size API for KV.
           sub="size not reported by API"
         />
-        <StatTile label="Data catalogs" value={String(data.catalogs.count)} sub="R2 warehouses" />
-        <StatTile label="Pipelines" value={String(data.pipelines.count)} sub="configured" />
+        <StatTile label="Data catalogs" value={formatExact(data.catalogs.count)} sub="R2 warehouses" />
+        <StatTile label="Pipelines" value={formatExact(data.pipelines.count)} sub="configured" />
       </div>
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">

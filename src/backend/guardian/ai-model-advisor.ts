@@ -13,13 +13,24 @@
  */
 
 import { and, desc, eq, lte, sql } from "drizzle-orm";
+import { z } from "zod";
 
+import { generateStructuredOutput } from "@/backend/ai/providers";
 import { getDb } from "@/backend/db";
 import { aiModelPricing, type AiModelPricingRow } from "@/backend/db/schema";
 
 import { queryGatewayCosts } from "./ai-gateway-costs";
 
-const ADVISOR_MODEL = "@cf/moonshotai/kimi-k2.7-code";
+/** Structured-output contract for {@link adviseModels} (AGENTS.md §25). */
+const ADVICE_SCHEMA = z.object({
+  recommendations: z.array(
+    z.object({
+      apiModelName: z.string(),
+      provider: z.string(),
+      why: z.string(),
+    }),
+  ),
+});
 
 /** Newest price row per (provider, api_model_name). */
 export async function latestModels(env: Env): Promise<AiModelPricingRow[]> {
@@ -46,16 +57,6 @@ export type Advice = {
   recommendations: { apiModelName: string; provider: string; why: string; estCostPerCall: number | null }[];
   raw?: string;
 };
-
-function readAiText(res: any): string {
-  return (
-    res?.response ??
-    res?.result?.response ??
-    res?.choices?.[0]?.message?.content ??
-    res?.result?.choices?.[0]?.message?.content ??
-    ""
-  );
-}
 
 /** Per-call cost from a catalog row + token estimates. */
 function estCost(row: AiModelPricingRow, inTok: number, outTok: number): number | null {
@@ -101,9 +102,7 @@ export async function adviseModels(env: Env, req: AdviseRequest): Promise<Advice
     observedGatewayPerM: observed.get(m.apiModelName.toLowerCase()) ?? null,
   }));
 
-  const prompt = `You advise coding agents on the cheapest capable AI model for a task. Given the request and the live model catalog (prices in USD; estCostPerCall is for the given token estimates; observedGatewayPerM is the blended $/1M this account has ACTUALLY paid through AI Gateway when available — trust it over the advertised list price when present), pick the TOP 3 models that best balance capability for the use case against cost. Prefer the cheapest model that is clearly capable.
-
-Return ONLY JSON: {"recommendations":[{"apiModelName":string,"provider":string,"why":string}]} — exactly 3, best first.
+  const prompt = `You advise coding agents on the cheapest capable AI model for a task. Given the request and the live model catalog (prices in USD; estCostPerCall is for the given token estimates; observedGatewayPerM is the blended $/1M this account has ACTUALLY paid through AI Gateway when available — trust it over the advertised list price when present), pick the TOP 3 models that best balance capability for the use case against cost. Prefer the cheapest model that is clearly capable. Return exactly 3, best first.
 
 REQUEST:
 - use case: ${req.useCase}
@@ -114,28 +113,22 @@ REQUEST:
 CATALOG:
 ${JSON.stringify(catalog).slice(0, 18000)}`;
 
-  let raw = "";
+  let recs: { apiModelName: string; provider: string; why: string }[] = [];
   try {
-    // kimi-k2.7-code is a reasoning model — it spends tokens on hidden
-    // reasoning_content before the answer, so give the budget room or `content`
-    // comes back empty.
-    const out: any = await env.AI.run(ADVISOR_MODEL, {
+    // Structured output — response_format: json_schema, Zod-validated. No
+    // text-then-JSON.parse (AGENTS.md §25).
+    const result = await generateStructuredOutput(env, {
       messages: [{ role: "user", content: prompt }],
+      schema: ADVICE_SCHEMA,
+      schemaName: "ModelAdvice",
       max_tokens: 6000,
     });
-    raw = readAiText(out);
+    recs = result.recommendations;
   } catch (err) {
-    return { recommendations: [], raw: `advisor model error: ${err instanceof Error ? err.message : String(err)}` };
-  }
-
-  const match = raw.match(/\{[\s\S]*\}/);
-  let recs: { apiModelName: string; provider: string; why: string }[] = [];
-  if (match) {
-    try {
-      recs = JSON.parse(match[0]).recommendations ?? [];
-    } catch {
-      /* fall through — return raw for debugging */
-    }
+    return {
+      recommendations: [],
+      raw: `advisor model error: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
 
   const byName = new Map(models.map((m) => [m.apiModelName, m]));
@@ -149,7 +142,6 @@ ${JSON.stringify(catalog).slice(0, 18000)}`;
         estCostPerCall: row ? estCost(row, inTok, outTok) : null,
       };
     }),
-    raw: recs.length === 0 ? raw.slice(0, 500) : undefined,
   };
 }
 
