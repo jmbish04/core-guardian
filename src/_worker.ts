@@ -61,6 +61,7 @@ import {
 import { handleInboundEmail } from "./backend/email/inbound";
 import { snapshotGatewayCosts } from "./backend/guardian/ai-gateway-costs";
 import { syncBillableUsage } from "./backend/guardian/billable-usage";
+import { CATALOG_CACHE_KEY, refreshModelCatalog } from "./backend/guardian/model-catalog";
 import { scrapeAllModelPricing } from "./backend/guardian/ai-model-pricing";
 import { evaluateUsage } from "./backend/guardian/collect";
 import { backfillDailyCost, snapshotDailyCost } from "./backend/guardian/daily-cost";
@@ -146,6 +147,15 @@ async function runGuardianEvaluation(env: Env) {
       JSON.stringify({ level: "ERROR", source: "guardian.billableUsage", error: String(err) }),
     );
   }
+  // Daily: refresh the merged model-pricing candidate catalog (OpenRouter + AI
+  // Pricing Guru + scraped) that the cost advisor recommends against.
+  try {
+    await maybeRefreshModelCatalog(env);
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.modelCatalog", error: String(err) }),
+    );
+  }
 }
 
 const THIRTY_DAYS_MS = 30 * 24 * 3_600_000;
@@ -215,6 +225,22 @@ async function maybeSyncBillableUsage(env: Env) {
   if (latest && Date.now() - latest.capturedAt < ONE_DAY_MS) return;
   const rows = await syncBillableUsage(env, 35);
   console.warn(JSON.stringify({ level: "INFO", source: "guardian.billableUsage", rows }));
+}
+
+async function maybeRefreshModelCatalog(env: Env) {
+  try {
+    const cached = await env.SESSIONS.get(CATALOG_CACHE_KEY);
+    if (cached) {
+      const { at } = JSON.parse(cached) as { at?: number };
+      if (at && Date.now() - at < ONE_DAY_MS) return;
+    }
+  } catch {
+    /* fall through to a refresh */
+  }
+  const models = await refreshModelCatalog(env);
+  console.warn(
+    JSON.stringify({ level: "INFO", source: "guardian.modelCatalog", models: models.length }),
+  );
 }
 
 /** True for paths the Hono API owns (REST + OpenAPI doc surfaces). */

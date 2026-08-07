@@ -59,6 +59,24 @@ export const STATUS_LABEL: Record<ChangeStatus, string> = {
 export const CHANGELOG: ChangeEntry[] = [
   // ---- Shipped ----------------------------------------------------------
   {
+    id: "0320-model-advisor",
+    title: "Model advisor — cheaper-but-capable model recommendations",
+    status: "shipped",
+    size: "L",
+    date: "2026-08-07",
+    phase: "P8",
+    summary:
+      "Proactive cost advisor: looks at what Guardian observed the account actually running per model, then recommends models that are at least as capable but cheaper for that exact token mix — with projected monthly savings. Widget + dedicated page + API.",
+    scope: [
+      "model-catalog.ts: merges OpenRouter (Bearer OPEN_ROUTER_API_KEY) + AI Pricing Guru + the scraped catalog into one candidate pool with a coarse capability tier; KV-cached, daily cron refresh",
+      "model-recommendations.ts: observed usage (gateway + registrations) → cheaper-but-equal-or-higher-tier swaps, priced against the observed token mix; opt-in `classify` samples stored task descriptions for the minimum viable tier (never raw provider prompts)",
+      "GET /api/guardian/model-recommendations, POST /api/guardian/model-catalog/refresh",
+      "ModelAdvisor: dashboard widget (top swaps → deep-link) + /dashboard/recommendations full page",
+      "Comma/format pass: neutral flat sparkline for $0 rows (DailyCost + BillableUsage), grouped counts on storage stat tiles",
+    ],
+    depends: ["0310-billable-usage-api", "0260-ai-model-pricing-catalog"],
+  },
+  {
     id: "0310-billable-usage-api",
     title: "Billable Usage API — actual billed cost + estimate reconciliation",
     status: "shipped",

@@ -57,6 +57,8 @@ import {
   syncBillableUsage,
 } from "@/backend/guardian/billable-usage";
 import { calculateOperations } from "@/backend/guardian/cost-calculator";
+import { refreshModelCatalog } from "@/backend/guardian/model-catalog";
+import { getRecommendations } from "@/backend/guardian/model-recommendations";
 import { archiveD1Database } from "@/backend/guardian/d1-archive";
 import {
   backfillDailyCost,
@@ -665,6 +667,101 @@ guardianRouter.openapi(
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 502);
     }
   },
+);
+
+// ---------------------------------------------------------------------------
+// GET  /api/guardian/model-recommendations — cheaper-but-capable model swaps
+// POST /api/guardian/model-catalog/refresh — repull the candidate catalog now
+// ---------------------------------------------------------------------------
+
+const recommendationSchema = z.object({
+  id: z.string(),
+  currentModel: z.string(),
+  currentProvider: z.string(),
+  currentTier: z.enum(["small", "mid", "frontier"]),
+  observedRequests: z.number(),
+  avgInTokens: z.number(),
+  avgOutTokens: z.number(),
+  observedMonthlyUsd: z.number(),
+  suggestedModel: z.string(),
+  suggestedProvider: z.string(),
+  suggestedTier: z.enum(["small", "mid", "frontier"]),
+  suggestedMonthlyUsd: z.number(),
+  monthlySavingsUsd: z.number(),
+  savingsPct: z.number(),
+  rationale: z.string(),
+  basis: z.enum(["tier", "prompt-classified"]),
+});
+
+guardianRouter.openapi(
+  createRoute({
+    method: "get",
+    path: "/model-recommendations",
+    operationId: "guardianModelRecommendations",
+    summary: "Cheaper-but-capable model swaps for the account's observed AI usage",
+    description:
+      "Looks at what Guardian observed the account actually running per model (requests + tokens + cost, from AI Gateway and the Worker's usage registrations) and, against the merged OpenRouter + AI Pricing Guru + scraped catalog, recommends models that are at least as capable (equal-or-higher tier) but cheaper for that exact token mix. Each rec carries the projected monthly saving. `classify=true` opts into sampling stored task descriptions and asking Workers AI for the minimum tier each workload needs — which can unlock a cheaper model the blunt tier floor would block (one inference call; reads task descriptions, never raw provider prompts).",
+    request: {
+      query: z.object({
+        days: z.coerce.number().int().min(1).max(90).default(30).optional(),
+        classify: z.coerce.boolean().default(false).optional(),
+        minSavings: z.coerce.number().min(0).default(0.01).optional(),
+      }),
+    },
+    responses: {
+      200: {
+        description: "Recommendations sorted by projected monthly saving",
+        content: {
+          "application/json": {
+            schema: z.object({
+              days: z.number(),
+              classified: z.boolean(),
+              catalogSize: z.number(),
+              totalMonthlySavingsUsd: z.number(),
+              recommendations: z.array(recommendationSchema),
+            }),
+          },
+        },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => {
+    const q = c.req.valid("query");
+    return c.json(
+      await getRecommendations(c.env, {
+        days: q.days ?? 30,
+        classifyPrompts: q.classify ?? false,
+        minSavingsUsd: q.minSavings ?? 0.01,
+      }),
+      200,
+    );
+  },
+);
+
+guardianRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/model-catalog/refresh",
+    operationId: "guardianModelCatalogRefresh",
+    summary: "Repull the merged model-pricing candidate catalog now (also daily on cron)",
+    description:
+      "Fetches OpenRouter + AI Pricing Guru + the scraped catalog, merges and re-caches them in KV. Idempotent; the recommendation engine reads this cache. OpenRouter is skipped when OPEN_ROUTER_API_KEY is unset — the catalog still builds from the other sources.",
+    responses: {
+      200: {
+        description: "Candidate models cached",
+        content: { "application/json": { schema: z.object({ models: z.number() }) } },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => c.json({ models: (await refreshModelCatalog(c.env)).length }, 200),
 );
 
 // ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ export { AllowancesPanel } from "./AllowancesPanel";
 export { CostTraceIsland } from "./CostTraceIsland";
 export { DailyCost } from "./DailyCost";
 export { BillableUsage } from "./BillableUsage";
+export { ModelAdvisor } from "./ModelAdvisor";
 export { AlertsBoard } from "./AlertsBoard";
 export { BindingDetail } from "./BindingDetail";
 export { WorkerSpendMonitor } from "./WorkerSpendMonitor";

@@ -67,6 +67,15 @@ export async function getCloudflareApiToken(env: Env): Promise<string | undefine
   );
 }
 
+/** Fetch the OpenRouter API key (model-catalog enrichment). Optional — the
+ * catalog degrades to the other sources when this is unset. */
+export async function getOpenRouterApiKey(env: Env): Promise<string | undefined> {
+  return (
+    (await getSecretStoreBinding(env, "OPEN_ROUTER_API_KEY")) ??
+    getSecret(env, "OPEN_ROUTER_API_KEY")
+  );
+}
+
 /** Fetch the Cloudflare account id. */
 export async function getCloudflareAccountId(env: Env): Promise<string | undefined> {
   return (
