@@ -62,6 +62,7 @@ import { handleInboundEmail } from "./backend/email/inbound";
 import { snapshotGatewayCosts } from "./backend/guardian/ai-gateway-costs";
 import { syncBillableUsage } from "./backend/guardian/billable-usage";
 import { CATALOG_CACHE_KEY, refreshModelCatalog } from "./backend/guardian/model-catalog";
+import { syncRecommendationAlerts } from "./backend/guardian/model-recommendations";
 import { scrapeAllModelPricing } from "./backend/guardian/ai-model-pricing";
 import { evaluateUsage } from "./backend/guardian/collect";
 import { backfillDailyCost, snapshotDailyCost } from "./backend/guardian/daily-cost";
@@ -238,8 +239,15 @@ async function maybeRefreshModelCatalog(env: Env) {
     /* fall through to a refresh */
   }
   const models = await refreshModelCatalog(env);
+  // With a fresh catalog, refresh the advisory recommendation alerts too.
+  const alerts = await syncRecommendationAlerts(env).catch((err) => {
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.recommendationAlerts", error: String(err) }),
+    );
+    return 0;
+  });
   console.warn(
-    JSON.stringify({ level: "INFO", source: "guardian.modelCatalog", models: models.length }),
+    JSON.stringify({ level: "INFO", source: "guardian.modelCatalog", models: models.length, alerts }),
   );
 }
 

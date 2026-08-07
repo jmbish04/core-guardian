@@ -72,6 +72,7 @@ export const CHANGELOG: ChangeEntry[] = [
       "model-recommendations.ts: observed usage (gateway + registrations) → cheaper-but-equal-or-higher-tier swaps, priced against the observed token mix; opt-in `classify` samples stored task descriptions for the minimum viable tier (never raw provider prompts)",
       "GET /api/guardian/model-recommendations, POST /api/guardian/model-catalog/refresh",
       "ModelAdvisor: dashboard widget (top swaps → deep-link) + /dashboard/recommendations full page",
+      "High-value swaps (≥$5/mo) surface as advisory alerts in the alerts feed (snooze/resolve) — NOT the destructive action_items queue",
       "Comma/format pass: neutral flat sparkline for $0 rows (DailyCost + BillableUsage), grouped counts on storage stat tiles",
     ],
     depends: ["0310-billable-usage-api", "0260-ai-model-pricing-catalog"],

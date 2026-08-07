@@ -58,7 +58,10 @@ import {
 } from "@/backend/guardian/billable-usage";
 import { calculateOperations } from "@/backend/guardian/cost-calculator";
 import { refreshModelCatalog } from "@/backend/guardian/model-catalog";
-import { getRecommendations } from "@/backend/guardian/model-recommendations";
+import {
+  getRecommendations,
+  syncRecommendationAlerts,
+} from "@/backend/guardian/model-recommendations";
 import { archiveD1Database } from "@/backend/guardian/d1-archive";
 import {
   backfillDailyCost,
@@ -751,11 +754,13 @@ guardianRouter.openapi(
     operationId: "guardianModelCatalogRefresh",
     summary: "Repull the merged model-pricing candidate catalog now (also daily on cron)",
     description:
-      "Fetches OpenRouter + AI Pricing Guru + the scraped catalog, merges and re-caches them in KV. Idempotent; the recommendation engine reads this cache. OpenRouter is skipped when OPEN_ROUTER_API_KEY is unset — the catalog still builds from the other sources.",
+      "Fetches OpenRouter + AI Pricing Guru + the scraped catalog, merges and re-caches them in KV, then refreshes the advisory recommendation alerts (≥$5/mo savings) in the alerts feed. Idempotent; the recommendation engine reads this cache. OpenRouter is skipped when OPEN_ROUTER_API_KEY is unset — the catalog still builds from the other sources.",
     responses: {
       200: {
-        description: "Candidate models cached",
-        content: { "application/json": { schema: z.object({ models: z.number() }) } },
+        description: "Candidate models cached + recommendation alerts refreshed",
+        content: {
+          "application/json": { schema: z.object({ models: z.number(), alerts: z.number() }) },
+        },
       },
       401: {
         description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
@@ -763,7 +768,11 @@ guardianRouter.openapi(
       },
     },
   }),
-  async (c) => c.json({ models: (await refreshModelCatalog(c.env)).length }, 200),
+  async (c) => {
+    const models = (await refreshModelCatalog(c.env)).length;
+    const alerts = await syncRecommendationAlerts(c.env);
+    return c.json({ models, alerts }, 200);
+  },
 );
 
 // ---------------------------------------------------------------------------

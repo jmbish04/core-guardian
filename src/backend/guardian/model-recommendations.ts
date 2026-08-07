@@ -23,7 +23,7 @@
 import { and, desc, eq, gte, isNotNull, sql } from "drizzle-orm";
 
 import { getDb } from "@/backend/db";
-import { aiUsageRegistrations } from "@/backend/db/schema";
+import { alerts, aiUsageRegistrations } from "@/backend/db/schema";
 
 import { queryGatewayCosts } from "./ai-gateway-costs";
 import {
@@ -297,6 +297,74 @@ export async function getRecommendations(
     totalMonthlySavingsUsd: recommendations.reduce((s, r) => s + r.monthlySavingsUsd, 0),
     recommendations,
   };
+}
+
+/** Alert `service` tag that scopes model-advisor rows in the shared alerts table. */
+const ADVISOR_ALERT_SERVICE = "model-advisor";
+/** Only savings at or above this monthly figure are worth an alert. */
+const ALERT_MIN_SAVINGS_USD = 5;
+
+/**
+ * Surface high-value recommendations in the Guardian alerts feed (advisory —
+ * snooze/resolve, never destructive). Upserts one alert per current model whose
+ * best swap saves ≥ $5/mo, and resolves model-advisor alerts whose saving has
+ * since evaporated. Runs on the daily cron. Tier-based only — no per-load kimi.
+ *
+ * @returns count of active recommendation alerts after the sync
+ */
+export async function syncRecommendationAlerts(env: Env): Promise<number> {
+  const { recommendations } = await getRecommendations(env, {
+    days: 30,
+    classifyPrompts: false,
+    minSavingsUsd: ALERT_MIN_SAVINGS_USD,
+  });
+  const db = getDb(env);
+  const now = Date.now();
+  const activeIds = new Set<string>();
+
+  for (const r of recommendations) {
+    const id = `${ADVISOR_ALERT_SERVICE}::${r.currentModel}`;
+    activeIds.add(id);
+    // ≥$50/mo is a warning (worth acting on); $5–50 is informational. Never
+    // critical — an unrealized saving is an opportunity, not an incident.
+    const severity: "info" | "warning" = r.monthlySavingsUsd >= 50 ? "warning" : "info";
+    const cause = `${r.currentModel} runs ~$${r.observedMonthlyUsd.toFixed(2)}/mo; ${r.suggestedModel} (${r.suggestedTier}-tier, ≥ its ${r.currentTier}) would run ~$${r.suggestedMonthlyUsd.toFixed(2)}/mo for the same observed token mix.`;
+    const recommendation = `Switch ${r.currentModel} → ${r.suggestedModel} to save ~$${r.monthlySavingsUsd.toFixed(2)}/mo (${Math.round(r.savingsPct * 100)}% less). Review in Model advisor: /dashboard/recommendations`;
+
+    const [existing] = await db.select().from(alerts).where(eq(alerts.id, id)).limit(1);
+    const stillSnoozed =
+      existing?.status === "snoozed" && existing.snoozedUntil && existing.snoozedUntil > now;
+    const row = {
+      service: ADVISOR_ALERT_SERVICE,
+      resource: r.currentModel,
+      worker: null,
+      severity,
+      cause,
+      recommendation,
+      // No allowance fraction / overage cost — a saving isn't either. Left null
+      // so the alerts UI shows neither the % ring nor the "overage" chip.
+      projectedFraction: null,
+      estCostDelta: null,
+      status: (stillSnoozed ? "snoozed" : "active") as "snoozed" | "active",
+      updatedAt: now,
+    };
+    if (existing) {
+      await db.update(alerts).set(row).where(eq(alerts.id, id));
+    } else {
+      await db.insert(alerts).values({ ...row, id, createdAt: now });
+    }
+  }
+
+  // Resolve model-advisor alerts whose saving no longer clears the bar.
+  const existingAdvisor = await db
+    .select({ id: alerts.id })
+    .from(alerts)
+    .where(and(eq(alerts.service, ADVISOR_ALERT_SERVICE), sql`${alerts.status} != 'resolved'`));
+  for (const a of existingAdvisor) {
+    if (!activeIds.has(a.id))
+      await db.update(alerts).set({ status: "resolved", updatedAt: now }).where(eq(alerts.id, a.id));
+  }
+  return activeIds.size;
 }
 
 // ---------------------------------------------------------------------------
