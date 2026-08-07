@@ -134,6 +134,13 @@
       "when": 1785325901977,
       "tag": "0018_skinny_echo",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1786094383636,
+      "tag": "0019_mature_excalibur",
+      "breakpoints": true
     }
   ]
 }

@@ -51,9 +51,16 @@ import { ThinkingAgent } from "./backend/ai/agents/ThinkingAgent";
 import { WorkflowsAgent } from "./backend/ai/agents/WorkflowsAgent";
 import { app as honoApp } from "./backend/api/index";
 import { getDb } from "./backend/db";
-import { aiGatewayCosts, aiModelPricing, dailyCost, scrapeRuns } from "./backend/db/schema";
+import {
+  aiGatewayCosts,
+  aiModelPricing,
+  billableUsage,
+  dailyCost,
+  scrapeRuns,
+} from "./backend/db/schema";
 import { handleInboundEmail } from "./backend/email/inbound";
 import { snapshotGatewayCosts } from "./backend/guardian/ai-gateway-costs";
+import { syncBillableUsage } from "./backend/guardian/billable-usage";
 import { scrapeAllModelPricing } from "./backend/guardian/ai-model-pricing";
 import { evaluateUsage } from "./backend/guardian/collect";
 import { backfillDailyCost, snapshotDailyCost } from "./backend/guardian/daily-cost";
@@ -129,6 +136,16 @@ async function runGuardianEvaluation(env: Env) {
       JSON.stringify({ level: "ERROR", source: "guardian.dailyCost", error: String(err) }),
     );
   }
+  // Daily: pull actual billed cost from Cloudflare's Billable Usage API — the
+  // ground truth the reconstructed daily_cost estimate is reconciled against.
+  // Gated on 1 day; needs the API token to carry Billing:Read (non-fatal).
+  try {
+    await maybeSyncBillableUsage(env);
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.billableUsage", error: String(err) }),
+    );
+  }
 }
 
 const THIRTY_DAYS_MS = 30 * 24 * 3_600_000;
@@ -187,6 +204,17 @@ async function maybeSnapshotDailyCost(env: Env) {
   const yesterday = await snapshotDailyCost(env, Date.now() - ONE_DAY_MS, true);
   const today = await snapshotDailyCost(env, Date.now(), true);
   console.warn(JSON.stringify({ level: "INFO", source: "guardian.dailyCost", yesterday, today }));
+}
+
+async function maybeSyncBillableUsage(env: Env) {
+  const [latest] = await getDb(env)
+    .select({ capturedAt: billableUsage.capturedAt })
+    .from(billableUsage)
+    .orderBy(desc(billableUsage.capturedAt))
+    .limit(1);
+  if (latest && Date.now() - latest.capturedAt < ONE_DAY_MS) return;
+  const rows = await syncBillableUsage(env, 35);
+  console.warn(JSON.stringify({ level: "INFO", source: "guardian.billableUsage", rows }));
 }
 
 /** True for paths the Hono API owns (REST + OpenAPI doc surfaces). */
