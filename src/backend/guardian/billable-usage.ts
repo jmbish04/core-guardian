@@ -15,8 +15,10 @@
  *
  * Auth reuses the same Secrets Store credentials as the GraphQL probes
  * (`CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_WRANGLER_API_TOKEN`). The token must
- * additionally carry the **Billing: Read** permission; without it the endpoint
- * returns 403 and the report surfaces that rather than fabricating numbers.
+ * additionally carry the **Billing: Read** permission; without it the API
+ * returns 403 and the sync fails loudly rather than writing fabricated numbers.
+ * The report reads only what sync persisted, so a scope gap shows as no new
+ * data, never as a wrong figure.
  *
  * @see https://blog.cloudflare.com/billable-usage-api/
  * @see {@link file://src/backend/db/schemas/governance/billable-usage.ts}
@@ -70,8 +72,9 @@ function num(v: number | string | undefined): number {
 
 /**
  * Fetch raw billable-usage rows for a date window (inclusive, YYYY-MM-DD).
- * Defaults to the trailing ~35 days. Never invents data — throws on any
- * non-success envelope so the caller can surface the real failure.
+ * With no `from`/`to` the API serves its own default window. Never invents data
+ * — throws on any non-success envelope so the caller can surface the real
+ * failure (`syncBillableUsage` is the caller that pins an explicit window).
  */
 export async function fetchBillableUsage(env: Env, from?: string, to?: string): Promise<ApiRow[]> {
   const [accountId, token] = await Promise.all([
