@@ -107,18 +107,23 @@ function DeltaChip({ delta }: { delta: number | null }) {
   );
 }
 
-/** Inline SVG cost sparkline — one lightweight polyline, no per-row chart. */
+/**
+ * Inline SVG cost sparkline — one lightweight polyline, no per-row chart.
+ * A series with no real movement (a product billed ~$0 all window) draws a
+ * muted flat line: rose/emerald is a verdict on a trend, and $0 has none.
+ */
 function Sparkline({ values }: { values: number[] }) {
   if (values.length < 2) return <div className="h-6" />;
-  const max = Math.max(...values, 0.0001);
+  const max = Math.max(...values, 0);
   const min = Math.min(...values, 0);
-  const span = max - min || 1;
+  const span = max - min;
   const w = 96;
   const h = 24;
+  const flat = span < 0.005; // effectively $0 or unchanging across the window
   const pts = values
     .map((v, i) => {
       const x = (i / (values.length - 1)) * w;
-      const y = h - ((v - min) / span) * h;
+      const y = flat ? h - 1 : h - ((v - min) / span) * h;
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     })
     .join(" ");
@@ -129,7 +134,9 @@ function Sparkline({ values }: { values: number[] }) {
         points={pts}
         fill="none"
         strokeWidth={1.5}
-        className={rising ? "stroke-rose-500/80" : "stroke-emerald-500/80"}
+        className={
+          flat ? "stroke-muted-foreground/25" : rising ? "stroke-rose-500/80" : "stroke-emerald-500/80"
+        }
       />
     </svg>
   );
