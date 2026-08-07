@@ -88,17 +88,26 @@ function cleanRates(raw: unknown): Rate[] {
   return out;
 }
 
-/** Structured-output contract forcing the model to emit clean rate rows. */
-const RATE_SCHEMA = z.object({
-  rates: z.array(
-    z.object({
-      metric: z.string(),
-      unitPrice: z.number(),
-      perUnits: z.number(),
-      included: z.number().nullish(),
-    }),
-  ),
+/**
+ * Structured-output contract for the rate rows.
+ *
+ * The extract model (gpt-oss) frequently returns the bare rates ARRAY rather
+ * than the `{ rates: [...] }` wrapper the json_schema asks for, so a `preprocess`
+ * step accepts either shape before validation. Numbers are `z.coerce` because an
+ * LLM still occasionally emits a price as a string ("0.001"); `.catch` keeps one
+ * malformed field from dropping an otherwise-good row; `cleanRates` does the
+ * final business validation.
+ */
+const RATE_ITEM = z.object({
+  metric: z.string(),
+  unitPrice: z.coerce.number().catch(-1),
+  perUnits: z.coerce.number().catch(1),
+  included: z.coerce.number().nullish().catch(null),
 });
+const RATE_SCHEMA = z.preprocess(
+  (v) => (Array.isArray(v) ? { rates: v } : v),
+  z.object({ rates: z.array(RATE_ITEM) }),
+);
 
 /** Workers AI pulls the rate table out of the stripped page text — via a
  * json_schema structured call, Zod-validated, no text-parse (AGENTS.md §25). */
@@ -117,11 +126,14 @@ ${text.slice(0, 14000)}`;
       messages: [{ role: "user", content: prompt }],
       schema: RATE_SCHEMA,
       schemaName: "CloudflareRates",
-      max_tokens: 2048,
+      // gpt-oss-120b (the extract model) is a reasoning model — it spends tokens
+      // on hidden reasoning before the JSON answer, so the budget must be roomy
+      // or the structured content comes back empty/truncated.
+      max_tokens: 8192,
     });
     return cleanRates(result);
-  } catch {
-    return [];
+  } catch (err) {
+    throw new Error(`rate extraction failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -184,7 +196,7 @@ export async function scrapeDoc(
     }
   }
 
-  return { status, revisions: rates.length };
+  return { status, revisions: rates.length, detail: error ?? undefined };
 }
 
 /** Scrapes the single doc that a product's allowance points at. */

@@ -21,16 +21,21 @@ import { aiModelPricing, type AiModelPricingRow } from "@/backend/db/schema";
 
 import { queryGatewayCosts } from "./ai-gateway-costs";
 
-/** Structured-output contract for {@link adviseModels} (AGENTS.md §25). */
-const ADVICE_SCHEMA = z.object({
-  recommendations: z.array(
-    z.object({
-      apiModelName: z.string(),
-      provider: z.string(),
-      why: z.string(),
-    }),
-  ),
-});
+/** Structured-output contract for {@link adviseModels} (AGENTS.md §25). The
+ * extract model often returns the bare array instead of the `{recommendations}`
+ * wrapper, so a preprocess step accepts either shape. */
+const ADVICE_SCHEMA = z.preprocess(
+  (v) => (Array.isArray(v) ? { recommendations: v } : v),
+  z.object({
+    recommendations: z.array(
+      z.object({
+        apiModelName: z.string(),
+        provider: z.string(),
+        why: z.string(),
+      }),
+    ),
+  }),
+);
 
 /** Newest price row per (provider, api_model_name). */
 export async function latestModels(env: Env): Promise<AiModelPricingRow[]> {

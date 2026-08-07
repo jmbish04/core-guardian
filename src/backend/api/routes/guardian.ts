@@ -2121,6 +2121,7 @@ guardianRouter.openapi(
               docs: z.number().optional(),
               revisions: z.number().optional(),
               status: z.string().optional(),
+              detail: z.string().optional(),
             }),
           },
         },

@@ -43,15 +43,20 @@ import {
 
 const DAY_MS = 86_400_000;
 
-/** Structured-output contract for the prompt-classification pass. */
-const MIN_TIER_SCHEMA = z.object({
-  tiers: z.array(
-    z.object({
-      model: z.string(),
-      tier: z.enum(["small", "mid", "frontier"]),
-    }),
-  ),
-});
+/** Structured-output contract for the prompt-classification pass. The extract
+ * model often returns the bare array instead of the `{tiers}` wrapper, so a
+ * preprocess step accepts either shape. */
+const MIN_TIER_SCHEMA = z.preprocess(
+  (v) => (Array.isArray(v) ? { tiers: v } : v),
+  z.object({
+    tiers: z.array(
+      z.object({
+        model: z.string(),
+        tier: z.enum(["small", "mid", "frontier"]),
+      }),
+    ),
+  }),
+);
 
 /** One model's observed workload over the window. */
 type ObservedModel = {
