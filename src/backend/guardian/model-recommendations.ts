@@ -29,9 +29,11 @@ import { queryGatewayCosts } from "./ai-gateway-costs";
 import {
   type CapabilityTier,
   type CatalogModel,
+  capabilityScore,
   classifyTier,
   getModelCatalog,
   isChatModel,
+  TIER_MIN_SCORE,
   TIER_RANK,
 } from "./model-catalog";
 
@@ -232,10 +234,12 @@ export async function getRecommendations(
     if (!isChatModel(o.model)) continue;
     const incumbent = matchCatalog(o.model, catalog);
     const incumbentTier = incumbent?.tier ?? classifyTier(o.model);
-    // The capability floor a candidate must clear. Prompt classification can
-    // lower it below the incumbent's own tier when the tasks are simple.
-    const floorTier: CapabilityTier = minTiers.get(norm(o.model)) ?? incumbentTier;
-    const floorRank = TIER_RANK[floorTier];
+    const incumbentScore = incumbent?.score ?? capabilityScore(o.model);
+    // The capability floor a candidate must clear, as a curated score. Prompt
+    // classification can lower it (to the classified tier's minimum) when the
+    // sampled tasks are simpler than the incumbent's own capability.
+    const classifiedTier: CapabilityTier | undefined = minTiers.get(norm(o.model));
+    const floorScore = classifiedTier ? TIER_MIN_SCORE[classifiedTier] : incumbentScore;
 
     const observedMonthlyUsd = o.costUsd * scale;
     const monthlyIn = o.tokensIn * scale;
@@ -251,7 +255,7 @@ export async function getRecommendations(
 
     let best: { c: CatalogModel; monthly: number } | null = null;
     for (const c of catalog) {
-      if (TIER_RANK[c.tier] < floorRank) continue; // must be capable enough
+      if (c.score < floorScore) continue; // must be at least as capable
       if (incumbent && c.key === incumbent.key) continue;
       if (norm(c.id) === norm(o.model)) continue;
       const m = monthlyCost(c, monthlyIn, monthlyOut);
@@ -283,8 +287,8 @@ export async function getRecommendations(
       savingsPct: baseMonthly > 0 ? savings / baseMonthly : 0,
       rationale:
         basis === "prompt-classified"
-          ? `Sampled tasks need only a ${floorTier}-tier model; ${best.c.name} covers that at a lower rate for this token mix.`
-          : `${best.c.name} is ${best.c.tier}-tier (≥ ${incumbentTier}) and cheaper for the observed ${Math.round(o.tokensIn / o.requests)}-in / ${Math.round(o.tokensOut / o.requests)}-out token mix.`,
+          ? `Sampled tasks need only a ${classifiedTier}-tier model; ${best.c.name} (capability ${best.c.score}/100) covers that at a lower rate for this token mix.`
+          : `${best.c.name} rates ${best.c.score}/100 on capability vs ${o.model}'s ${incumbentScore}, and is cheaper for the observed ${Math.round(o.tokensIn / o.requests)}-in / ${Math.round(o.tokensOut / o.requests)}-out token mix.`,
       basis,
     });
   }
@@ -383,6 +387,23 @@ if (import.meta.main) {
   assert(classifyTier("claude-opus-5") === "frontier", "opus is frontier");
   assert(classifyTier("claude-sonnet-4") === "mid", "sonnet-4 is mid");
   assert(TIER_RANK.frontier > TIER_RANK.mid && TIER_RANK.mid > TIER_RANK.small, "tier order");
+  // Capability scores — the fix for "cheap obscure model displaces a strong one".
+  // The exact bug we caught: a code model must out-rank a generic flash model,
+  // so Ling-2.6-flash can NOT be recommended to replace kimi-k2.7-code.
+  assert(
+    capabilityScore("kimi-k2.7-code") > capabilityScore("inclusionAI: Ling-2.6-flash"),
+    `kimi-code (${capabilityScore("kimi-k2.7-code")}) must beat Ling-flash (${capabilityScore("inclusionAI: Ling-2.6-flash")})`,
+  );
+  assert(capabilityScore("gpt-5-mini") > capabilityScore("gpt-5-nano"), "gpt-5-mini > nano");
+  assert(capabilityScore("claude-opus-5") >= 80, "opus is frontier-score");
+  assert(capabilityScore("gemini-2.5-flash-lite") < capabilityScore("gemini-2.5-flash"), "flash-lite < flash");
+  assert(capabilityScore("some-unknown-model-xyz") === 48, "unknown → conservative default");
+  // Version-format + code-specialist coverage (the tightening pass).
+  assert(capabilityScore("@cf/meta/llama-3.3-70b-instruct") >= 68, "llama-3.3-70b is strong-mid");
+  assert(
+    capabilityScore("@cf/qwen/qwen2.5-coder-32b-instruct") > capabilityScore("Ling-2.6-flash"),
+    "a coder model outranks a generic flash",
+  );
   const c: CatalogModel = { key: "x:y", id: "y", name: "Y", provider: "x", inPerM: 1, outPerM: 2, cachedInPerM: null, context: null, tier: "mid", source: "aipricing" };
   assert(monthlyCost(c, 1_000_000, 1_000_000) === 3, "monthly cost 1M+1M @ $1/$2 = $3");
   // eslint-disable-next-line no-console

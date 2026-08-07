@@ -39,29 +39,70 @@ export type CatalogModel = {
   outPerM: number | null;
   cachedInPerM: number | null;
   context: number | null;
+  /** Curated capability score 0–100 (see {@link capabilityScore}). */
+  score: number;
   tier: CapabilityTier;
   source: "aipricing" | "openrouter" | "scraped";
 };
 
 export const TIER_RANK: Record<CapabilityTier, number> = { small: 0, mid: 1, frontier: 2 };
 
+/** Conservative score for a model whose family we don't recognize. Deliberately
+ * mid-low so an unknown cheap model can't outrank a known-strong incumbent in
+ * the metadata path — the prompt-classify path is where unknowns earn a swap. */
+const DEFAULT_SCORE = 48;
+
 /**
- * Coarse capability tier from the model name. A heuristic, deliberately — the
- * point is to never recommend a clearly-weaker model, not to rank rivals within
- * a tier. Order matters: check the strongest signals first.
- * ponytail: regex map with a known ceiling; the prompt-classify path (opt-in)
- * refines it per observed task when a caller wants the deeper read.
+ * Curated per-family capability score, 0–100. This is the calibration knob for
+ * the whole advisor: a recommendation only fires when a candidate scores at or
+ * above the incumbent, so the scores' RELATIVE order is what matters, not their
+ * absolute value. Ordered strongest-signal-first; the first match wins.
+ *
+ * Unknown families fall to {@link DEFAULT_SCORE} — low enough that a mystery
+ * model won't be recommended over anything we actually rate, high enough that a
+ * known-weak model still loses to it. Tune a family by moving its number.
+ * ponytail: hand-curated map with a known ceiling — for 500+ models we can only
+ * confidently rank the families we know; the opt-in prompt analysis judges the rest.
  */
-export function classifyTier(name: string): CapabilityTier {
+export function capabilityScore(name: string): number {
   const s = name.toLowerCase();
-  // Small / fast tiers — cheapest, weakest. Checked first so "gpt-5-nano" doesn't
-  // match the frontier "gpt-5" rule below.
-  if (/nano|mini|haiku|flash-?lite|lite|8b|7b|3b|1b|small|gemma|ministral|phi-|tiny|instant/.test(s))
-    return "small";
-  // Frontier tiers — the strongest, most expensive.
-  if (/opus|gpt-5(?![-\w]*(nano|mini))|o[0-9]|sonnet-5|gemini-[0-9.]*-?(pro|ultra)|grok-[0-9]|deepseek-r|llama-[0-9]*-?405b|mistral-large|command-r-plus|qwen[0-9.]*-max/.test(s))
-    return "frontier";
-  return "mid";
+  // Order matters. Small/cheap variants first so "gpt-5-mini" isn't swept up by
+  // the frontier "gpt-5" rule — but "mini" alone must not demote gpt-5-mini,
+  // so the strong-mini exceptions are listed in the mid band below.
+  if (/nano|haiku|flash-?lite|-lite\b|gemma|ministral|phi-?[0-9]|tiny|instant|\b1b\b|\b3b\b|\b7b\b|\b8b\b/.test(s))
+    return 32;
+  // Frontier — strongest reasoning/code.
+  if (
+    /opus|gpt-5\.[0-9]|gpt-5(?![-\w]*(nano|mini))|\bo[13]\b|o[0-9]-|sonnet-5|gemini-[0-9.]+-?(pro|ultra)|grok-[3-9]|deepseek-r|kimi-k2[.\w]*-?code|kimi-k2\.[0-9]|glm-[5-9]|qwen[-.0-9]*max|llama[-.0-9]*405b|mistral-large/.test(s)
+  )
+    return 88;
+  // Strong mid — capable general/code models a tier below frontier. Version
+  // separators vary (llama-3.3-70b, qwen2.5-72b) so match digits/dots loosely.
+  if (
+    /gpt-5-mini|gpt-4\.1|gpt-4o(?!-mini)|sonnet-4|sonnet-3\.[57]|claude-3\.[57]|gemini-[2-9][.0-9]*-flash|deepseek-v[0-9]|deepseek-chat|kimi-k2(?![.\w]*code)|qwen[-.0-9]*(?:plus|72b)|llama[-.0-9]*70b|command-r-plus|mistral-medium|grok-[0-9]+-mini/.test(s)
+  )
+    return 68;
+  // Code specialists are purpose-built — don't let a generic cheap chat model
+  // replace one on price alone. Below frontier (those are already 88 above).
+  if (/coder|[-.]code\b|code-[0-9]/.test(s)) return 66;
+  // Named-but-modest mid (generic "flash"/"mini"/"small"/"air" families).
+  if (/flash|mini|small|air|lite|turbo/.test(s)) return 52;
+  return DEFAULT_SCORE;
+}
+
+/** Tier bucket derived from the capability score (display + coarse floors). */
+export function tierFromScore(score: number): CapabilityTier {
+  if (score >= 80) return "frontier";
+  if (score >= 45) return "mid";
+  return "small";
+}
+
+/** Minimum score a candidate must clear to count as a given tier's capability. */
+export const TIER_MIN_SCORE: Record<CapabilityTier, number> = { small: 0, mid: 45, frontier: 80 };
+
+/** Coarse tier from the model name (derived from the curated score). */
+export function classifyTier(name: string): CapabilityTier {
+  return tierFromScore(capabilityScore(name));
 }
 
 function normKey(provider: string, id: string): string {
@@ -104,6 +145,7 @@ async function fetchOpenRouter(env: Env): Promise<CatalogModel[]> {
         outPerM: perM(m.pricing?.completion),
         cachedInPerM: perM(m.pricing?.input_cache_read) ?? null,
         context: typeof m.context_length === "number" ? m.context_length : null,
+        score: capabilityScore(`${m.id} ${m.name ?? ""}`),
         tier: classifyTier(`${m.id} ${m.name ?? ""}`),
         source: "openrouter",
       };
@@ -126,6 +168,7 @@ async function fetchAiPricingGuru(): Promise<CatalogModel[]> {
       outPerM: typeof m.pricing?.outputPerM === "number" ? m.pricing.outputPerM : null,
       cachedInPerM: typeof m.pricing?.cachedInputPerM === "number" ? m.pricing.cachedInputPerM : null,
       context: typeof m.context === "number" ? m.context : null,
+      score: capabilityScore(`${m.id} ${m.name ?? ""} ${m.family ?? ""}`),
       tier: classifyTier(`${m.id} ${m.name ?? ""} ${m.family ?? ""}`),
       source: "aipricing",
     }));
@@ -143,6 +186,7 @@ async function fetchScraped(env: Env): Promise<CatalogModel[]> {
     outPerM: r.outputPricePerMillion,
     cachedInPerM: r.cachedInputPricePerMillion,
     context: null,
+    score: capabilityScore(`${r.apiModelName} ${r.model}`),
     tier: classifyTier(`${r.apiModelName} ${r.model}`),
     source: "scraped",
   }));
