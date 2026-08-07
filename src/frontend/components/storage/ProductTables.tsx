@@ -127,6 +127,11 @@ type D1Row = {
   workers: Worker[];
 };
 
+/**
+ * D1 database inventory table. Each row can be archived to Drive (SQL + JSONL +
+ * a Python reconstruct script, via {@link ArchiveD1Dialog}) or hard-deleted
+ * behind the type-to-confirm barrier.
+ */
 export function D1Table() {
   const { rows, loading, error, reload, setError } = useResource<D1Row>(
     "d1",

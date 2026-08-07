@@ -55,18 +55,23 @@ export function ArchiveD1Dialog({
   const [error, setError] = useState<string | null>(null);
   const [cleanup, setCleanup] = useState(false);
 
-  // Reset between openings so a prior run never leaks into the next.
+  // Reset between openings so a prior run never leaks into the next. Keyed on the
+  // db uuid (not the target object) so a reused target reference still resets.
+  const targetUuid = target?.uuid;
   useEffect(() => {
-    if (target) {
+    if (targetUuid) {
       setWorking(false);
       setResult(null);
       setError(null);
       setCleanup(false);
     }
-  }, [target]);
+  }, [targetUuid]);
 
   const open = Boolean(target) && !cleanup;
 
+  // The dialog is modal and Cancel is disabled while working, so only one archive
+  // can be in flight and `target` cannot change under it — no abort/stale guard
+  // needed.
   async function archive() {
     if (!target) return;
     setWorking(true);
@@ -85,15 +90,23 @@ export function ArchiveD1Dialog({
   }
 
   async function deleteSource() {
-    if (!result) return;
-    // Approve the action item the archive filed: server deletes + verifies gone.
-    const res = await apiSend<{ status: "complete" | "failed"; detail: string }>(
-      "POST",
-      `/guardian/action-items/${encodeURIComponent(result.actionItemId)}/approve`,
-    );
-    if (res.status !== "complete") throw new ApiError(500, res.detail);
-    onDeleted();
-    onOpenChange(false);
+    // Defensive: never approve a deletion behind an unverified archive, even if a
+    // caller wired this up without the verified-gated button.
+    if (!result?.verified) return;
+    try {
+      // Approve the action item the archive filed: server deletes + verifies gone.
+      const res = await apiSend<{ status: "complete" | "failed"; detail: string }>(
+        "POST",
+        `/guardian/action-items/${encodeURIComponent(result.actionItemId)}/approve`,
+      );
+      if (res.status !== "complete") throw new ApiError(500, res.detail);
+      onDeleted();
+      onOpenChange(false);
+    } catch (err) {
+      // Surface the failure on the archive dialog instead of an unhandled rejection.
+      setError(err instanceof ApiError ? err.message : "Delete failed.");
+      setCleanup(false);
+    }
   }
 
   return (
@@ -179,10 +192,9 @@ export function ArchiveD1Dialog({
 
       <ConfirmDeleteDialog
         open={cleanup}
-        onOpenChange={(o) => {
-          setCleanup(o);
-          if (!o) onOpenChange(false);
-        }}
+        // Cancel/close returns to the archive result dialog (so a delete error
+        // stays visible); deleteSource itself closes the whole flow on success.
+        onOpenChange={(o) => setCleanup(o)}
         phrase={result?.database ?? ""}
         title="Delete the archived source?"
         description={

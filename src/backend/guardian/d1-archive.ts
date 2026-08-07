@@ -61,7 +61,14 @@ function ident(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
 
-/** Render one value as a SQLite literal for the .sql dump. */
+/**
+ * Render one value as a SQLite literal for the .sql dump.
+ *
+ * @param v - a cell value from a D1 row (null, number, boolean, string, or a
+ *   structured value the REST API returned for a BLOB)
+ * @returns the value as a SQLite literal (`NULL`, a bare number, `0`/`1`, or a
+ *   single-quoted, quote-escaped string)
+ */
 export function sqlLiteral(v: unknown): string {
   if (v === null || v === undefined) return "NULL";
   if (typeof v === "number") return Number.isFinite(v) ? String(v) : "NULL";
@@ -74,7 +81,20 @@ export function sqlLiteral(v: unknown): string {
   return `'${s.replace(/'/g, "''")}'`;
 }
 
-/** Build the full `.sql` dump (schema + data). */
+/**
+ * Build the full `.sql` dump (schema + data).
+ *
+ * ponytail: builds the whole dump as one in-memory string. D1's own size cap
+ * keeps this well under the Worker memory limit for any realistic database;
+ * switch to a streamed upload if multi-hundred-MB databases ever appear.
+ *
+ * @param name - the database name (used in the header + reload hint)
+ * @param uuid - the database uuid (recorded in the header)
+ * @param exportedAt - ISO timestamp of the export
+ * @param schema - `{ name, sql }` entries from `sqlite_master`
+ * @param tables - map of table name to its rows
+ * @returns the complete `.sql` dump (DROP/CREATE per table, then INSERTs)
+ */
 export function toSqlDump(
   name: string,
   uuid: string,
@@ -89,7 +109,9 @@ export function toSqlDump(
     "PRAGMA foreign_keys=OFF;",
     "",
   ];
-  for (const t of schema) if (t.sql) parts.push(`${t.sql};`);
+  // DROP before CREATE so the dump reloads cleanly into a database that already
+  // has these tables.
+  for (const t of schema) if (t.sql) parts.push(`DROP TABLE IF EXISTS ${ident(t.name)};`, `${t.sql};`);
   parts.push("");
   for (const [table, rows] of Object.entries(tables)) {
     for (const row of rows) {
@@ -101,7 +123,18 @@ export function toSqlDump(
   return parts.join("\n") + "\n";
 }
 
-/** Build the `.jsonl` bundle: a manifest line (schema) then one line per row. */
+/**
+ * Build the `.jsonl` bundle: a manifest line (schema) then one line per row.
+ *
+ * ponytail: single in-memory string, same size ceiling as {@link toSqlDump}.
+ *
+ * @param name - the database name (recorded in the manifest line)
+ * @param uuid - the database uuid (recorded in the manifest line)
+ * @param exportedAt - ISO timestamp of the export
+ * @param schema - `{ name, sql }` entries from `sqlite_master`
+ * @param tables - map of table name to its rows
+ * @returns the newline-terminated JSONL (`{type:"manifest",...}` then `{type:"row",...}` per row)
+ */
 export function toJsonl(
   name: string,
   uuid: string,
@@ -145,6 +178,10 @@ def api(account, token, path, body):
     with urllib.request.urlopen(req) as r:
         return json.load(r)
 
+def q(name):
+    """Double-quote a SQLite identifier, escaping embedded quotes."""
+    return '"' + name.replace('"', '""') + '"'
+
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "${dbName}-archive.jsonl"
     new_name = sys.argv[2] if len(sys.argv) > 2 else "${dbName}-restored"
@@ -172,10 +209,10 @@ def main():
     print(f"applied {len(schema)} schema statements")
 
     for table, row in rows:
-        cols = ",".join(f'"{c}"' for c in row.keys())
+        cols = ",".join(q(c) for c in row.keys())
         placeholders = ",".join("?" for _ in row)
         api(account, token, f"/d1/database/{uuid}/query",
-            {"sql": f'INSERT INTO "{table}" ({cols}) VALUES ({placeholders})',
+            {"sql": f"INSERT INTO {q(table)} ({cols}) VALUES ({placeholders})",
              "params": list(row.values())})
     print(f"restored {len(rows)} rows")
     print("done")
@@ -235,23 +272,20 @@ export async function archiveD1Database(
   const nowSec = Date.now() / 1000;
   const { folderId } = await ensureArchiveFolder(env, workerName(env), "d1", nowSec);
   const stamp = exportedAt.slice(0, 10);
-  const upload = await uploadToDrive(
-    env,
-    folderId,
-    `${name}-${stamp}-archive.jsonl`,
-    jsonl,
-    "application/x-ndjson",
-    nowSec,
-  );
-  await uploadToDrive(env, folderId, `${name}-${stamp}-archive.sql`, sqlDump, "application/sql", nowSec);
-  await uploadToDrive(
-    env,
-    folderId,
-    `${name}-reconstruct.py`,
-    reconstructScript(name, tokenSecret),
-    "text/x-python",
-    nowSec,
-  );
+  // Independent files, same folder — upload concurrently. The JSONL result feeds
+  // the byte-count audit below.
+  const [upload] = await Promise.all([
+    uploadToDrive(env, folderId, `${name}-${stamp}-archive.jsonl`, jsonl, "application/x-ndjson", nowSec),
+    uploadToDrive(env, folderId, `${name}-${stamp}-archive.sql`, sqlDump, "application/sql", nowSec),
+    uploadToDrive(
+      env,
+      folderId,
+      `${name}-reconstruct.py`,
+      reconstructScript(name, tokenSecret),
+      "text/x-python",
+      nowSec,
+    ),
+  ]);
 
   // 4) Audit: Drive's reported byte count for the JSONL (the reload source of
   //    record) must match what we sent.
