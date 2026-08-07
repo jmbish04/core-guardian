@@ -21,7 +21,9 @@
  */
 
 import { and, desc, eq, gte, isNotNull, sql } from "drizzle-orm";
+import { z } from "zod";
 
+import { generateStructuredOutput } from "@/backend/ai/providers";
 import { getDb } from "@/backend/db";
 import { alerts, aiUsageRegistrations } from "@/backend/db/schema";
 
@@ -38,7 +40,16 @@ import {
 } from "./model-catalog";
 
 const DAY_MS = 86_400_000;
-const ADVISOR_MODEL = "@cf/moonshotai/kimi-k2.7-code";
+
+/** Structured-output contract for the prompt-classification pass. */
+const MIN_TIER_SCHEMA = z.object({
+  tiers: z.array(
+    z.object({
+      model: z.string(),
+      tier: z.enum(["small", "mid", "frontier"]),
+    }),
+  ),
+});
 
 /** One model's observed workload over the window. */
 type ObservedModel = {
@@ -173,24 +184,20 @@ async function classifyMinTiers(
   }
   if (!samples.length) return out;
 
-  const prompt = `For each model below, given sample task descriptions it was used for, return the MINIMUM capability tier that can reliably do those tasks. Tiers: "small" (simple extraction/classification/formatting), "mid" (general reasoning, coding, summarization), "frontier" (hard multi-step reasoning, complex code, nuanced judgment). Return ONLY JSON: {"tiers":[{"model":string,"tier":"small"|"mid"|"frontier"}]}.
+  const prompt = `For each model below, given sample task descriptions it was used for, return the MINIMUM capability tier that can reliably do those tasks. Tiers: "small" (simple extraction/classification/formatting), "mid" (general reasoning, coding, summarization), "frontier" (hard multi-step reasoning, complex code, nuanced judgment).
 
 ${JSON.stringify(samples).slice(0, 8000)}`;
   try {
-    const res: any = await env.AI.run(ADVISOR_MODEL, {
+    // Structured output — the model is forced to return an object matching
+    // MIN_TIER_SCHEMA (response_format: json_schema), validated by Zod. No
+    // text-then-JSON.parse (AGENTS.md §25).
+    const result = await generateStructuredOutput(env, {
       messages: [{ role: "user", content: prompt }],
+      schema: MIN_TIER_SCHEMA,
+      schemaName: "MinTiers",
       max_tokens: 2000,
     });
-    const raw =
-      res?.response ?? res?.result?.response ?? res?.choices?.[0]?.message?.content ?? "";
-    const match = String(raw).match(/\{[\s\S]*\}/);
-    if (match) {
-      const parsed = JSON.parse(match[0]) as { tiers?: { model: string; tier: CapabilityTier }[] };
-      for (const t of parsed.tiers ?? []) {
-        if (t?.model && (t.tier === "small" || t.tier === "mid" || t.tier === "frontier"))
-          out.set(norm(t.model), t.tier);
-      }
-    }
+    for (const t of result.tiers) out.set(norm(t.model), t.tier);
   } catch {
     /* classification is advisory; fall back to the blunt tier floor */
   }
