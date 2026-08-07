@@ -1310,9 +1310,9 @@ guardianRouter.openapi(
     method: "post",
     path: "/archive/d1",
     operationId: "guardianArchiveD1",
-    summary: "Archive a D1 database to Drive (JSON bundle + reconstruct script)",
+    summary: "Archive a D1 database to Drive (SQL + JSONL + reconstruct script)",
     description:
-      "Copy-only: serializes the database's schema + every table to a JSON bundle, uploads it plus a Python reconstruct script to the configured Drive folder, audits the byte count, and files a human-gated action item to delete the source. Never deletes anything itself.",
+      "Copy-only: serializes the database's schema + every table to a .sql dump and a .jsonl bundle, uploads both plus a Python reconstruct script to the configured Drive folder, audits the JSONL byte count, and files a human-gated action item to delete the source. Never deletes anything itself. `verified` reports whether Drive's byte count matched — the caller should only offer cleanup when true.",
     request: {
       body: {
         content: {
@@ -1334,6 +1334,7 @@ guardianRouter.openapi(
               rows: z.number(),
               bytes: z.number(),
               driveUrl: z.string(),
+              verified: z.boolean(),
               actionItemId: z.string(),
             }),
           },
