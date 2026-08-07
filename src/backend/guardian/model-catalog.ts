@@ -68,6 +68,18 @@ function normKey(provider: string, id: string): string {
   return `${provider}:${id}`.toLowerCase();
 }
 
+/**
+ * True only for text chat/completion models — the sole thing a chat-cost
+ * recommendation may swap between. Excludes embeddings, rerankers, speech,
+ * and image models: recommending a chat model to replace an embedding model
+ * (or vice-versa) is category-wrong advice, not a saving.
+ */
+export function isChatModel(name: string): boolean {
+  return !/embed|bge-|\brerank|whisper|\btts\b|text-to-speech|speech|stable-diffusion|sdxl|\bflux\b|dall-?e|\bimage\b|diffusion|\bvoice\b|guard|moderation/i.test(
+    name,
+  );
+}
+
 /** OpenRouter: pricing is USD per token as strings; ×1e6 for per-1M. */
 async function fetchOpenRouter(env: Env): Promise<CatalogModel[]> {
   const token = await getOpenRouterApiKey(env);
@@ -161,6 +173,7 @@ export async function refreshModelCatalog(env: Env): Promise<CatalogModel[]> {
   const merged = new Map<string, CatalogModel>();
   for (const m of [...aipricing, ...scraped, ...openrouter]) {
     if (m.inPerM === null && m.outPerM === null) continue; // unpriced → not a candidate
+    if (!isChatModel(`${m.id} ${m.name}`)) continue; // chat/completion candidates only
     if (!merged.has(m.key)) merged.set(m.key, m);
   }
   const list = [...merged.values()];

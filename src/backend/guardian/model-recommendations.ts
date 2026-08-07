@@ -31,6 +31,7 @@ import {
   type CatalogModel,
   classifyTier,
   getModelCatalog,
+  isChatModel,
   TIER_RANK,
 } from "./model-catalog";
 
@@ -226,6 +227,9 @@ export async function getRecommendations(
   const recommendations: ModelRecommendation[] = [];
   for (const o of observed) {
     if (o.requests <= 0) continue;
+    // Only advise on chat/completion models — an embedding or speech model has
+    // no chat-model equivalent to swap to.
+    if (!isChatModel(o.model)) continue;
     const incumbent = matchCatalog(o.model, catalog);
     const incumbentTier = incumbent?.tier ?? classifyTier(o.model);
     // The capability floor a candidate must clear. Prompt classification can
@@ -304,6 +308,9 @@ if (import.meta.main) {
   };
   assert(norm("@cf/moonshotai/kimi-k2.7-code") === "kimik27code", `norm cf: ${norm("@cf/moonshotai/kimi-k2.7-code")}`);
   assert(norm("anthropic/claude-sonnet-5") === "claudesonnet5", `norm slash: ${norm("anthropic/claude-sonnet-5")}`);
+  assert(!isChatModel("@cf/baai/bge-large-en-v1.5"), "embedding excluded");
+  assert(!isChatModel("@cf/openai/whisper-large-v3-turbo"), "whisper excluded");
+  assert(isChatModel("@cf/moonshotai/kimi-k2.7-code"), "chat model kept");
   assert(classifyTier("gpt-5-nano") === "small", "nano is small");
   assert(classifyTier("claude-opus-5") === "frontier", "opus is frontier");
   assert(classifyTier("claude-sonnet-4") === "mid", "sonnet-4 is mid");

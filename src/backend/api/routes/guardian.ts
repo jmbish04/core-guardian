@@ -704,7 +704,9 @@ guardianRouter.openapi(
     request: {
       query: z.object({
         days: z.coerce.number().int().min(1).max(90).default(30).optional(),
-        classify: z.coerce.boolean().default(false).optional(),
+        // NOT z.coerce.boolean() — that maps the string "false" to true. Opt-in
+        // only when the literal string "true" is passed.
+        classify: z.enum(["true", "false"]).default("false").optional(),
         minSavings: z.coerce.number().min(0).default(0.01).optional(),
       }),
     },
@@ -734,7 +736,7 @@ guardianRouter.openapi(
     return c.json(
       await getRecommendations(c.env, {
         days: q.days ?? 30,
-        classifyPrompts: q.classify ?? false,
+        classifyPrompts: q.classify === "true",
         minSavingsUsd: q.minSavings ?? 0.01,
       }),
       200,
