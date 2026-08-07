@@ -13,26 +13,13 @@
  * @see {@link file://src/backend/db/schemas/governance/ai-gateway-costs.ts}
  */
 
-import { and, desc, gte, lte } from "drizzle-orm";
+import { and, gte, lte } from "drizzle-orm";
 
 import { getDb } from "@/backend/db";
-import { aiGatewayCosts, aiModelPricing, type AiModelPricingRow, type NewAiGatewayCostRow } from "@/backend/db/schema";
+import { aiGatewayCosts, aiModelPricing, type NewAiGatewayCostRow } from "@/backend/db/schema";
 import { queryAccountAnalytics } from "@/backend/lib/cloudflare-graphql";
 
-/** Newest scraped price row per (provider, api_model_name). Local copy to keep
- *  this module free of a circular import with ai-model-advisor. */
-async function latestScraped(env: Env): Promise<AiModelPricingRow[]> {
-  const rows = await getDb(env).select().from(aiModelPricing).orderBy(desc(aiModelPricing.scrapedAt));
-  const seen = new Set<string>();
-  const out: AiModelPricingRow[] = [];
-  for (const r of rows) {
-    const key = `${r.provider}::${r.apiModelName}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(r);
-  }
-  return out;
-}
+import { getModelCatalog, matchCatalogModel } from "./model-catalog";
 
 const SNAPSHOT_QUERY = `query GwCosts($accountTag: string!, $start: Time!, $end: Time!) {
   viewer {
@@ -202,7 +189,14 @@ export async function driftCheck(
   end: number,
   thresholdPct = 10,
 ): Promise<DriftFinding[]> {
-  const [gwCosts, scraped] = await Promise.all([queryGatewayCosts(env, start, end), latestScraped(env)]);
+  // List prices come from the merged model catalog (OpenRouter + AI Pricing Guru
+  // + the CF scrape) — the current advertised rate per model. driftCheck only
+  // looks at third-party models (below), which is exactly what the catalog's
+  // non-CF sources cover.
+  const [gwCosts, catalog] = await Promise.all([
+    queryGatewayCosts(env, start, end),
+    getModelCatalog(env),
+  ]);
 
   const findings: DriftFinding[] = [];
   for (const g of gwCosts) {
@@ -212,16 +206,11 @@ export async function driftCheck(
     // oranges and always "drifts". Drift is only meaningful for third-party
     // (openai/anthropic/google) models, which bill per token on both sides.
     if (g.provider === "workers-ai" || g.model.startsWith("@cf/")) continue;
-    // Match a scraped model by name (either direction of substring containment).
-    const gl = g.model.toLowerCase();
-    const match = scraped.find(
-      (s) => s.apiModelName.toLowerCase() === gl || gl.includes(s.apiModelName.toLowerCase()) || s.apiModelName.toLowerCase().includes(gl),
-    );
-    if (!match || match.inputPricePerMillion === null || match.outputPricePerMillion === null) continue;
+    const match = matchCatalogModel(catalog, g.model);
+    if (!match || match.inPerM === null || match.outPerM === null) continue;
 
     const expected =
-      (g.tokensIn / 1_000_000) * match.inputPricePerMillion +
-      (g.tokensOut / 1_000_000) * match.outputPricePerMillion;
+      (g.tokensIn / 1_000_000) * match.inPerM + (g.tokensOut / 1_000_000) * match.outPerM;
     if (expected <= 0) continue;
     const driftPct = ((g.costUsd - expected) / expected) * 100;
     if (Math.abs(driftPct) < thresholdPct) continue;
@@ -233,8 +222,8 @@ export async function driftCheck(
       actualCostUsd: g.costUsd,
       expectedCostUsd: expected,
       driftPct,
-      scrapedInputPerM: match.inputPricePerMillion,
-      scrapedOutputPerM: match.outputPricePerMillion,
+      scrapedInputPerM: match.inPerM,
+      scrapedOutputPerM: match.outPerM,
       effectivePerMillion: g.effectivePerMillion,
     });
   }

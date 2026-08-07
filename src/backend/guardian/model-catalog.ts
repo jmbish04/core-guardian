@@ -18,9 +18,11 @@
  * @see https://www.aipricing.guru/api/pricing.json
  */
 
-import { getOpenRouterApiKey } from "@/backend/utils/secrets";
+import { desc } from "drizzle-orm";
 
-import { latestModels } from "./ai-model-advisor";
+import { getDb } from "@/backend/db";
+import { aiModelPricing } from "@/backend/db/schema";
+import { getOpenRouterApiKey } from "@/backend/utils/secrets";
 
 export const CATALOG_CACHE_KEY = "model-catalog:latest";
 const AIPRICING_URL = "https://www.aipricing.guru/api/pricing.json";
@@ -109,6 +111,28 @@ function normKey(provider: string, id: string): string {
   return `${provider}:${id}`.toLowerCase();
 }
 
+/** Normalize a model name/id for fuzzy matching across sources — strips the
+ * `@cf/` and `provider/` prefixes and all non-alphanumerics. */
+export function normalizeModelName(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/^@cf\//, "")
+    .replace(/^[a-z0-9-]+\//, "")
+    .replace(/[^a-z0-9]/g, "");
+}
+
+/** Find the catalog entry that best matches a model name/id (exact norm first,
+ * then either-direction substring containment). */
+export function matchCatalogModel(catalog: CatalogModel[], name: string): CatalogModel | undefined {
+  const n = normalizeModelName(name);
+  return (
+    catalog.find((c) => normalizeModelName(c.id) === n || normalizeModelName(c.name) === n) ??
+    catalog.find(
+      (c) => normalizeModelName(c.id).includes(n) || n.includes(normalizeModelName(c.id)),
+    )
+  );
+}
+
 /**
  * True only for text chat/completion models — the sole thing a chat-cost
  * recommendation may swap between. Excludes embeddings, rerankers, speech,
@@ -174,9 +198,18 @@ async function fetchAiPricingGuru(): Promise<CatalogModel[]> {
     }));
 }
 
-/** The Worker's own scraped catalog, as candidates. */
+/** The Worker's own `ai_model_pricing` catalog (now Cloudflare Workers AI only),
+ * newest row per (provider, api_model_name), as candidates. Queried directly
+ * rather than via ai-model-advisor to keep this module out of an import cycle. */
 async function fetchScraped(env: Env): Promise<CatalogModel[]> {
-  const rows = await latestModels(env);
+  const all = await getDb(env).select().from(aiModelPricing).orderBy(desc(aiModelPricing.scrapedAt));
+  const seen = new Set<string>();
+  const rows = all.filter((r) => {
+    const key = `${r.provider}::${r.apiModelName}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
   return rows.map((r): CatalogModel => ({
     key: normKey(r.provider, r.apiModelName),
     id: r.apiModelName,

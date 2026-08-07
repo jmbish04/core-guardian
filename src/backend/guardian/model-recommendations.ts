@@ -35,6 +35,8 @@ import {
   classifyTier,
   getModelCatalog,
   isChatModel,
+  matchCatalogModel,
+  normalizeModelName as norm,
   TIER_MIN_SCORE,
   TIER_RANK,
 } from "./model-catalog";
@@ -80,15 +82,6 @@ export type ModelRecommendation = {
   rationale: string;
   basis: "tier" | "prompt-classified";
 };
-
-/** Normalize a model name/id for fuzzy matching across sources. */
-function norm(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/^@cf\//, "")
-    .replace(/^[a-z0-9-]+\//, "") // strip provider/ prefix
-    .replace(/[^a-z0-9]/g, "");
-}
 
 /** Monthly cost of a token volume at a candidate's per-1M rates. */
 function monthlyCost(c: CatalogModel, inTok: number, outTok: number): number | null {
@@ -144,15 +137,6 @@ async function observedUsage(env: Env, days: number): Promise<ObservedModel[]> {
     });
 
   return [...by.values()].filter((m) => m.requests > 0 || m.costUsd > 0);
-}
-
-/** Find the catalog entry that best matches an observed model. */
-function matchCatalog(model: string, catalog: CatalogModel[]): CatalogModel | undefined {
-  const n = norm(model);
-  return (
-    catalog.find((c) => norm(c.id) === n || norm(c.name) === n) ??
-    catalog.find((c) => norm(c.id).includes(n) || n.includes(norm(c.id)))
-  );
 }
 
 /**
@@ -239,7 +223,7 @@ export async function getRecommendations(
     // Only advise on chat/completion models — an embedding or speech model has
     // no chat-model equivalent to swap to.
     if (!isChatModel(o.model)) continue;
-    const incumbent = matchCatalog(o.model, catalog);
+    const incumbent = matchCatalogModel(catalog, o.model);
     const incumbentTier = incumbent?.tier ?? classifyTier(o.model);
     const incumbentScore = incumbent?.score ?? capabilityScore(o.model);
     // The capability floor a candidate must clear, as a curated score. Prompt
