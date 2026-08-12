@@ -5,7 +5,7 @@
  * Thin Astro shell over the `<AiRouterConsole>` React island.
  */
 import BaseLayout from "@/layouts/BaseLayout.astro";
-import { AiRouterConsole } from "@/components/dashboard";
+import { AiRouterUsage, AiRouterConsole } from "@/components/dashboard";
 ---
 
 <BaseLayout
@@ -19,6 +19,7 @@ import { AiRouterConsole } from "@/components/dashboard";
     >
       ← Core Guardian
     </a>
+    <AiRouterUsage client:load />
     <AiRouterConsole client:load />
   </main>
 </BaseLayout>
