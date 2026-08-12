@@ -182,6 +182,18 @@
       "id": "aba8552a49c64335ba4832d34ce9459d",
       "remote": true,
     },
+    {
+      // AI Router — prompt bodies keyed by request_uuid (title: core-guardian-prompts)
+      "binding": "PROMPTS",
+      "id": "fd338db727604640a463e656a1c65b74",
+      "remote": true,
+    },
+    {
+      // AI Router — circuit-breaker criteria + spend counters (title: core-guardian-circuits)
+      "binding": "CIRCUITS",
+      "id": "179fc51fa07a4ffca5b7786e0279b80c",
+      "remote": true,
+    },
   ],
   "d1_databases": [
     {
