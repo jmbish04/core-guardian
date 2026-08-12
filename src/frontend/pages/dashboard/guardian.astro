@@ -7,7 +7,7 @@
  * inline status feedback.
  */
 import BaseLayout from "@/layouts/BaseLayout.astro";
-import { ActionItems, AllowancesPanel, AlertsBoard, BillableUsage, CostTraceIsland, DailyCost, GuardianPanel, ModelAdvisor } from "@/components/dashboard";
+import { ActionItems, AllowancesPanel, AlertsBoard, BillableUsage, CostTraceIsland, DailyCost, GuardianPanel, ModelAdvisor, SpendOverview } from "@/components/dashboard";
 ---
 
 <BaseLayout
@@ -28,6 +28,8 @@ import { ActionItems, AllowancesPanel, AlertsBoard, BillableUsage, CostTraceIsla
     </header>
 
     <AlertsBoard client:load />
+
+    <SpendOverview client:load />
 
     <AllowancesPanel client:visible />
 

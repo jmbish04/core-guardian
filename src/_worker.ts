@@ -66,6 +66,7 @@ import { syncRecommendationAlerts } from "./backend/guardian/model-recommendatio
 import { scrapeAllModelPricing } from "./backend/guardian/ai-model-pricing";
 import { evaluateUsage } from "./backend/guardian/collect";
 import { backfillDailyCost, snapshotDailyCost } from "./backend/guardian/daily-cost";
+import { checkSustainedSpend } from "./backend/guardian/offense/auto-break";
 import { scrapeAllPricing } from "./backend/guardian/pricing-scrape";
 
 // Re-export Durable Object classes (Pattern B: the @astrojs/cloudflare adapter
@@ -155,6 +156,16 @@ async function runGuardianEvaluation(env: Env) {
   } catch (err) {
     console.error(
       JSON.stringify({ level: "ERROR", source: "guardian.modelCatalog", error: String(err) }),
+    );
+  }
+  // Daily: Spend Offense sustained-spend auto-breaker. Runs once per day (gated
+  // on UTC hour 08, after the daily-cost step above has repriced the two days it
+  // scores) — files an incident when spend clears the threshold two days running.
+  try {
+    await maybeCheckSustainedSpend(env);
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.offense", error: String(err) }),
     );
   }
 }
@@ -249,6 +260,19 @@ async function maybeRefreshModelCatalog(env: Env) {
   console.warn(
     JSON.stringify({ level: "INFO", source: "guardian.modelCatalog", models: models.length, alerts }),
   );
+}
+
+/**
+ * Daily gate for the Spend Offense auto-breaker. The cron is hourly, so only run
+ * at UTC hour 08 — the checker is idempotent (it dedupes on an existing active
+ * incident), but gating avoids 24 redundant daily-cost reads per day.
+ */
+async function maybeCheckSustainedSpend(env: Env) {
+  if (new Date().getUTCHours() !== 8) return;
+  const result = await checkSustainedSpend(env);
+  if (result.incidentFiled) {
+    console.warn(JSON.stringify({ level: "WARN", source: "guardian.offense", ...result }));
+  }
 }
 
 /** True for paths the Hono API owns (REST + OpenAPI doc surfaces). */

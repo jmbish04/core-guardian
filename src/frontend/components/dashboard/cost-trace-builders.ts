@@ -67,9 +67,14 @@ export function buildAccountTree(plan: string, rows: Allowance[]): CostNode {
     const surge = (a.projectedFraction ?? 0) > 1;
     if (cost === 0 && !surge) continue;
     const cat = CATEGORY[a.service] ?? "Other";
-    const detail = a.projectedFraction !== null ? `${Math.round(a.projectedFraction * 100)}% projected` : a.unit;
+    const detail =
+      a.projectedFraction !== null
+        ? `${Math.round(a.projectedFraction * 100)}% projected${surge ? " — SURGE" : ""}`
+        : a.unit;
     (byCat.get(cat) ?? byCat.set(cat, []).get(cat)!).push({
-      label: a.service,
+      // Surge nodes get a warning glyph so the topic reads loud even before the
+      // hot node style lands — a projected overage must never be quiet text.
+      label: surge ? `⚠ ${a.service}` : a.service,
       costUsd: cost > 0 ? cost : undefined,
       surge,
       detail,
@@ -84,10 +89,14 @@ export function buildAccountTree(plan: string, rows: Allowance[]): CostNode {
     }))
     .sort(byCostDesc);
   const total = sumCost(categories);
+  // NOTE: this total is projected overage ABOVE the included allowance, not
+  // billable spend. True MTD metered spend is the SpendOverview headline; this
+  // tree traces where the *overage* comes from — labelled as such to fix the
+  // long-standing "Account billables · $X" mislabel.
   return {
-    label: "Account billables",
+    label: "Overage above allowance",
     costUsd: total > 0 ? total : undefined,
-    detail: `${plan} plan`,
+    detail: `projected overage · ${plan} plan`,
     children: categories,
   };
 }
