@@ -9,6 +9,7 @@ export { AdminDashboard } from "./AdminDashboard";
 export { ActionItems } from "./ActionItems";
 export { AllowancesPanel } from "./AllowancesPanel";
 export { CostTraceIsland } from "./CostTraceIsland";
+export { SpendOverview } from "./SpendOverview";
 export { DailyCost } from "./DailyCost";
 export { BillableUsage } from "./BillableUsage";
 export { ModelAdvisor } from "./ModelAdvisor";

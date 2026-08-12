@@ -36,6 +36,7 @@ import { dashboardRouter } from "./routes/dashboard";
 import { docsRouter } from "./routes/docs";
 import { driveRouter } from "./routes/drive-config";
 import { guardianRouter, r2Router, vectorizeRouter } from "./routes/guardian";
+import { offenseRouter } from "./routes/offense";
 import { healthRouter } from "./routes/health";
 import { inboxRouter } from "./routes/inbox";
 import { mcpRouter } from "./routes/mcp";
@@ -150,6 +151,7 @@ app.route("/api/seed", seedRouter);
 
 // Core Guardian: usage monitoring + emergency eviction (see routes/guardian.ts).
 app.route("/api/guardian", guardianRouter);
+app.route("/api/guardian/offense", offenseRouter);
 app.route("/api/r2", r2Router);
 app.route("/api/vectorize", vectorizeRouter);
 app.route("/api/storage", storageRouter);

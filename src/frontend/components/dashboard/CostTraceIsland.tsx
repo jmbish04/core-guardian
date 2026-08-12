@@ -49,7 +49,7 @@ export type CostTraceIslandProps = {
 };
 
 const HEADING: Record<CostTraceScope, { title: string; caption: string }> = {
-  account: { title: "Cost trace", caption: "account → category → binding · red = projected surge" },
+  account: { title: "Overage trace", caption: "projected overage above allowance · account → category → binding · red = surge" },
   "ai-gateway": { title: "Gateway spend trace", caption: "gateway → provider → model · last 30d" },
   worker: { title: "Worker spend trace", caption: "worker → compute + AI → model · last 30d" },
   attribution: { title: "Attribution map", caption: "worker → the resources it binds" },

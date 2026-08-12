@@ -148,6 +148,20 @@
       "when": 1786503031348,
       "tag": "0020_overrated_white_tiger",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1786546515816,
+      "tag": "0021_loud_yellowjacket",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1786547990147,
+      "tag": "0022_new_sunset_bain",
+      "breakpoints": true
     }
   ]
 }
