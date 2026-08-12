@@ -32,7 +32,8 @@ export async function usageByProject(env: Env, start: number, end: number): Prom
     .from(aiRouterRequests)
     .where(and(gte(aiRouterRequests.at, start), lte(aiRouterRequests.at, end)))
     .groupBy(aiRouterRequests.project)
-    .orderBy(desc(sql`sum(${aiRouterRequests.costUsd})`));
+    .orderBy(desc(sql`sum(${aiRouterRequests.costUsd})`))
+    .limit(500);
   return rows.map((r) => ({
     project: r.project, requests: n(r.requests), tokensIn: n(r.tokensIn), tokensOut: n(r.tokensOut),
     costUsd: n(r.costUsd), errors: n(r.errors), breakers: n(r.breakers),
@@ -54,7 +55,8 @@ export async function usageByModelForProject(
     .from(aiRouterRequests)
     .where(and(eq(aiRouterRequests.project, project), gte(aiRouterRequests.at, start), lte(aiRouterRequests.at, end)))
     .groupBy(aiRouterRequests.provider, aiRouterRequests.model)
-    .orderBy(desc(sql`sum(${aiRouterRequests.costUsd})`));
+    .orderBy(desc(sql`sum(${aiRouterRequests.costUsd})`))
+    .limit(200);
   return rows.map((r) => ({
     provider: r.provider, model: r.model, requests: n(r.requests),
     tokensIn: n(r.tokensIn), tokensOut: n(r.tokensOut), costUsd: n(r.costUsd),

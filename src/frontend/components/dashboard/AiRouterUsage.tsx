@@ -12,7 +12,7 @@
 "use client";
 
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, XAxis, YAxis } from "recharts";
 
 import { ResourceTable, type Column } from "@/components/storage";
@@ -89,25 +89,33 @@ export function AiRouterUsage() {
   const [drillLoading, setDrillLoading] = useState(false);
   const [drillError, setDrillError] = useState<string | null>(null);
 
+  const reqSeq = useRef(0);
+  const drillSeq = useRef(0);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    const seq = ++reqSeq.current;
     try {
-      const end = Date.now();
+      const end = Math.floor(Date.now() / 60_000) * 60_000;
       const start = end - days * 86_400_000;
       const res = await apiGet<{ projects: ProjectUsage[] }>("/ai-router/usage", { start, end });
-      setProjects(res.projects);
-      setReady(true);
+      if (seq === reqSeq.current) {
+        setProjects(res.projects);
+        setReady(true);
+      }
     } catch (err) {
-      setError(
-        err instanceof ApiError && err.status === 401
-          ? "Sign in to view usage."
-          : err instanceof ApiError
-            ? err.message
-            : "Failed to load AI Router usage.",
-      );
+      if (seq === reqSeq.current) {
+        setError(
+          err instanceof ApiError && err.status === 401
+            ? "Sign in to view usage."
+            : err instanceof ApiError
+              ? err.message
+              : "Failed to load AI Router usage.",
+        );
+      }
     } finally {
-      setLoading(false);
+      if (seq === reqSeq.current) setLoading(false);
     }
   }, [days]);
 
@@ -115,30 +123,38 @@ export function AiRouterUsage() {
     void load();
   }, [load]);
 
+  // Close the drill dialog on range change so it can't show a stale range.
+  useEffect(() => {
+    setDrillProject(null);
+  }, [days]);
+
   const openDrill = useCallback(
     async (project: string) => {
       setDrillProject(project);
       setDrillLoading(true);
       setDrillError(null);
       setModels([]);
+      const seq = ++drillSeq.current;
       try {
-        const end = Date.now();
+        const end = Math.floor(Date.now() / 60_000) * 60_000;
         const start = end - days * 86_400_000;
         const res = await apiGet<{ models: ModelUsage[] }>(
           "/ai-router/usage/" + encodeURIComponent(project),
           { start, end },
         );
-        setModels(res.models);
+        if (seq === drillSeq.current) setModels(res.models);
       } catch (err) {
-        setDrillError(
-          err instanceof ApiError && err.status === 401
-            ? "Sign in to view usage."
-            : err instanceof ApiError
-              ? err.message
-              : "Failed to load model breakdown.",
-        );
+        if (seq === drillSeq.current) {
+          setDrillError(
+            err instanceof ApiError && err.status === 401
+              ? "Sign in to view usage."
+              : err instanceof ApiError
+                ? err.message
+                : "Failed to load model breakdown.",
+          );
+        }
       } finally {
-        setDrillLoading(false);
+        if (seq === drillSeq.current) setDrillLoading(false);
       }
     },
     [days],
