@@ -210,6 +210,12 @@
       "secret_name": "GH_TOKEN",
     },
     {
+      // Spend Offense P5 — outbound Jules dispatch. Read via await env.JULES_API_KEY.get().
+      "binding": "JULES_API_KEY",
+      "store_id": "8c42fa70938644e0a8a109744467375f",
+      "secret_name": "JULES_API_KEY",
+    },
+    {
       "binding": "CLOUDFLARE_ACCOUNT_ID",
       "store_id": "8c42fa70938644e0a8a109744467375f",
       "secret_name": "CLOUDFLARE_ACCOUNT_ID",
