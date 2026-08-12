@@ -38,7 +38,7 @@ import { desc, eq } from "drizzle-orm";
 
 import { mcpAuth } from "@/backend/api/routes/oauth";
 import { getDb } from "@/backend/db";
-import { alertRules, billingEvents, cronRuns, usageSnapshots } from "@/backend/db/schema";
+import { aiRouterRequests, alertRules, billingEvents, cronRuns, usageSnapshots } from "@/backend/db/schema";
 import {
   getCreditBalance,
   getInvoiceHistory,
@@ -57,6 +57,9 @@ import {
 } from "@/backend/guardian/ai-gateway-admin";
 import { driftCheck, pricingHistory, queryGatewayCosts } from "@/backend/guardian/ai-gateway-costs";
 import { adviseModels, calculateCosts, latestModels } from "@/backend/guardian/ai-model-advisor";
+import {
+  getKillSwitch, listCircuits, setCircuit, setKillSwitch,
+} from "@/backend/guardian/ai-router/circuits";
 import { collectUsage } from "@/backend/guardian/collect";
 import { getWorkersPlan, setWorkersPlan } from "@/backend/guardian/plan";
 import { listUsageRegistrations, registerDirectUsage } from "@/backend/guardian/register-usage";
@@ -742,6 +745,63 @@ const TOOLS: McpTool[] = [
       await deleteGateway(env, args.id);
       await audit(env, "ai-gateway", `Deleted gateway ${args.id}`);
       return { ok: true };
+    },
+  },
+
+  // --- AI Router (kill switch, circuit breakers, request log) -------------
+  {
+    name: "ai_router_kill_switch",
+    title: "Toggle AI Router kill switch",
+    description:
+      "Enable/disable the global kill switch. When on, ALL AI Router calls are rejected. Returns the new state.",
+    inputSchema: schema({ on: bool("true = block all AI.") }, ["on"]),
+    handler: async (env, args) => {
+      await setKillSwitch(env, args.on);
+      return { killSwitch: args.on };
+    },
+  },
+  {
+    name: "ai_router_list_circuits",
+    title: "List AI Router circuits",
+    description: "List circuit breakers (scope, budget, window, enabled) with current spend, plus the kill-switch state.",
+    inputSchema: schema(),
+    handler: async (env) => ({ killSwitch: await getKillSwitch(env), circuits: await listCircuits(env) }),
+  },
+  {
+    name: "ai_router_set_circuit",
+    title: "Set an AI Router circuit",
+    description:
+      "Create/update a circuit. scope: 'global' | 'provider:openai' | 'model:openai/gpt-5' | 'project:acre'. budgetUsd + window (day|week|month|total).",
+    inputSchema: schema(
+      {
+        scope: str("Circuit scope string."),
+        budgetUsd: num("USD budget for the window."),
+        window: str("day | week | month | total."),
+        enabled: bool("Whether the circuit is active."),
+      },
+      ["scope", "budgetUsd"],
+    ),
+    handler: async (env, args) => {
+      await setCircuit(env, args.scope, {
+        budgetUsd: args.budgetUsd,
+        window: args.window ?? "month",
+        enabled: args.enabled ?? true,
+      });
+      return { ok: true, scope: args.scope };
+    },
+  },
+  {
+    name: "ai_router_recent_requests",
+    title: "Recent AI Router requests",
+    description: "Most recent AI Router request rows (uuid, project, importance, provider/model, tokens, cost, error/breaker flags).",
+    inputSchema: schema({ limit: num("Max rows (default 50).") }),
+    handler: async (env, args) => {
+      const rows = await getDb(env)
+        .select()
+        .from(aiRouterRequests)
+        .orderBy(desc(aiRouterRequests.at))
+        .limit(args?.limit ?? 50);
+      return { requests: rows };
     },
   },
 ];
