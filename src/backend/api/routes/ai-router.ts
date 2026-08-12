@@ -15,6 +15,7 @@ import { captureResult, storePrompt } from "@/backend/guardian/ai-router/capture
 import { forward } from "@/backend/guardian/ai-router/router";
 import { forwardStream } from "@/backend/guardian/ai-router/router-stream";
 import { canPrice, priceSplit } from "@/backend/guardian/ai-router/pricing";
+import { usageByProject, usageByModelForProject } from "@/backend/guardian/ai-router-usage";
 import { getSecretStoreBinding } from "@/backend/utils/secrets";
 import type { RouterRequest } from "@/backend/guardian/ai-router/types";
 
@@ -201,6 +202,8 @@ aiRouterRouter.use("/circuits", guardianAuth);
 aiRouterRouter.use("/circuits/*", guardianAuth);
 aiRouterRouter.use("/kill-switch", guardianAuth);
 aiRouterRouter.use("/requests", guardianAuth);
+aiRouterRouter.use("/usage", guardianAuth);
+aiRouterRouter.use("/usage/*", guardianAuth);
 
 aiRouterRouter.openapi(createRoute({
   method: "get", path: "/circuits", operationId: "aiRouterListCircuits",
@@ -271,4 +274,42 @@ aiRouterRouter.openapi(createRoute({
   const limit = c.req.valid("query").limit ?? 50;
   const rows = await getDb(c.env).select().from(aiRouterRequests).orderBy(desc(aiRouterRequests.at)).limit(limit);
   return c.json({ requests: rows }, 200);
+});
+
+// ---------------------------------------------------------------------------
+// Usage-by-project routes — reads only, no billing_events audit.
+// ---------------------------------------------------------------------------
+
+const projectUsageSchema = z.object({
+  project: z.string(), requests: z.number(), tokensIn: z.number(), tokensOut: z.number(),
+  costUsd: z.number(), errors: z.number(), breakers: z.number(),
+});
+const modelUsageSchema = z.object({
+  provider: z.string(), model: z.string(), requests: z.number(),
+  tokensIn: z.number(), tokensOut: z.number(), costUsd: z.number(),
+});
+
+aiRouterRouter.openapi(createRoute({
+  method: "get", path: "/usage", operationId: "aiRouterUsageByProject",
+  summary: "Router usage aggregated per project over a date range",
+  request: { query: z.object({ start: z.coerce.number().optional(), end: z.coerce.number().optional() }) },
+  responses: { 200: { description: "Per-project usage", content: { "application/json": { schema: z.object({ projects: z.array(projectUsageSchema) }) } } } },
+}), async (c) => {
+  const { start, end } = c.req.valid("query");
+  const e = end ?? Date.now();
+  const s = start ?? e - 30 * 86_400_000;
+  return c.json({ projects: await usageByProject(c.env, s, e) }, 200);
+});
+
+aiRouterRouter.openapi(createRoute({
+  method: "get", path: "/usage/{project}", operationId: "aiRouterUsageByModel",
+  summary: "A project's router usage broken down by provider/model",
+  request: { params: z.object({ project: z.string() }), query: z.object({ start: z.coerce.number().optional(), end: z.coerce.number().optional() }) },
+  responses: { 200: { description: "Per-model usage for the project", content: { "application/json": { schema: z.object({ models: z.array(modelUsageSchema) }) } } } },
+}), async (c) => {
+  const { project } = c.req.valid("param");
+  const { start, end } = c.req.valid("query");
+  const e = end ?? Date.now();
+  const s = start ?? e - 30 * 86_400_000;
+  return c.json({ models: await usageByModelForProject(c.env, project, s, e) }, 200);
 });

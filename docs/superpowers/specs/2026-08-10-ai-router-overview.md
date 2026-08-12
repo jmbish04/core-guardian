@@ -3,6 +3,8 @@
 **Status:** in design (2026-08-10). Spec #1 (Routing Core) being brainstormed; #2–4 skeletons below.
 **Goal:** make this Worker the single ingress for **all** AI processing across projects. Every call routes through Cloudflare AI Gateway (falling back to `default-gateway`) for spend limits, caching, logging, and attribution — with per-project circuit breakers, a global kill switch, per-request metadata capture, and weekly Jules-driven right-sizing recommendations.
 
+**SERIES STATUS (2026-08-12):** #1 Routing Core — merged (PR #17). #2 Admin frontend — merged (PR #18). #3 Usage-by-project — PR #20 open. #4 Jules recommendations — NOT STARTED (jules-sdk interface unknown; authless prompt-sampling endpoint is the riskiest surface — needs design + security review before build).
+
 This doc is the **shared context** so each sub-spec spin-up doesn't re-derive the landscape. Read this first, then the sub-spec.
 
 ---
