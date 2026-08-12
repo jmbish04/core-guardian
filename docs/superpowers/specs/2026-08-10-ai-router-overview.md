@@ -21,7 +21,9 @@ This doc is the **shared context** so each sub-spec spin-up doesn't re-derive th
 | Frontend usage/cost components | `src/frontend/components/storage/AiGatewayBilling.tsx`, `dashboard/WorkerSpendMonitor.tsx`, `CostTraceIsland.tsx`, `cost-trace-builders.ts` | Extend for project dimension (spec #3). |
 | Cloudflare live account access (this session) | MCP server `05d884d8-…__execute` / `__search` / `__docs`; account `b3304b14848de15c72c24a14b0cd187d` | GraphQL `aiGatewayRequestsAdaptiveGroups` (dims gateway/provider/model/date). See [[cloudflare-api-mcp-access]] memory. |
 
-**Bindings already present** (`wrangler.jsonc`): `AI_GATEWAY_ID="default-gateway"`, secret `CLOUDFLARE_ACCOUNT_ID`, secret `WORKER_API_KEY`, secret `AI_GATEWAY_TOKEN` (from `CLOUDFLARE_AI_GATEWAY_TOKEN`), KV `SESSIONS`, `AI` binding, D1. Need to add: `JULES_API_KEY` secret (spec #4), likely a dedicated KV namespace for circuit rules + prompt storage (confirm in #1).
+**Bindings already present** (`wrangler.jsonc`): `AI_GATEWAY_ID="default-gateway"`, secrets `CLOUDFLARE_ACCOUNT_ID`, `WORKER_API_KEY`, `CLOUDFLARE_AI_GATEWAY_TOKEN`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`; KV `SESSIONS` (Astro — leave alone); `AI` binding; D1.
+**To add for #1:** two new KV namespaces `PROMPTS` + `CIRCUITS`. Provider-key secrets already exist. Possible `CLOUDFLARE_API_TOKEN` only if the CF AI REST API rejects the gateway token (verify at build).
+**To add for #4:** `JULES_API_KEY` secret.
 
 **Conventions:** cloudflare-jedi stack (Hono + zod-openapi → D1 + Drizzle → Astro SSR + shadcn). Verify with build + oxlint, **never `pnpm check`** (oxfmt rewrites tree — see [[pnpm-check-reformats]]). Edit worktree-relative paths (see [[worktree-vs-main-checkout-paths]]).
 

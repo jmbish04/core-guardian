@@ -10,7 +10,9 @@
 
 **Goal:** one Worker endpoint that every project calls for AI inference. It routes each call (default: through AI Gateway `ai-bridge`), meters it in KV (fast) + D1 (durable), and refuses calls that would breach a circuit breaker or the global kill switch — so billable spend is tracked per project/model and can be capped.
 
-**Non-goals (this spec):** the admin UI (#2), project-dimensioned usage charts (#3), Jules recommendations (#4). No streaming responses in v1 (see §9 open items). No per-project API keys — single shared ingress token for now.
+**Non-goals (this spec):** the admin UI (#2), project-dimensioned usage charts (#3), Jules recommendations (#4). No per-project API keys — single shared ingress token for now.
+
+**Streaming IS in scope** as an optional per-request capability (`stream: true`) — see §9.1.
 
 ---
 
@@ -31,6 +33,7 @@
   "model": "gpt-5-mini",    // model id as the chosen path expects it
   "aiGatewayId": "…",       // only for mode "gateway-custom"
   "transport": "…",         // optional override; see §3.1. defaults per mode
+  "stream": false,          // optional; true → SSE pass-through w/ usage tee (§9.1)
   "providerApiKey": "…",    // optional; overrides the secret-store key for this call
 
   // --- the actual provider payload ---
@@ -78,15 +81,15 @@ Invalid mode×transport combos are rejected at validation with a clear message.
 
 ### 3.2 Auth to each target
 - **AIG modes:** `cf-aig-authorization: Bearer {CLOUDFLARE_AI_GATEWAY_TOKEN}` + `Authorization: Bearer {providerKey}`.
-- **openai-compat (CF REST):** `Authorization: Bearer {CLOUDFLARE_API_TOKEN}` (unified billing) — no provider key needed; if the caller supplies `providerApiKey` we use BYOK semantics instead.
+- **openai-compat (CF REST):** `Authorization: Bearer {cfToken}` (unified billing). `cfToken` = `CLOUDFLARE_AI_GATEWAY_TOKEN` (only CF token currently bound). ⚠️ The `/ai/v1/*` REST API may require a scoped Cloudflare **API token**, not the gateway token — verify at build; if rejected, add a `CLOUDFLARE_API_TOKEN` secret. If caller supplies `providerApiKey`, use BYOK semantics instead.
 - **native / gemini-native:** `{providerKey}` only.
-- **providerKey resolution:** `payload.providerApiKey` if present, else secret-store binding per provider — `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_AI_API_KEY` (new secret bindings to add). Missing key for the chosen provider → 400.
+- **providerKey resolution:** `payload.providerApiKey` if present, else the **existing** secret-store binding per provider — `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` (google/gemini). Missing key for the chosen provider → 400.
 
 ---
 
 ## 4. Provider registry
 
-A single `providers` module maps `provider → { aigSlug, nativeBaseUrl, sdkFactory, usageExtractor, keyBinding }`. Reuses the `usage` extractors already in `ai-proxy.ts` (openai `prompt_tokens/completion_tokens`, anthropic `input_tokens/output_tokens`, google `usageMetadata`). One place to add a provider; each mode reads from it. Keeps the router file small and each provider testable in isolation.
+A single `providers` module maps `provider → { aigSlug, nativeBaseUrl, sdkFactory, usageExtractor, keyBinding }` where `keyBinding` ∈ `OPENAI_API_KEY | ANTHROPIC_API_KEY | GEMINI_API_KEY`. Reuses the `usage` extractors already in `ai-proxy.ts` (openai `prompt_tokens/completion_tokens`, anthropic `input_tokens/output_tokens`, google `usageMetadata`). One place to add a provider; each mode reads from it. Keeps the router file small and each provider testable in isolation.
 
 ---
 
@@ -176,7 +179,13 @@ MCP tools (in `routes/mcp.ts`, existing registry): `ai_router_kill_switch` (on/o
 - Unknown model for pricing → cost recorded 0, `priced:"unmatched"` (as `register-usage.ts` already does), call NOT blocked.
 - KV counter miss/expiry → treat as 0 (fail-open on metering) but the kill switch and any `enabled` circuit with a set budget still evaluate; a reconcile job (later) can rebuild from D1.
 - Missing provider key → 400 before any spend.
-- **Streaming:** v1 buffers the full response to read `usage` (no SSE passthrough). Flagged as a known limitation; streaming pass-through + token accounting is a follow-up.
+### 9.1 Streaming (optional, `stream: true`)
+When the caller sets `stream: true`, the router returns an SSE stream to the caller while **tee-ing** the byte stream to accumulate usage:
+- Request the provider with usage-in-stream enabled where supported (OpenAI: `stream_options: { include_usage: true }`; Anthropic: `message_delta` carries `usage`; Gemini SDK streaming exposes `usageMetadata` on the final chunk).
+- Pipe provider SSE → caller unchanged (via `TransformStream`), and in the same transform parse each chunk to capture the final `usage`. Non-streaming path is unchanged (buffer + read `usage`).
+- On stream end (or client disconnect via `signal`), finalize the D1 row + KV counters with whatever usage was captured; if the final usage chunk never arrived, record tokens best-effort (`priced:"unmatched"` if unknown) and mark the row so it can be reconciled.
+- **Breaker interaction:** breakers evaluate *pre-flight* (before the stream opens), so a streamed call is admitted or 429'd exactly like a buffered one; post-stream accounting increments counters. A stream already in flight is never interrupted mid-response by a breaker.
+- Breaker rejection itself is always a plain JSON 429 (never a stream).
 
 ## 10. Testing
 
@@ -184,9 +193,202 @@ MCP tools (in `routes/mcp.ts`, existing registry): `ai_router_kill_switch` (on/o
 - One integration-ish test per bypass mode with a mocked provider fetch asserting a D1 row + KV counter increment.
 - Verify with build + oxlint (NOT `pnpm check` — oxfmt rewrites tree, see [[pnpm-check-reformats]]).
 
-## 11. New bindings to add (wrangler.jsonc)
-- KV: `PROMPTS`, `CIRCUITS` (or reuse `SESSIONS` with key prefixes — decide in plan; separate namespaces preferred for TTL/ops isolation).
-- Secrets: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_AI_API_KEY`, `CLOUDFLARE_API_TOKEN` (for compat/unified-billing REST). `CLOUDFLARE_AI_GATEWAY_TOKEN` already bound.
+## 11. Bindings (wrangler.jsonc)
+- **New KV namespaces (create both):** `PROMPTS` (prompt bodies) + `CIRCUITS` (breaker criteria + fast spend counters). **Leave `SESSIONS` untouched — it's used by Astro.** No prefix-sharing.
+- **Secrets — all already bound, none to add:** `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `CLOUDFLARE_AI_GATEWAY_TOKEN`.
+- **Possible follow-up:** `CLOUDFLARE_API_TOKEN` only if the `/ai/v1/*` REST API rejects the gateway token (§3.2) — verify at build, don't pre-add.
 
 ## 12. Reuse summary
 `ai-proxy.ts` → price map, `priceCall`, `monthKey`, `breakGlass`, provider `usage` extractors. `register-usage.ts` → `registerDirectUsage` roll-up feed. `ai-gateway.ts`/`ai-gateway-admin.ts` route+MCP patterns. `billing_events` audit. cloudflare-jedi stack conventions throughout.
+
+---
+
+## 13. Diagrams
+
+### 13.1 System architecture (component view)
+
+```mermaid
+flowchart TB
+    subgraph Callers["Projects / callers"]
+        C1["acre-forensics-pipeline"]
+        C2["core-remodel"]
+        C3["job-hunt / any worker"]
+    end
+
+    subgraph Worker["core-guardian Worker — AI Router"]
+        ING["POST /api/ai-router/run<br/>ingress"]
+        AUTH{"bearer ==<br/>CLOUDFLARE_AI_GATEWAY_TOKEN?"}
+        VAL["zod validate<br/>project, importance, mode, provider, model"]
+        BRK["circuit-breaker gate<br/>(pre-flight)"]
+        ROUTE["mode router"]
+        CAP["capture: request_uuid<br/>prompt to KV + row to D1<br/>feed ai_gateway_costs"]
+        MGMT["/api/ai-router/* mgmt<br/>(guardianAuth)"]
+        MCP["MCP tools"]
+    end
+
+    subgraph Stores["State"]
+        KVP[("PROMPTS KV<br/>prompt:{uuid}")]
+        KVC[("CIRCUITS KV<br/>criteria + spend counters + killswitch")]
+        D1[("D1 ai_router_requests<br/>+ ai_gateway_costs rollup")]
+    end
+
+    subgraph Targets["Upstream targets"]
+        AIG["AI Gateway<br/>ai-bridge / custom id"]
+        REST["Cloudflare AI REST API<br/>/ai/v1/chat/completions"]
+        NAT["Provider native APIs<br/>OpenAI / Anthropic"]
+        GEM["Gemini SDK<br/>(interactions API)"]
+    end
+
+    C1 & C2 & C3 --> ING --> AUTH
+    AUTH -- no --> R401["401"]
+    AUTH -- yes --> VAL --> BRK
+    BRK -- tripped --> R429["429 + D1 breaker row"]
+    BRK -- pass --> ROUTE
+    ROUTE --> AIG & REST & NAT & GEM
+    ROUTE --> CAP
+    CAP --> KVP & D1
+    BRK <--> KVC
+    CAP -- increment counters --> KVC
+    MGMT <--> KVC
+    MGMT --> D1
+    MCP <--> KVC
+    AIG -. "OpenAI/Anthropic/WorkersAI" .-> NAT
+```
+
+### 13.2 Request lifecycle (happy path, non-streaming)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Caller
+    participant Ingress as Router ingress
+    participant CB as Breaker (CIRCUITS KV)
+    participant Prov as Provider (via mode)
+    participant KV as PROMPTS KV
+    participant D1
+
+    Caller->>Ingress: POST /api/ai-router/run (bearer, project, importance, mode, model, input)
+    Ingress->>Ingress: auth + zod validate + gen request_uuid
+    Ingress->>KV: put prompt:{uuid} = input
+    Ingress->>CB: read killswitch + in-scope circuits + counters
+    alt kill switch on OR any circuit over budget
+        CB-->>Ingress: TRIP (scope, message)
+        Ingress->>D1: insert row (isCircuitBreaker=true, circuitBrokenMessage)
+        Ingress-->>Caller: 429 { request_uuid, isCircuitBreaker }
+    else admitted
+        CB-->>Ingress: pass
+        Ingress->>Prov: forward (gateway/compat/native/gemini) + resolved key
+        Prov-->>Ingress: response + usage
+        Ingress->>Ingress: price tokens (in/out cost)
+        Ingress->>D1: insert row (tokens, costs, gateway, mode) + feed ai_gateway_costs
+        Ingress->>CB: increment counters global/provider/model/project
+        Ingress-->>Caller: 200 { request_uuid, tokens, cost, body }
+    end
+```
+
+### 13.3 Mode routing decision
+
+```mermaid
+flowchart TD
+    S["validated request"] --> G{"provider is<br/>google / gemini?"}
+    G -- yes --> GEM["mode := gemini-native<br/>(forced)<br/>Gemini SDK, self-meter"]
+    G -- no --> M{"mode?"}
+    M -- "gateway (default)" --> D1G["AI Gateway @ ai-bridge"]
+    M -- gateway-custom --> DCUST["AI Gateway @ payload.aiGatewayId"]
+    M -- provider-sdk-gateway --> DPSDK["provider SDK, baseURL to AIG"]
+    M -- openai-compat --> DREST["CF AI REST /ai/v1/chat/completions"]
+    M -- native --> DNAT["provider native API<br/>self-meter"]
+    D1G & DCUST & DPSDK & DREST --> THRU["through AI Gateway<br/>logged + spend-limited"]
+    GEM & DNAT --> BYP["bypass: WE are sole meter"]
+    THRU & BYP --> T{"stream == true?"}
+    T -- yes --> STR["SSE pass-through + usage tee (§9.1)"]
+    T -- no --> BUF["buffer + read usage"]
+```
+
+### 13.4 Circuit-breaker evaluation (first trip wins)
+
+```mermaid
+flowchart TD
+    A["pre-flight check"] --> K{"killswitch == on?"}
+    K -- yes --> RJ["REJECT 429<br/>write breaker row"]
+    K -- no --> GT{"spend:global >= budget<br/>and not break-glass?"}
+    GT -- yes --> RJ
+    GT -- no --> PV{"spend:provider:{p} >= budget?"}
+    PV -- yes --> RJ
+    PV -- no --> MD{"spend:model:{p}/{m} >= budget?"}
+    MD -- yes --> RJ
+    MD -- no --> PJ{"spend:project:{name} >= budget?"}
+    PJ -- yes --> RJ
+    PJ -- no --> OK["ADMIT — call provider"]
+    OK --> INC["on completion:<br/>increment global+provider+model+project<br/>counters by costUsd for window key"]
+```
+
+### 13.5 Data model
+
+```mermaid
+erDiagram
+    AI_ROUTER_REQUESTS {
+        text id PK "request_uuid"
+        int at
+        text project
+        text importance
+        text provider
+        text model
+        text mode
+        text gateway "null if bypass"
+        real tokensIn
+        real tokensOut
+        real tokensInCost
+        real tokensOutCost
+        real costUsd
+        bool isError
+        text errorMessage
+        bool isCircuitBreaker
+        text circuitBrokenMessage
+        text costRowId FK
+        text payloadJson
+        int createdAt
+    }
+    AI_GATEWAY_COSTS {
+        text id PK "day:gateway:provider:model"
+        text day
+        text gateway
+        text provider
+        text model
+        real costUsd
+        real tokensIn
+        real tokensOut
+    }
+    PROMPTS_KV {
+        text key PK "prompt:{uuid}"
+        text value "input JSON"
+    }
+    CIRCUITS_KV {
+        text key PK "circuit:{scope} | spend:{scope}:{window} | killswitch"
+        text value "criteria | counter | on/off"
+    }
+    AI_ROUTER_REQUESTS ||--|| PROMPTS_KV : "uuid links prompt"
+    AI_ROUTER_REQUESTS }o--|| AI_GATEWAY_COSTS : "accumulates into (costRowId)"
+    AI_ROUTER_REQUESTS }o--o{ CIRCUITS_KV : "increments spend counters"
+```
+
+### 13.6 Kill switch / breaker states
+
+```mermaid
+stateDiagram-v2
+    [*] --> Armed
+    Armed --> Tripped: scope spend >= budget
+    Tripped --> Armed: window rolls over (new window key)
+    Armed --> BreakGlass: operator break-glass(hours)
+    BreakGlass --> Armed: window expires
+    Tripped --> BreakGlass: operator break-glass(hours)
+    Armed --> KillAll: kill switch ON
+    Tripped --> KillAll: kill switch ON
+    BreakGlass --> KillAll: kill switch ON
+    KillAll --> Armed: kill switch OFF (confirm-gated)
+    note right of KillAll
+        rejects ALL calls
+        regardless of per-scope budgets
+    end note
+```
+
