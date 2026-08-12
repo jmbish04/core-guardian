@@ -182,6 +182,18 @@
       "id": "aba8552a49c64335ba4832d34ce9459d",
       "remote": true,
     },
+    {
+      // AI Router — prompt bodies keyed by request_uuid (title: core-guardian-prompts)
+      "binding": "PROMPTS",
+      "id": "fd338db727604640a463e656a1c65b74",
+      "remote": true,
+    },
+    {
+      // AI Router — circuit-breaker criteria + spend counters (title: core-guardian-circuits)
+      "binding": "CIRCUITS",
+      "id": "179fc51fa07a4ffca5b7786e0279b80c",
+      "remote": true,
+    },
   ],
   "d1_databases": [
     {
@@ -236,6 +248,34 @@
       "binding": "GOOGLE_CREDS_SA_CLIENT_EMAIL",
       "store_id": "8c42fa70938644e0a8a109744467375f",
       "secret_name": "GOOGLE_CREDS_SA_CLIENT_EMAIL",
+    },
+    // AI Router provider keys + tokens (secrets already exist in the store).
+    {
+      "binding": "OPENAI_API_KEY",
+      "store_id": "8c42fa70938644e0a8a109744467375f",
+      "secret_name": "OPENAI_API_KEY",
+    },
+    {
+      "binding": "ANTHROPIC_API_KEY",
+      "store_id": "8c42fa70938644e0a8a109744467375f",
+      "secret_name": "ANTHROPIC_API_KEY",
+    },
+    {
+      "binding": "GEMINI_API_KEY",
+      "store_id": "8c42fa70938644e0a8a109744467375f",
+      "secret_name": "GEMINI_API_KEY",
+    },
+    {
+      // Ingress auth + cf-aig-authorization for gateway modes.
+      "binding": "CLOUDFLARE_AI_GATEWAY_TOKEN",
+      "store_id": "8c42fa70938644e0a8a109744467375f",
+      "secret_name": "CLOUDFLARE_AI_GATEWAY_TOKEN",
+    },
+    {
+      // openai-compat mode → Cloudflare AI REST API.
+      "binding": "CLOUDFLARE_API_TOKEN",
+      "store_id": "8c42fa70938644e0a8a109744467375f",
+      "secret_name": "CLOUDFLARE_API_TOKEN",
     },
   ],
   "r2_buckets": [
