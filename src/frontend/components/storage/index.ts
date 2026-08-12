@@ -14,5 +14,5 @@ export { DriveConfig } from "./DriveConfig";
 export { NotificationsInbox } from "./NotificationsInbox";
 export { CatalogsTable, D1Table, KVTable, PipelinesTable } from "./ProductTables";
 export { R2Explorer } from "./R2Explorer";
-export { BoundWorkers, ResourceTable } from "./ResourceTable";
+export { BoundWorkers, ResourceTable, type Column } from "./ResourceTable";
 export { StorageDashboard } from "./StorageDashboard";

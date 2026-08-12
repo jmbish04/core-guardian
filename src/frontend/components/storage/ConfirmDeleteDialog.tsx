@@ -31,6 +31,7 @@ export function ConfirmDeleteDialog({
   title,
   description,
   onConfirm,
+  confirmLabel,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -38,6 +39,8 @@ export function ConfirmDeleteDialog({
   title: string;
   description: React.ReactNode;
   onConfirm: () => Promise<void> | void;
+  /** Label for the confirm button. Defaults to "Delete permanently". */
+  confirmLabel?: string;
 }) {
   const [typed, setTyped] = useState("");
   const [copied, setCopied] = useState(false);
@@ -129,7 +132,7 @@ export function ConfirmDeleteDialog({
               }}
             >
               {working && <Loader2Icon className="size-4 animate-spin" />}
-              Delete permanently
+              {confirmLabel ?? "Delete permanently"}
             </Button>
           </div>
         </div>
