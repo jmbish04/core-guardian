@@ -56,6 +56,9 @@ export const aiGatewayCosts = sqliteTable(
     // The daily-cost report and drift check filter `dayStart >= cutoff` (+ provider) —
     // a range scan this index serves directly.
     index("idx_ai_gateway_costs_day_start").on(t.dayStart),
+    // Freshness probe `ORDER BY captured_at DESC LIMIT 1` was scanning ~1.7k rows
+    // per call; this serves it as a reverse index seek.
+    index("idx_ai_gateway_costs_captured_at").on(t.capturedAt),
   ],
 );
 

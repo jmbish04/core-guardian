@@ -75,6 +75,9 @@ export const dailyCost = sqliteTable(
   (t) => [
     // The report filters `dayStart >= cutoff`; index the range so it never scans.
     index("idx_daily_cost_day_start").on(t.dayStart),
+    // Freshness probe `ORDER BY captured_at DESC LIMIT 1` was scanning ~1.1k rows
+    // per call; this serves it as a reverse index seek.
+    index("idx_daily_cost_captured_at").on(t.capturedAt),
   ],
 );
 

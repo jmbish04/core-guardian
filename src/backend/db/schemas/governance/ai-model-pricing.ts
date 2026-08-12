@@ -10,7 +10,7 @@
  * @see {@link file://src/backend/guardian/ai-model-pricing.ts} for the scraper.
  */
 
-import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { createInsertSchema, createSelectSchema } from "drizzle-zod";
 
 export const AI_MODEL_PRICING_TABLE_DESCRIPTION =
@@ -48,7 +48,11 @@ export const aiModelPricing = sqliteTable("ai_model_pricing", {
   scrapedAt: integer("scraped_at")
     .notNull()
     .$defaultFn(() => Date.now()),
-});
+}, (t) => [
+  // Cost lookups and freshness probes sort `ORDER BY scraped_at DESC`; without
+  // this the append-only catalog full-scans (~480 rows/call).
+  index("idx_ai_model_pricing_scraped_at").on(t.scrapedAt),
+]);
 
 export const insertAiModelPricingSchema = createInsertSchema(aiModelPricing);
 export const selectAiModelPricingSchema = createSelectSchema(aiModelPricing);
