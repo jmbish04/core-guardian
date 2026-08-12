@@ -17,7 +17,8 @@
 - Verify every task with `pnpm build` (astro build → typecheck + bundle) and `pnpm lint` (oxlint). **NEVER `pnpm check`** — oxfmt rewrites the whole tree.
 - Edit worktree-relative paths only (this is a git worktree).
 - Follow existing file conventions: `@fileoverview` header, doc-constant + `createInsertSchema`/`createSelectSchema` for schemas, `import.meta.main` assert-based self-check for pure logic.
-- Secrets already bound: `CLOUDFLARE_AI_GATEWAY_TOKEN`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `CLOUDFLARE_ACCOUNT_ID`, `WORKER_API_KEY`. Do NOT re-add. `SESSIONS` KV belongs to Astro — do not reuse.
+- Secrets bound (as **Secret Store** bindings): `CLOUDFLARE_AI_GATEWAY_TOKEN`, `CLOUDFLARE_API_TOKEN`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `CLOUDFLARE_ACCOUNT_ID`, `WORKER_API_KEY`. Do NOT re-add. `SESSIONS` KV belongs to Astro — do not reuse.
+- **Secret access:** these are `SecretsStoreSecret` bindings (async `.get()`), NOT strings. Read them via `getSecretStoreBinding(env, "NAME")` (with `getSecret` plain-var fallback) from `@/backend/utils/secrets` — `await` it. NEVER `env.NAME as unknown as string` (returns the binding object, not the value). Any function that reads a secret is therefore async.
 - Ingress `/run` is authed by `CLOUDFLARE_AI_GATEWAY_TOKEN` bearer. Management routes are authed by the existing `guardianAuth`.
 
 ---
@@ -467,20 +468,28 @@ git commit -m "feat(ai-router): circuit breakers, kill switch, KV spend counters
 
 ```ts
 /** @fileoverview AI Router provider registry: key resolution + usage extraction. */
+import { getSecret, getSecretStoreBinding } from "@/backend/utils/secrets";
 import type { Usage } from "./types";
 
-export const PROVIDER_KEY_BINDING: Record<string, keyof Env> = {
+export const PROVIDER_KEY_BINDING: Record<string, string> = {
   openai: "OPENAI_API_KEY",
   anthropic: "ANTHROPIC_API_KEY",
   google: "GEMINI_API_KEY",
 };
 
-/** Caller-supplied key wins, else the secret-store binding for the provider. */
-export function resolveKey(env: Env, provider: string, override?: string): string {
+/**
+ * Caller-supplied key wins, else the Secret Store binding for the provider.
+ * These are `SecretsStoreSecret` bindings (async `.get()`), so this is async —
+ * read them via the canonical `getSecretStoreBinding` helper (with the plain-var
+ * `getSecret` local-dev fallback), never a string cast.
+ */
+export async function resolveKey(env: Env, provider: string, override?: string): Promise<string> {
   if (override) return override;
   const binding = PROVIDER_KEY_BINDING[provider];
-  const key = binding ? (env[binding] as unknown as string | undefined) : undefined;
-  if (!key) throw new Error(`No API key for provider "${provider}" (no override, no ${String(binding)} binding).`);
+  const key = binding
+    ? (await getSecretStoreBinding(env, binding)) ?? getSecret(env, binding)
+    : undefined;
+  if (!key) throw new Error(`No API key for provider "${provider}" (no override, no ${binding} binding).`);
   return key;
 }
 
@@ -514,9 +523,12 @@ if (import.meta.main) {
   eq(extractUsage("openai", { usage: { prompt_tokens: 5, completion_tokens: 7 } }).tokensOut, 7, "openai usage");
   eq(extractUsage("anthropic", { usage: { input_tokens: 3, output_tokens: 9 } }).tokensIn, 3, "anthropic usage");
   eq(extractUsage("google", { usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 4 } }).tokensOut, 4, "google usage");
-  eq(resolveKey({} as Env, "openai", "sk-override"), "sk-override", "override wins");
-  // eslint-disable-next-line no-console
-  console.log("ok — providers verified");
+  // resolveKey is async now; override short-circuits before any binding read.
+  resolveKey({} as Env, "openai", "sk-override").then((k) => {
+    eq(k, "sk-override", "override wins");
+    // eslint-disable-next-line no-console
+    console.log("ok — providers verified");
+  });
 }
 ```
 
@@ -696,6 +708,7 @@ git commit -m "feat(ai-router): capture prompt to KV, request row to D1, roll-up
  * Google/Gemini is always forced to gemini-native (AIG can't proxy the
  * interactions API). Streaming lives in router-stream.ts (Task 9).
  */
+import { getSecret, getSecretStoreBinding } from "@/backend/utils/secrets";
 import { aigSlug, extractUsage, nativeBaseUrl, resolveKey } from "./providers";
 import type { Mode, RouterRequest, Usage } from "./types";
 
@@ -730,9 +743,11 @@ export interface ForwardResult { status: number; body: unknown; usage: Usage; ga
 
 export async function forward(env: Env, req: RouterRequest, _now: number): Promise<ForwardResult> {
   const mode = resolveMode(req);
-  const account = env.CLOUDFLARE_ACCOUNT_ID as unknown as string;
-  const gwToken = env.CLOUDFLARE_AI_GATEWAY_TOKEN as unknown as string;
-  const providerKey = resolveKey(env, req.provider, req.providerApiKey);
+  // Secret Store bindings are async .get() — read via helpers, never string casts.
+  const account = (await getSecretStoreBinding(env, "CLOUDFLARE_ACCOUNT_ID")) ?? getSecret(env, "CLOUDFLARE_ACCOUNT_ID") ?? "";
+  const gwToken = (await getSecretStoreBinding(env, "CLOUDFLARE_AI_GATEWAY_TOKEN")) ?? "";
+  const cfApiToken = (await getSecretStoreBinding(env, "CLOUDFLARE_API_TOKEN")) ?? gwToken; // compat mode
+  const providerKey = await resolveKey(env, req.provider, req.providerApiKey);
 
   // Resolve URL + headers + which gateway (if any) per mode.
   let url: string; const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -747,7 +762,7 @@ export async function forward(env: Env, req: RouterRequest, _now: number): Promi
     headers["Authorization"] = `Bearer ${providerKey}`;
   } else if (mode === "openai-compat") {
     url = `https://api.cloudflare.com/client/v4/accounts/${account}/ai/v1/chat/completions`;
-    headers["Authorization"] = `Bearer ${gwToken}`; // ⚠ may need a real CF API token — see spec §3.2
+    headers["Authorization"] = `Bearer ${cfApiToken}`; // CLOUDFLARE_API_TOKEN, falls back to gwToken
   } else if (mode === "native") {
     url = `${nativeBaseUrl(req.provider)}/${req.provider === "anthropic" ? "messages" : "chat/completions"}`;
     if (req.provider === "anthropic") {
@@ -793,6 +808,7 @@ git commit -m "feat(ai-router): mode dispatch + fetch forward (non-streaming)"
  * while tee-ing the bytes to accumulate final usage. Used when the request sets
  * stream:true. Breakers are evaluated BEFORE this opens (see ingress).
  */
+import { getSecret, getSecretStoreBinding } from "@/backend/utils/secrets";
 import { resolveMode } from "./router";
 import { aigSlug, resolveKey } from "./providers";
 import type { RouterRequest, Usage } from "./types";
@@ -803,9 +819,9 @@ export interface StreamResult {
 
 export async function forwardStream(env: Env, req: RouterRequest, _now: number): Promise<StreamResult> {
   const mode = resolveMode(req);
-  const account = env.CLOUDFLARE_ACCOUNT_ID as unknown as string;
-  const gwToken = env.CLOUDFLARE_AI_GATEWAY_TOKEN as unknown as string;
-  const providerKey = resolveKey(env, req.provider, req.providerApiKey);
+  const account = (await getSecretStoreBinding(env, "CLOUDFLARE_ACCOUNT_ID")) ?? getSecret(env, "CLOUDFLARE_ACCOUNT_ID") ?? "";
+  const gwToken = (await getSecretStoreBinding(env, "CLOUDFLARE_AI_GATEWAY_TOKEN")) ?? "";
+  const providerKey = await resolveKey(env, req.provider, req.providerApiKey);
   const gateway = mode.startsWith("gateway") ? (mode === "gateway-custom" ? req.aiGatewayId ?? null : "ai-bridge") : null;
 
   // Ask providers to include usage in the stream where supported.
@@ -885,6 +901,7 @@ import { captureResult, storePrompt } from "@/backend/guardian/ai-router/capture
 import { forward } from "@/backend/guardian/ai-router/router";
 import { forwardStream } from "@/backend/guardian/ai-router/router-stream";
 import { priceSplit } from "@/backend/guardian/ai-router/pricing";
+import { getSecretStoreBinding } from "@/backend/utils/secrets";
 import type { RouterRequest } from "@/backend/guardian/ai-router/types";
 
 export const aiRouterRouter = new OpenAPIHono<{ Bindings: Env }>();
@@ -911,7 +928,9 @@ const runBody = z.object({
 aiRouterRouter.use("/run", async (c, next) => {
   const auth = c.req.header("Authorization") ?? "";
   const token = auth.replace(/^Bearer\s+/i, "");
-  if (!token || token !== (c.env.CLOUDFLARE_AI_GATEWAY_TOKEN as unknown as string)) {
+  // CLOUDFLARE_AI_GATEWAY_TOKEN is a Secret Store binding (async .get()).
+  const expected = await getSecretStoreBinding(c.env, "CLOUDFLARE_AI_GATEWAY_TOKEN");
+  if (!token || !expected || token !== expected) {
     return c.json({ error: "Unauthorized" }, 401);
   }
   await next();
