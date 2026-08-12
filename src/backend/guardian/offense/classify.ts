@@ -163,9 +163,16 @@ export function peakCronRunsPerDay(exprs: string[]): number {
 // ---------------------------------------------------------------------------
 
 /**
- * Raw AI-usage signatures. A match means the scanned source/config text calls AI
- * directly — Workers AI (`@cf/…`, `env.AI`/`.AI.run(`), an AI Gateway, a hacolby
- * worker, a provider host, or an `/ai/run` endpoint.
+ * Unambiguous raw AI-usage signatures. A match means the scanned source/config
+ * text calls AI directly — an AI Gateway, an `env.AI`/`.AI.run(` binding, a
+ * provider host, or an `/ai/run` endpoint.
+ *
+ * These are structural/host signatures that never fire on innocent text, so they
+ * stand on their own. Model-ID matching (exact billed models + the Workers AI
+ * shape fallback) and the co-occurrence-gated hacolby signal are handled
+ * separately in {@link detectAiSignals} — a bare `@cf/…` or a plain sibling
+ * `*.hacolby.workers.dev` call is NOT by itself AI (both were prior false-positive
+ * sources).
  *
  * This is the text-side complement of {@link classifyBindings}: the P2 worker
  * scanner reads structured bindings, the P3 GitHub scanner regexes workflow +
@@ -174,14 +181,29 @@ export function peakCronRunsPerDay(exprs: string[]): number {
  */
 export const AI_SIGNAL_PATTERNS: readonly { readonly name: string; readonly re: RegExp }[] = [
   { name: "ai-gateway", re: /gateway\.ai\.cloudflare\.com/i },
-  { name: "workers-ai-model", re: /@cf\// },
   { name: "workers-ai-binding", re: /\benv\.AI\b|\.AI\.run\s*\(/ },
   { name: "openai", re: /api\.openai\.com/i },
   { name: "anthropic", re: /api\.anthropic\.com/i },
   { name: "gemini", re: /generativelanguage\.googleapis\.com/i },
-  { name: "hacolby-worker", re: /[a-z0-9][a-z0-9-]*\.hacolby\.workers\.dev/i },
   { name: "ai-run-path", re: /\/ai\/run\b/i },
 ] as const;
+
+/**
+ * Structural Workers AI model SHAPE: `@cf/<vendor>/<model>` (two path segments
+ * after `@cf/`). This is the safety net for a brand-new Workers AI model not yet
+ * in billing/catalog — real models have the vendor/model shape, whereas the
+ * false-positive packages (`@cf/kv-asset-handler`, `@cf/workers-types`) have only
+ * ONE segment and never match. Narrower than the removed bare `/@cf\//`.
+ */
+export const WORKERS_AI_MODEL_SHAPE = /@cf\/[a-z0-9._-]+\/[a-z0-9._-]+/i;
+
+/** Bare sibling-worker call. Only an AI signal when it co-occurs with another. */
+export const HACOLBY_WORKER = /[a-z0-9][a-z0-9-]*\.hacolby\.workers\.dev/i;
+
+/** Escape a model-ID string for safe use as a literal inside a RegExp. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 /**
  * Guardian-routed signatures: the text calls core-guardian's own AI endpoint
@@ -208,17 +230,59 @@ export interface AiTextSignals {
 /**
  * Regex-scans arbitrary source/config text for AI usage.
  *
- * `ai` is true when any raw signature OR a guardian-routed signature matches
- * (calling guardian's `/ai-router/run` is itself AI usage). `guardianRouted`
- * distinguishes reported usage from a bypass.
+ * Signal layers, most precise first:
+ *   1. The unambiguous {@link AI_SIGNAL_PATTERNS} (gateway/binding/provider host/
+ *      `/ai/run`).
+ *   2. Exact billed-model IDs from `opts.knownModels` — a literal model string
+ *      core-guardian actually bills (`@cf/openai/gpt-oss-120b`, `claude-…`)
+ *      matched exactly (regex-escaped, word-ish boundaries). This is what
+ *      replaced the over-broad bare `/@cf\//`.
+ *   3. The {@link WORKERS_AI_MODEL_SHAPE} fallback — a `@cf/<vendor>/<model>`
+ *      that isn't in the known list yet still looks like a real model.
+ *   4. {@link HACOLBY_WORKER} — a bare sibling-worker call, counted ONLY when at
+ *      least one of the above also fired (a plain non-AI sibling call must not
+ *      flip `ai` on its own).
+ *
+ * `ai` is true when any of layers 1–3 match OR a guardian-routed signature
+ * matches (calling guardian's `/ai-router/run` is itself AI usage).
+ * `guardianRouted` distinguishes reported usage from a bypass.
  *
  * @param text - Concatenated workflow YAML + wrangler config (or any source)
+ * @param opts.knownModels - Exact billed/catalog model IDs from
+ *   {@link file://src/backend/guardian/offense/known-models.ts}; omitted/empty
+ *   falls back to the structural shape check alone.
  */
-export function detectAiSignals(text: string): AiTextSignals {
+export function detectAiSignals(
+  text: string,
+  opts?: { knownModels?: string[] },
+): AiTextSignals {
   const matched: string[] = [];
   for (const { name, re } of AI_SIGNAL_PATTERNS) {
     if (re.test(text)) matched.push(name);
   }
+
+  // Exact billed-model IDs: a real model string in the text is definitive AI.
+  // \b won't anchor around leading `@`, so bound with a non-model-char lookaround.
+  for (const model of opts?.knownModels ?? []) {
+    const id = model?.trim();
+    if (!id) continue;
+    const re = new RegExp(`(?<![\\w./@-])${escapeRegExp(id)}(?![\\w./-])`, "i");
+    if (re.test(text)) {
+      matched.push("workers-ai-model");
+      break; // one exact hit is enough — don't spam the justification
+    }
+  }
+
+  // Shape fallback for a brand-new model not yet in the known list.
+  if (!matched.includes("workers-ai-model") && WORKERS_AI_MODEL_SHAPE.test(text)) {
+    matched.push("workers-ai-model");
+  }
+
+  // Sibling-worker call: an AI signal ONLY alongside another AI signal.
+  if (matched.length > 0 && HACOLBY_WORKER.test(text)) {
+    matched.push("hacolby-worker");
+  }
+
   const guardianRouted = GUARDIAN_ROUTED_PATTERNS.some((re) => re.test(text));
   return { ai: matched.length > 0 || guardianRouted, guardianRouted, matched };
 }
@@ -340,12 +404,49 @@ if (import.meta.main) {
   if (isScraping(false, 10, 10)) throw new Error("low subrequest ratio must not be scraping");
 
   // AI-signal text detector.
-  const rawAi = detectAiSignals("run: wrangler ai run model '@cf/openai/gpt-oss-120b'");
-  if (!rawAi.ai || rawAi.guardianRouted) throw new Error("raw @cf/ must be AI, not routed");
+  const known = ["@cf/openai/gpt-oss-120b", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"];
+
+  // An EXACT billed model string → AI (definitive), not guardian-routed.
+  const exact = detectAiSignals("run: wrangler ai run '@cf/openai/gpt-oss-120b'", {
+    knownModels: known,
+  });
+  if (!exact.ai || exact.guardianRouted) throw new Error("exact billed model must be AI, not routed");
+  if (!exact.matched.includes("workers-ai-model")) throw new Error("exact model must match workers-ai-model");
+
+  // A non-model `@cf/…` package (single path segment) → NOT AI.
+  if (detectAiSignals("import handler from '@cf/kv-asset-handler'", { knownModels: known }).ai)
+    throw new Error("@cf/ non-model package must not be AI");
+
+  // A brand-new model not in the known list is still caught by the SHAPE fallback.
+  if (!detectAiSignals("model: '@cf/newvendor/brand-new-model-v9'").ai)
+    throw new Error("unknown @cf/vendor/model shape must be AI");
+
+  // `env.AI` binding usage → AI.
+  if (!detectAiSignals("const r = await env.AI.run('@cf/foo')").ai)
+    throw new Error("env.AI binding must be AI");
+
+  // A bare hacolby sibling URL with NO other AI signal → NOT AI (false-positive fix).
+  const lone = detectAiSignals("curl https://render-worker.hacolby.workers.dev/health");
+  if (lone.ai) throw new Error("lone hacolby URL must not be AI");
+
+  // A hacolby URL alongside a real AI signal → hacolby counted as a co-signal.
+  const combo = detectAiSignals("host: api.anthropic.com via proxy.hacolby.workers.dev");
+  if (!combo.ai || !combo.matched.includes("hacolby-worker"))
+    throw new Error("hacolby must count only alongside another AI signal");
+
+  // `gateway.ai.cloudflare.com` → AI.
+  if (!detectAiSignals("url: https://gateway.ai.cloudflare.com/v1/acct/gw/openai").ai)
+    throw new Error("AI gateway host must be AI");
+
+  // Guardian-routed usage is AI AND flagged routed (reported, not a bypass).
   const routed = detectAiSignals("curl https://core-guardian.hacolby.workers.dev/ai-router/run");
   if (!routed.ai || !routed.guardianRouted) throw new Error("guardian endpoint must read as routed");
+
+  // A provider host → AI.
   const provider = detectAiSignals("headers: { host: api.anthropic.com }");
   if (!provider.ai || !provider.matched.includes("anthropic")) throw new Error("provider host must be AI");
+
+  // Plain CI with no AI signal → NOT AI.
   if (detectAiSignals("npm ci && npm run build").ai) throw new Error("plain CI must not be AI");
 
   // eslint-disable-next-line no-console

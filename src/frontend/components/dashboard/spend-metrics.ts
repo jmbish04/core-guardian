@@ -73,7 +73,9 @@ export function computeSpendMetrics(
 
   const monthDays = totalByDay.filter((p) => p.day.startsWith(monthPrefix));
   const mtd = monthDays.reduce((s, p) => s + p.costUsd, 0);
-  const today = totalByDay.length ? totalByDay[totalByDay.length - 1].costUsd : 0;
+  // "Today so far" = the latest day WITHIN the current month; 0 when the month
+  // has no data yet (otherwise this leaks last month's final day at month start).
+  const today = monthDays.length ? monthDays[monthDays.length - 1].costUsd : 0;
 
   // Elapsed days = the day-of-month of the latest day WITH data this month, so
   // the run-rate denominator and MTD numerator cover the same window.

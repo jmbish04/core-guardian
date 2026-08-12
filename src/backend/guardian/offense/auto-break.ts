@@ -23,7 +23,7 @@
  * Zero AI. This is a threshold comparison over data already in D1.
  */
 
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, gte, or } from "drizzle-orm";
 
 import { getDb } from "@/backend/db";
 import {
@@ -33,7 +33,7 @@ import {
 } from "@/backend/db/schema";
 import { NotificationsAgent } from "@/backend/ai/agents/NotificationsAgent";
 import { getDailyCostReport } from "@/backend/guardian/daily-cost";
-import { setKillSwitch } from "@/backend/guardian/ai-router/circuits";
+import { getKillSwitch, setKillSwitch } from "@/backend/guardian/ai-router/circuits";
 import { getAgentByName } from "agents";
 
 // ---------------------------------------------------------------------------
@@ -135,35 +135,81 @@ export async function checkSustainedSpend(env: Env): Promise<SustainedSpendResul
   }
 
   const db = getDb(env);
-
-  // Dedupe: never spam a second active incident from the same source.
-  const [existing] = await db
-    .select({ id: circuitBreakEvents.id })
-    .from(circuitBreakEvents)
-    .where(
-      and(eq(circuitBreakEvents.status, "active"), eq(circuitBreakEvents.source, "auto_spend")),
-    )
-    .orderBy(desc(circuitBreakEvents.createdAt))
-    .limit(1);
-  if (existing) {
-    return {
-      ...base,
-      incidentFiled: false,
-      days,
-      note: `active auto_spend incident already open (${existing.id})`,
-    };
-  }
-
   const now = Date.now();
   const breachHardCeiling =
     hardCeilingUsd != null && dayA.costUsd > hardCeilingUsd && dayB.costUsd > hardCeilingUsd;
 
-  // Hard-ceiling breach → flip the kill switch and record it. Otherwise recommend-only.
-  const actionsTaken: CircuitBreakAction[] = [];
+  // Safety net runs INDEPENDENTLY of incident dedupe: a genuine hard-ceiling
+  // breach must engage the kill switch even when a recommend-only incident is
+  // already open. Only flip when it isn't already on.
   let killSwitchFlipped = false;
-  if (breachHardCeiling) {
+  if (breachHardCeiling && !(await getKillSwitch(env))) {
     await setKillSwitch(env, true);
     killSwitchFlipped = true;
+  }
+
+  // Dedupe: suppress a duplicate incident while one is active OR was resolved
+  // within the cooldown — otherwise the daily cron re-files the moment the
+  // operator resolves it. ponytail: 24h cooldown dampening; break-glass is the
+  // real fix for a knowingly-accepted multi-day spike.
+  const cooldownMs = 24 * 60 * 60 * 1000;
+  const [existing] = await db
+    .select({ id: circuitBreakEvents.id, actionsTaken: circuitBreakEvents.actionsTaken })
+    .from(circuitBreakEvents)
+    .where(
+      and(
+        eq(circuitBreakEvents.source, "auto_spend"),
+        or(
+          eq(circuitBreakEvents.status, "active"),
+          gte(circuitBreakEvents.resolvedAt, now - cooldownMs),
+        ),
+      ),
+    )
+    .orderBy(desc(circuitBreakEvents.createdAt))
+    .limit(1);
+
+  // An incident already covers this window and we did not just escalate → nothing new.
+  if (existing && !killSwitchFlipped) {
+    return {
+      ...base,
+      killSwitchFlipped: false,
+      incidentFiled: false,
+      days,
+      note: `recent auto_spend incident already on record (${existing.id})`,
+    };
+  }
+
+  // We just engaged the kill switch but an incident already exists → attach the
+  // escalation to it instead of filing a duplicate row.
+  if (existing && killSwitchFlipped) {
+    const escalation: CircuitBreakAction = {
+      kind: "kill_switch",
+      detail: `AI kill switch enabled: both days exceeded the hard ceiling ($${hardCeilingUsd}).`,
+      at: now,
+    };
+    const merged = [...(existing.actionsTaken ?? []), escalation];
+    await db
+      .update(circuitBreakEvents)
+      .set({ actionsTaken: merged, scope: "global" })
+      .where(eq(circuitBreakEvents.id, existing.id));
+    await db.insert(billingEvents).values({
+      id: crypto.randomUUID(),
+      service: "offense",
+      actionTaken: `Escalated incident ${existing.id}: hard ceiling breached, AI kill switch engaged.`,
+      timestamp: now,
+    });
+    return {
+      ...base,
+      killSwitchFlipped: true,
+      incidentFiled: false,
+      days,
+      note: `escalated existing incident ${existing.id} — kill switch engaged`,
+    };
+  }
+
+  // Fresh incident. Record the kill-switch action only if we flipped it above.
+  const actionsTaken: CircuitBreakAction[] = [];
+  if (killSwitchFlipped) {
     actionsTaken.push({
       kind: "kill_switch",
       detail: `AI kill switch enabled: both days exceeded the hard ceiling ($${hardCeilingUsd}).`,

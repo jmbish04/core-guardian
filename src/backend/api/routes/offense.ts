@@ -16,7 +16,7 @@
  */
 
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import { and, desc, eq, gte } from "drizzle-orm";
+import { and, desc, eq, gte, ne } from "drizzle-orm";
 
 import { getDb } from "@/backend/db";
 import {
@@ -166,10 +166,19 @@ offenseRouter.openapi(
     const now = Date.now();
     let killSwitchLifted = false;
 
-    // Erroneous → false positive: undo an automated kill switch this incident set.
+    // Erroneous → false positive: undo an automated kill switch this incident set,
+    // but ONLY if no other still-active incident also relies on it (otherwise
+    // resolving an old incident would turn AI back on while a newer one wants it off).
     if (action === "erroneous" && flippedKillSwitch(existing.actionsTaken)) {
-      await setKillSwitch(c.env, false);
-      killSwitchLifted = true;
+      const others = await db
+        .select({ actionsTaken: circuitBreakEvents.actionsTaken })
+        .from(circuitBreakEvents)
+        .where(and(eq(circuitBreakEvents.status, "active"), ne(circuitBreakEvents.id, id)));
+      const stillNeeded = others.some((o) => flippedKillSwitch(o.actionsTaken));
+      if (!stillNeeded) {
+        await setKillSwitch(c.env, false);
+        killSwitchLifted = true;
+      }
     }
 
     const [updated] = await db

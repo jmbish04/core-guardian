@@ -29,6 +29,7 @@ import {
   detectAiSignals,
   scoreRisk,
 } from "@/backend/guardian/offense/classify";
+import { getKnownBilledModels } from "@/backend/guardian/offense/known-models";
 import { getSecret, getSecretStoreBinding } from "@/backend/utils/secrets";
 
 const GH = "https://api.github.com";
@@ -270,12 +271,13 @@ async function scanOne(
   token: string,
   repo: Repo,
   registered: Set<string>,
+  knownModels: string[],
   onRateLimit: () => void,
 ): Promise<ScannedRepo | null> {
   const { workflows, config, rateLimited } = await fetchRepoText(env, token, repo);
   if (rateLimited) onRateLimit();
 
-  const ai = detectAiSignals(`${workflows}\n${config}`);
+  const ai = detectAiSignals(`${workflows}\n${config}`, { knownModels });
   if (!ai.ai) return null; // no AI usage → not a spend player, don't record
 
   const cronSchedules = extractWorkflowCrons(workflows);
@@ -336,8 +338,10 @@ export async function scanGithub(env: Env): Promise<GithubScanSummary> {
   }
 
   const db = getDb(env);
-  const [{ repos, truncated, rateLimited: listRateLimited, firstCallFailed }, registered] =
-    await Promise.all([listRepos(env, token), loadRegisteredNames(db)]);
+  // Fetch the exact billed-model allowlist ONCE (not per file) — the text
+  // detector matches these literally instead of a false-positive-prone `@cf/`.
+  const [{ repos, truncated, rateLimited: listRateLimited, firstCallFailed }, registered, knownModels] =
+    await Promise.all([listRepos(env, token), loadRegisteredNames(db), getKnownBilledModels(env)]);
 
   if (firstCallFailed) {
     return {
@@ -363,7 +367,7 @@ export async function scanGithub(env: Env): Promise<GithubScanSummary> {
     if (rateLimited) return null;
     reposScanned++;
     try {
-      return await scanOne(env, token, repo, registered, onRateLimit);
+      return await scanOne(env, token, repo, registered, knownModels, onRateLimit);
     } catch {
       return null; // one unreadable repo must not sink the whole scan
     }
