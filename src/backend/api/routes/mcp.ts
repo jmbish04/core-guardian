@@ -754,8 +754,14 @@ const TOOLS: McpTool[] = [
     title: "Toggle AI Router kill switch",
     description:
       "Enable/disable the global kill switch. When on, ALL AI Router calls are rejected. Returns the new state.",
-    inputSchema: schema({ on: bool("true = block all AI.") }, ["on"]),
+    inputSchema: schema(
+      { on: bool("true = block all AI."), confirm: str("Required to turn OFF: must equal 'disable kill switch'.") },
+      ["on"],
+    ),
     handler: async (env, args) => {
+      if (!args.on && args.confirm !== "disable kill switch") {
+        return { error: "Confirmation required to disable: pass confirm='disable kill switch'.", killSwitch: await getKillSwitch(env) };
+      }
       await setKillSwitch(env, args.on);
       await audit(env, "ai-router", `Kill switch ${args.on ? "ENABLED (all AI blocked)" : "disabled"} via MCP`);
       return { killSwitch: args.on };

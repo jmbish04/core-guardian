@@ -14,7 +14,7 @@ import {
 import { captureResult, storePrompt } from "@/backend/guardian/ai-router/capture";
 import { forward } from "@/backend/guardian/ai-router/router";
 import { forwardStream } from "@/backend/guardian/ai-router/router-stream";
-import { priceSplit } from "@/backend/guardian/ai-router/pricing";
+import { canPrice, priceSplit } from "@/backend/guardian/ai-router/pricing";
 import { getSecretStoreBinding } from "@/backend/utils/secrets";
 import type { RouterRequest } from "@/backend/guardian/ai-router/types";
 
@@ -63,6 +63,7 @@ aiRouterRouter.openapi(
       }) } } },
       400: { description: "Invalid field (e.g. ':' in project/provider/model)", content: { "application/json": { schema: z.object({ error: z.string() }) } } },
       401: { description: "Bad ingress token", content: { "application/json": { schema: z.object({ error: z.string() }) } } },
+      422: { description: "Unpriceable model in sole-meter mode", content: { "application/json": { schema: z.object({ error: z.string() }) } } },
       429: { description: "Circuit breaker / kill switch", content: { "application/json": { schema: z.object({
         request_uuid: z.string(), isCircuitBreaker: z.literal(true), circuitBrokenMessage: z.string() }) } } },
     },
@@ -76,9 +77,27 @@ aiRouterRouter.openapi(
         return c.json({ error: `"${f}" must not contain ':'` }, 400);
       }
     }
+    // M2: validate aiGatewayId charset before it's ever used to build a URL.
+    if (raw.aiGatewayId && !/^[a-zA-Z0-9_-]+$/.test(raw.aiGatewayId)) {
+      return c.json({ error: "aiGatewayId must be [A-Za-z0-9_-]" }, 400);
+    }
     // Normalize the Gemini alias so provider is canonical everywhere downstream
     // (providers.ts / extractUsage key on "google").
     if (raw.provider === "gemini") raw.provider = "google";
+
+    // C1: streaming supports only provider "openai" in v1 — reject BEFORE
+    // storePrompt so a rejected request never orphans a stored prompt.
+    if (raw.stream && raw.provider !== "openai") {
+      return c.json({ error: 'Streaming (stream:true) supports only provider "openai" in v1.' }, 400);
+    }
+
+    // C3: fail closed — sole-meter bypass modes (native, or google forced to
+    // gemini-native) must be priceable by the catalog, else spend is unmetered.
+    const bypass = raw.mode === "native" || raw.provider === "google";
+    if (bypass && !(await canPrice(c.env, String(raw.model)))) {
+      return c.json({ error: `Model "${raw.model}" is not priceable in the catalog; sole-meter modes (native/gemini-native) require a priceable model or a gateway mode.` }, 422);
+    }
+
     const extra: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(raw)) if (!KNOWN.has(k)) extra[k] = v;
     const req: RouterRequest = { ...raw, extra } as RouterRequest;
@@ -90,28 +109,40 @@ aiRouterRouter.openapi(
     const verdict = await evaluateBreakers(c.env, req, now);
     if (!verdict.admitted) {
       const msg = verdict.message ?? "circuit breaker";
-      await captureResult(c.env, { requestUuid, req, at: now, gateway: null, breakerMessage: msg });
+      try {
+        await captureResult(c.env, { requestUuid, req, at: now, gateway: null, breakerMessage: msg });
+      } catch (e) {
+        console.error("ai-router: breaker captureResult failed", e);
+      }
       return c.json({ request_uuid: requestUuid, isCircuitBreaker: true as const, circuitBrokenMessage: msg }, 429);
     }
 
     // Streaming path returns SSE; meter finalizes after the stream ends.
-    // v1: streaming supports only provider "openai" (OpenAI-shape SSE).
-    if (req.stream && req.provider !== "openai") {
-      return c.json({ error: 'Streaming (stream:true) supports only provider "openai" in v1.' }, 400);
-    }
     if (req.stream) {
       try {
         const s = await forwardStream(c.env, req, now);
         c.executionCtx.waitUntil((async () => {
-          const usage = await s.usagePromise;
-          const priced = await priceSplit(c.env, req.model, usage);
-          await captureResult(c.env, { requestUuid, req, at: now, priced: { ...usage, ...priced }, gateway: s.gateway });
-          await incrementSpend(c.env, req, priced.costUsd, now);
+          try {
+            const usage = await s.usagePromise;
+            const priced = await priceSplit(c.env, req.model, usage);
+            await captureResult(c.env, { requestUuid, req, at: now, priced: { ...usage, ...priced }, gateway: s.gateway });
+            try {
+              await incrementSpend(c.env, req, priced.costUsd, now);
+            } catch (e) {
+              console.error("ai-router: stream incrementSpend failed", e);
+            }
+          } catch (e) {
+            console.error("ai-router: stream finalize failed", e);
+          }
         })());
         return new Response(s.stream, { status: s.status, headers: { "Content-Type": "text/event-stream", "x-request-uuid": requestUuid } });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        await captureResult(c.env, { requestUuid, req, at: now, gateway: null, isError: true, errorMessage: message });
+        try {
+          await captureResult(c.env, { requestUuid, req, at: now, gateway: null, isError: true, errorMessage: message });
+        } catch (e) {
+          console.error("ai-router: error-path captureResult failed", e);
+        }
         return c.json({ request_uuid: requestUuid, status: 502, provider: req.provider, model: req.model, mode: req.mode, gateway: null, tokens_in: 0, tokens_out: 0, cost_usd: 0, body: { error: message } }, 200);
       }
     }
@@ -125,7 +156,11 @@ aiRouterRouter.openapi(
         priced: { ...r.usage, ...priced }, isError: r.status >= 400,
         errorMessage: r.status >= 400 ? `upstream ${r.status}` : undefined,
       });
-      await incrementSpend(c.env, req, priced.costUsd, now);
+      try {
+        await incrementSpend(c.env, req, priced.costUsd, now);
+      } catch (e) {
+        console.error("ai-router: incrementSpend failed", e);
+      }
       return c.json({
         request_uuid: requestUuid, status: r.status, provider: req.provider, model: req.model,
         mode: req.mode, gateway: r.gateway,
@@ -133,7 +168,11 @@ aiRouterRouter.openapi(
       }, 200);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      await captureResult(c.env, { requestUuid, req, at: now, gateway: null, isError: true, errorMessage: message });
+      try {
+        await captureResult(c.env, { requestUuid, req, at: now, gateway: null, isError: true, errorMessage: message });
+      } catch (e) {
+        console.error("ai-router: error-path captureResult failed", e);
+      }
       return c.json({ request_uuid: requestUuid, status: 502, provider: req.provider, model: req.model,
         mode: req.mode, gateway: null, tokens_in: 0, tokens_out: 0, cost_usd: 0, body: { error: message } }, 200);
     }

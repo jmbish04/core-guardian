@@ -19,3 +19,10 @@ export async function priceSplit(
   const tokensOutCost = (usage.tokensOut / 1_000_000) * match.outPerM;
   return { tokensInCost, tokensOutCost, costUsd: tokensInCost + tokensOutCost };
 }
+
+/** True only when the maintained catalog can price this model (both rates known). */
+export async function canPrice(env: Env, model: string): Promise<boolean> {
+  const catalog = await getModelCatalog(env);
+  const m = matchCatalogModel(catalog, model);
+  return !!m && m.inPerM !== null && m.outPerM !== null;
+}

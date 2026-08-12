@@ -35,7 +35,10 @@ export async function forward(env: Env, req: RouterRequest, _now: number): Promi
 
   if (mode === "gateway" || mode === "gateway-custom" || mode === "provider-sdk-gateway") {
     if (!gwToken) throw new Error("Missing CLOUDFLARE_AI_GATEWAY_TOKEN for gateway mode.");
-    gateway = mode === "gateway-custom" ? (req.aiGatewayId ?? env.AI_GATEWAY_ID) : "ai-bridge";
+    if (mode === "gateway-custom" && !req.aiGatewayId) {
+      throw new Error("gateway-custom mode requires aiGatewayId.");
+    }
+    gateway = mode === "gateway-custom" ? req.aiGatewayId! : "ai-bridge";
     const slug = aigSlug(req.provider);
     // Provider-specific passthrough path on the gateway.
     url = `${AIG_BASE(account, gateway)}/${slug}/${AIG_PATH[req.provider] ?? "chat/completions"}`;

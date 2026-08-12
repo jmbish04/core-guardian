@@ -64,7 +64,7 @@ export async function captureResult(env: Env, a: CaptureArgs): Promise<{ costRow
     costRowId,
     payloadJson: Object.keys(a.req.extra).length ? JSON.stringify(a.req.extra) : null,
     createdAt: Date.now(),
-  });
+  }).onConflictDoNothing();
 
   return { costRowId };
 }
