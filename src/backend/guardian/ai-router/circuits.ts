@@ -99,6 +99,7 @@ if (import.meta.main) {
   eq(windowKey("month", Date.UTC(2026, 7, 11)), "2026-08", "month key");
   eq(windowKey("day", Date.UTC(2026, 7, 1)), "2026-08-01", "day key");
   eq(windowKey("total", Date.now()), "all", "total key");
+  eq(windowKey("week", Date.UTC(2025, 11, 31)), "2026-W01", "week key year-boundary");
   const s = scopesFor({ provider: "openai", model: "gpt-5", project: "acre" });
   eq(s[0], "global", "scope0"); eq(s[2], "model:openai/gpt-5", "scope2"); eq(s[3], "project:acre", "scope3");
   // eslint-disable-next-line no-console
