@@ -1001,14 +1001,23 @@ aiRouterRouter.openapi(
       return c.json({ error: 'Streaming (stream:true) supports only provider "openai" in v1.' }, 400);
     }
     if (req.stream) {
-      const s = await forwardStream(c.env, req, now);
-      c.executionCtx.waitUntil((async () => {
-        const usage = await s.usagePromise;
-        const priced = await priceSplit(c.env, req.model, usage);
-        await captureResult(c.env, { requestUuid, req, at: now, priced: { ...usage, ...priced }, gateway: s.gateway });
-        await incrementSpend(c.env, req, priced.costUsd, now);
-      })());
-      return new Response(s.stream, { status: s.status, headers: { "Content-Type": "text/event-stream", "x-request-uuid": requestUuid } });
+      try {
+        const s = await forwardStream(c.env, req, now);
+        c.executionCtx.waitUntil((async () => {
+          const usage = await s.usagePromise;
+          const priced = await priceSplit(c.env, req.model, usage);
+          await captureResult(c.env, { requestUuid, req, at: now, priced: { ...usage, ...priced }, gateway: s.gateway });
+          await incrementSpend(c.env, req, priced.costUsd, now);
+        })());
+        return new Response(s.stream, { status: s.status, headers: { "Content-Type": "text/event-stream", "x-request-uuid": requestUuid } });
+      } catch (err) {
+        // A forwardStream throw (e.g. missing gateway token) must still be audited,
+        // not fall through to the generic 500 handler with no D1 row.
+        const message = err instanceof Error ? err.message : String(err);
+        await captureResult(c.env, { requestUuid, req, at: now, gateway: null, isError: true, errorMessage: message });
+        return c.json({ request_uuid: requestUuid, status: 502, provider: req.provider, model: req.model,
+          mode: req.mode, gateway: null, tokens_in: 0, tokens_out: 0, cost_usd: 0, body: { error: message } }, 200);
+      }
     }
 
     // Buffered path.
