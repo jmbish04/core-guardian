@@ -29,7 +29,12 @@ This doc is the **shared context** so each sub-spec spin-up doesn't re-derive th
 
 ---
 
-## Spec #1 — Routing Core (DESIGNED — see [2026-08-11-ai-router-1-routing-core-design.md](./2026-08-11-ai-router-1-routing-core-design.md))
+## Spec #1 — Routing Core (BUILT ✅ 2026-08-11 — see [design](./2026-08-11-ai-router-1-routing-core-design.md), [plan](../plans/2026-08-11-ai-router-routing-core.md))
+
+**Shipped** on branch `claude/ai-gateway-acre-forensics-usage-a5b848` (27 commits, build+lint green, whole-branch reviewed). Files: `src/backend/guardian/ai-router/{types,circuits,providers,pricing,capture,router,router-stream}.ts`, `src/backend/api/routes/ai-router.ts` (mounted `/api/ai-router`), `src/backend/db/schemas/governance/ai-router-requests.ts` (D1 migration 0020), 4 MCP tools in `routes/mcp.ts`. Bindings added: KV `PROMPTS`+`CIRCUITS`, Secret Store `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`GEMINI_API_KEY`/`CLOUDFLARE_AI_GATEWAY_TOKEN`/`CLOUDFLARE_API_TOKEN`. **Pricing = maintained model catalog** (`getModelCatalog`/`matchCatalogModel`) — a hardcoded map would zero modern models and make breakers inert (caught in final review).
+**Deferred (later ticket, non-blocking):** priceSplit unit test; stream-400 leaves an orphan `prompt:{uuid}` in KV; errored $0 calls still feed the roll-up; pre-existing tsconfig/typescript@7 drift blocks raw `tsc` (astro build typechecks); live `/run` curl smoke; SDK-based transports + non-OpenAI streaming (v1 relay only).
+
+
 
 The request path everything else reads. **Decisions locked:**
 - 6-mode taxonomy: `gateway` (default) · `gateway-custom` · `provider-sdk-gateway` · `openai-compat` (CF AI REST API) · `native` · `gemini-native`. Caller picks `mode` + optional `transport`.
