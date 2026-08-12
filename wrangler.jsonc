@@ -249,6 +249,34 @@
       "store_id": "8c42fa70938644e0a8a109744467375f",
       "secret_name": "GOOGLE_CREDS_SA_CLIENT_EMAIL",
     },
+    // AI Router provider keys + tokens (secrets already exist in the store).
+    {
+      "binding": "OPENAI_API_KEY",
+      "store_id": "8c42fa70938644e0a8a109744467375f",
+      "secret_name": "OPENAI_API_KEY",
+    },
+    {
+      "binding": "ANTHROPIC_API_KEY",
+      "store_id": "8c42fa70938644e0a8a109744467375f",
+      "secret_name": "ANTHROPIC_API_KEY",
+    },
+    {
+      "binding": "GEMINI_API_KEY",
+      "store_id": "8c42fa70938644e0a8a109744467375f",
+      "secret_name": "GEMINI_API_KEY",
+    },
+    {
+      // Ingress auth + cf-aig-authorization for gateway modes.
+      "binding": "CLOUDFLARE_AI_GATEWAY_TOKEN",
+      "store_id": "8c42fa70938644e0a8a109744467375f",
+      "secret_name": "CLOUDFLARE_AI_GATEWAY_TOKEN",
+    },
+    {
+      // openai-compat mode → Cloudflare AI REST API.
+      "binding": "CLOUDFLARE_API_TOKEN",
+      "store_id": "8c42fa70938644e0a8a109744467375f",
+      "secret_name": "CLOUDFLARE_API_TOKEN",
+    },
   ],
   "r2_buckets": [
     {
