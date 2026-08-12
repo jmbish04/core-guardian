@@ -16,7 +16,7 @@
  */
 
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import { and, desc, eq, gte, ne } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, ne } from "drizzle-orm";
 
 import { getDb } from "@/backend/db";
 import {
@@ -170,10 +170,15 @@ offenseRouter.openapi(
     // but ONLY if no other still-active incident also relies on it (otherwise
     // resolving an old incident would turn AI back on while a newer one wants it off).
     if (action === "erroneous" && flippedKillSwitch(existing.actionsTaken)) {
+      // "read" incidents are still LIVE breakers (acknowledged, switch stays on),
+      // so they count too — otherwise resolving one erroneous incident would lift
+      // the switch while a read breaker still relies on it.
       const others = await db
         .select({ actionsTaken: circuitBreakEvents.actionsTaken })
         .from(circuitBreakEvents)
-        .where(and(eq(circuitBreakEvents.status, "active"), ne(circuitBreakEvents.id, id)));
+        .where(
+          and(inArray(circuitBreakEvents.status, ["active", "read"]), ne(circuitBreakEvents.id, id)),
+        );
       const stillNeeded = others.some((o) => flippedKillSwitch(o.actionsTaken));
       if (!stillNeeded) {
         await setKillSwitch(c.env, false);

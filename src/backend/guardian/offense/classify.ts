@@ -197,12 +197,36 @@ export const AI_SIGNAL_PATTERNS: readonly { readonly name: string; readonly re: 
  */
 export const WORKERS_AI_MODEL_SHAPE = /@cf\/[a-z0-9._-]+\/[a-z0-9._-]+/i;
 
-/** Bare sibling-worker call. Only an AI signal when it co-occurs with another. */
-export const HACOLBY_WORKER = /[a-z0-9][a-z0-9-]*\.hacolby\.workers\.dev/i;
+/**
+ * Bare sibling-worker call. Only an AI signal when it co-occurs with another.
+ * The trailing negative lookahead stops `x.hacolby.workers.dev.evil.com` from
+ * matching as a legitimate hacolby host.
+ */
+export const HACOLBY_WORKER = /[a-z0-9][a-z0-9-]*\.hacolby\.workers\.dev(?![a-z0-9.-])/i;
 
 /** Escape a model-ID string for safe use as a literal inside a RegExp. */
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Cache of compiled exact-model matchers, keyed by the `knownModels` array
+ * reference. `scanGithub` passes the SAME array to every per-file call, so the
+ * combined alternation regex is compiled once per scan — not once per model per
+ * file (which was 100k+ needless compiles on a large catalog × many repos).
+ */
+const modelMatcherCache = new WeakMap<readonly string[], RegExp | null>();
+
+/** Build (or reuse) a single escaped alternation regex over the known model IDs. */
+function modelMatcherFor(knownModels: readonly string[]): RegExp | null {
+  const cached = modelMatcherCache.get(knownModels);
+  if (cached !== undefined) return cached;
+  const ids = knownModels.map((m) => m?.trim()).filter((m): m is string => !!m);
+  const re = ids.length
+    ? new RegExp(`(?<![\\w./@-])(?:${ids.map(escapeRegExp).join("|")})(?![\\w./-])`, "i")
+    : null;
+  modelMatcherCache.set(knownModels, re);
+  return re;
 }
 
 /**
@@ -262,16 +286,9 @@ export function detectAiSignals(
   }
 
   // Exact billed-model IDs: a real model string in the text is definitive AI.
-  // \b won't anchor around leading `@`, so bound with a non-model-char lookaround.
-  for (const model of opts?.knownModels ?? []) {
-    const id = model?.trim();
-    if (!id) continue;
-    const re = new RegExp(`(?<![\\w./@-])${escapeRegExp(id)}(?![\\w./-])`, "i");
-    if (re.test(text)) {
-      matched.push("workers-ai-model");
-      break; // one exact hit is enough — don't spam the justification
-    }
-  }
+  // Compiled once per knownModels array (cached), not per model per file.
+  const modelMatcher = opts?.knownModels ? modelMatcherFor(opts.knownModels) : null;
+  if (modelMatcher?.test(text)) matched.push("workers-ai-model");
 
   // Shape fallback for a brand-new model not yet in the known list.
   if (!matched.includes("workers-ai-model") && WORKERS_AI_MODEL_SHAPE.test(text)) {

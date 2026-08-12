@@ -81,7 +81,14 @@ export function computeSpendMetrics(
   // the run-rate denominator and MTD numerator cover the same window.
   const latestMonthDay = monthDays.length ? monthDays[monthDays.length - 1].day : null;
   const elapsedDays = latestMonthDay ? new Date(`${latestMonthDay}T00:00:00Z`).getUTCDate() : 0;
-  const runRatePerDay = elapsedDays > 0 ? mtd / elapsedDays : 0;
+  // Run-rate over COMPLETED days only — the latest day is usually still
+  // accumulating, so including it drags the projection down every morning and
+  // climbs back through the day (a saw-tooth). Fall back to the partial figure
+  // only when the latest day is the sole data point.
+  const completedDays = Math.max(0, elapsedDays - 1);
+  const completedMtd = mtd - today;
+  const runRatePerDay =
+    completedDays > 0 ? completedMtd / completedDays : elapsedDays > 0 ? mtd / elapsedDays : 0;
   const projectedMonthEnd = runRatePerDay * daysInMonth;
 
   // Merged chart series: every actual day (solid), then a projected run-rate

@@ -139,22 +139,14 @@ export async function checkSustainedSpend(env: Env): Promise<SustainedSpendResul
   const breachHardCeiling =
     hardCeilingUsd != null && dayA.costUsd > hardCeilingUsd && dayB.costUsd > hardCeilingUsd;
 
-  // Safety net runs INDEPENDENTLY of incident dedupe: a genuine hard-ceiling
-  // breach must engage the kill switch even when a recommend-only incident is
-  // already open. Only flip when it isn't already on.
-  let killSwitchFlipped = false;
-  if (breachHardCeiling && !(await getKillSwitch(env))) {
-    await setKillSwitch(env, true);
-    killSwitchFlipped = true;
-  }
-
-  // Dedupe: suppress a duplicate incident while one is active OR was resolved
-  // within the cooldown — otherwise the daily cron re-files the moment the
-  // operator resolves it. ponytail: 24h cooldown dampening; break-glass is the
-  // real fix for a knowingly-accepted multi-day spike.
+  // Find a recent incident FIRST so the safety net can respect an operator override.
   const cooldownMs = 24 * 60 * 60 * 1000;
   const [existing] = await db
-    .select({ id: circuitBreakEvents.id, actionsTaken: circuitBreakEvents.actionsTaken })
+    .select({
+      id: circuitBreakEvents.id,
+      status: circuitBreakEvents.status,
+      actionsTaken: circuitBreakEvents.actionsTaken,
+    })
     .from(circuitBreakEvents)
     .where(
       and(
@@ -168,6 +160,19 @@ export async function checkSustainedSpend(env: Env): Promise<SustainedSpendResul
     .orderBy(desc(circuitBreakEvents.createdAt))
     .limit(1);
 
+  // An operator who marked the most recent incident 'erroneous' deliberately
+  // lifted the switch — do NOT re-engage it against them within the cooldown.
+  const operatorOverride = existing != null && existing.status === "erroneous";
+
+  // Hard-ceiling safety net: engage the kill switch even when a recommend-only
+  // incident is already open (independent of dedupe), but never against an
+  // operator override, and never double-flip.
+  let killSwitchFlipped = false;
+  if (breachHardCeiling && !operatorOverride && !(await getKillSwitch(env))) {
+    await setKillSwitch(env, true);
+    killSwitchFlipped = true;
+  }
+
   // An incident already covers this window and we did not just escalate → nothing new.
   if (existing && !killSwitchFlipped) {
     return {
@@ -175,12 +180,14 @@ export async function checkSustainedSpend(env: Env): Promise<SustainedSpendResul
       killSwitchFlipped: false,
       incidentFiled: false,
       days,
-      note: `recent auto_spend incident already on record (${existing.id})`,
+      note: operatorOverride
+        ? `hard-ceiling breach suppressed by operator override (erroneous) — incident ${existing.id}`
+        : `recent auto_spend incident already on record (${existing.id})`,
     };
   }
 
   // We just engaged the kill switch but an incident already exists → attach the
-  // escalation to it instead of filing a duplicate row.
+  // escalation AND resurface it (active) so the operator sees the live breaker.
   if (existing && killSwitchFlipped) {
     const escalation: CircuitBreakAction = {
       kind: "kill_switch",
@@ -190,7 +197,7 @@ export async function checkSustainedSpend(env: Env): Promise<SustainedSpendResul
     const merged = [...(existing.actionsTaken ?? []), escalation];
     await db
       .update(circuitBreakEvents)
-      .set({ actionsTaken: merged, scope: "global" })
+      .set({ actionsTaken: merged, scope: "global", status: "active", resolvedAt: null })
       .where(eq(circuitBreakEvents.id, existing.id));
     await db.insert(billingEvents).values({
       id: crypto.randomUUID(),
