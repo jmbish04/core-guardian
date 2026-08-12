@@ -14,10 +14,16 @@ export interface StreamResult {
 
 export async function forwardStream(env: Env, req: RouterRequest, _now: number): Promise<StreamResult> {
   const mode = resolveMode(req);
+  // v1 streaming is OpenAI-shape SSE only. Reject other providers loudly rather
+  // than teeing a non-OpenAI stream to the wrong host / parsing wrong usage.
+  if (req.provider !== "openai") {
+    throw new Error(`Streaming v1 supports only provider "openai" (got "${req.provider}"); use non-streaming for others.`);
+  }
   const account = (await getSecretStoreBinding(env, "CLOUDFLARE_ACCOUNT_ID")) ?? getSecret(env, "CLOUDFLARE_ACCOUNT_ID") ?? "";
-  const gwToken = (await getSecretStoreBinding(env, "CLOUDFLARE_AI_GATEWAY_TOKEN")) ?? "";
+  const gwToken = (await getSecretStoreBinding(env, "CLOUDFLARE_AI_GATEWAY_TOKEN")) ?? getSecret(env, "CLOUDFLARE_AI_GATEWAY_TOKEN") ?? "";
   const providerKey = await resolveKey(env, req.provider, req.providerApiKey);
   const gateway = mode.startsWith("gateway") ? (mode === "gateway-custom" ? req.aiGatewayId ?? null : "ai-bridge") : null;
+  if (gateway && !gwToken) throw new Error("Missing CLOUDFLARE_AI_GATEWAY_TOKEN for gateway mode.");
 
   // Ask providers to include usage in the stream where supported.
   const input = req.provider === "openai"
