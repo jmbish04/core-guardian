@@ -36,7 +36,7 @@ import { dashboardRouter } from "./routes/dashboard";
 import { docsRouter } from "./routes/docs";
 import { driveRouter } from "./routes/drive-config";
 import { guardianRouter, r2Router, vectorizeRouter } from "./routes/guardian";
-import { offenseRouter } from "./routes/offense";
+import { offensePublicRouter, offenseRouter } from "./routes/offense";
 import { healthRouter } from "./routes/health";
 import { inboxRouter } from "./routes/inbox";
 import { mcpRouter } from "./routes/mcp";
@@ -151,6 +151,11 @@ app.route("/api/seed", seedRouter);
 
 // Core Guardian: usage monitoring + emergency eviction (see routes/guardian.ts).
 app.route("/api/guardian", guardianRouter);
+// Nonce-authed findings intake is a SEPARATE, unguarded router. ORDER IS
+// LOAD-BEARING: the public router MUST be mounted before offenseRouter so its
+// /findings handler resolves ahead of offenseRouter's `use("*", guardianAuth)`
+// wildcard in the flattened trie. Do not reorder. See routes/offense.ts header.
+app.route("/api/guardian/offense", offensePublicRouter);
 app.route("/api/guardian/offense", offenseRouter);
 app.route("/api/r2", r2Router);
 app.route("/api/vectorize", vectorizeRouter);
