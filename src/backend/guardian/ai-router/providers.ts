@@ -1,18 +1,26 @@
 /** @fileoverview AI Router provider registry: key resolution + usage extraction. */
+import { getSecret, getSecretStoreBinding } from "@/backend/utils/secrets";
 import type { Usage } from "./types";
 
-export const PROVIDER_KEY_BINDING: Record<string, keyof Env> = {
+export const PROVIDER_KEY_BINDING: Record<string, string> = {
   openai: "OPENAI_API_KEY",
   anthropic: "ANTHROPIC_API_KEY",
   google: "GEMINI_API_KEY",
 };
 
-/** Caller-supplied key wins, else the secret-store binding for the provider. */
-export function resolveKey(env: Env, provider: string, override?: string): string {
+/**
+ * Caller-supplied key wins, else the Secret Store binding for the provider.
+ * These are `SecretsStoreSecret` bindings (async `.get()`), so this is async —
+ * read them via the canonical `getSecretStoreBinding` helper (with the plain-var
+ * `getSecret` local-dev fallback), never a string cast.
+ */
+export async function resolveKey(env: Env, provider: string, override?: string): Promise<string> {
   if (override) return override;
   const binding = PROVIDER_KEY_BINDING[provider];
-  const key = binding ? (env[binding] as unknown as string | undefined) : undefined;
-  if (!key) throw new Error(`No API key for provider "${provider}" (no override, no ${String(binding)} binding).`);
+  const key = binding
+    ? (await getSecretStoreBinding(env, binding)) ?? getSecret(env, binding)
+    : undefined;
+  if (!key) throw new Error(`No API key for provider "${provider}" (no override, no ${binding} binding).`);
   return key;
 }
 
@@ -46,7 +54,10 @@ if (import.meta.main) {
   eq(extractUsage("openai", { usage: { prompt_tokens: 5, completion_tokens: 7 } }).tokensOut, 7, "openai usage");
   eq(extractUsage("anthropic", { usage: { input_tokens: 3, output_tokens: 9 } }).tokensIn, 3, "anthropic usage");
   eq(extractUsage("google", { usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 4 } }).tokensOut, 4, "google usage");
-  eq(resolveKey({} as Env, "openai", "sk-override"), "sk-override", "override wins");
-  // eslint-disable-next-line no-console
-  console.log("ok — providers verified");
+  // resolveKey is async now; override short-circuits before any binding read.
+  resolveKey({} as Env, "openai", "sk-override").then((k) => {
+    eq(k, "sk-override", "override wins");
+    // eslint-disable-next-line no-console
+    console.log("ok — providers verified");
+  });
 }
