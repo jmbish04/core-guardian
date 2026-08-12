@@ -715,6 +715,13 @@ import type { Mode, RouterRequest, Usage } from "./types";
 const AIG_BASE = (account: string, gateway: string) =>
   `https://gateway.ai.cloudflare.com/v1/${account}/${gateway}`;
 
+// Provider-specific API path appended after the gateway provider slug.
+const AIG_PATH: Record<string, string> = {
+  openai: "chat/completions",
+  anthropic: "v1/messages",
+  "workers-ai": "v1/chat/completions",
+};
+
 /** Google always → gemini-native; otherwise honor the requested mode. */
 export function resolveMode(req: RouterRequest): Mode {
   if (req.provider === "google" || req.provider === "gemini") return "gemini-native";
@@ -745,7 +752,7 @@ export async function forward(env: Env, req: RouterRequest, _now: number): Promi
   const mode = resolveMode(req);
   // Secret Store bindings are async .get() — read via helpers, never string casts.
   const account = (await getSecretStoreBinding(env, "CLOUDFLARE_ACCOUNT_ID")) ?? getSecret(env, "CLOUDFLARE_ACCOUNT_ID") ?? "";
-  const gwToken = (await getSecretStoreBinding(env, "CLOUDFLARE_AI_GATEWAY_TOKEN")) ?? "";
+  const gwToken = (await getSecretStoreBinding(env, "CLOUDFLARE_AI_GATEWAY_TOKEN")) ?? getSecret(env, "CLOUDFLARE_AI_GATEWAY_TOKEN") ?? "";
   const cfApiToken = (await getSecretStoreBinding(env, "CLOUDFLARE_API_TOKEN")) ?? gwToken; // compat mode
   const providerKey = await resolveKey(env, req.provider, req.providerApiKey);
 
@@ -754,10 +761,12 @@ export async function forward(env: Env, req: RouterRequest, _now: number): Promi
   let gateway: string | null = null;
 
   if (mode === "gateway" || mode === "gateway-custom" || mode === "provider-sdk-gateway") {
-    gateway = mode === "gateway-custom" ? (req.aiGatewayId ?? env.AI_GATEWAY_ID as unknown as string) : "ai-bridge";
+    if (!gwToken) throw new Error("Missing CLOUDFLARE_AI_GATEWAY_TOKEN for gateway mode.");
+    gateway = mode === "gateway-custom" ? (req.aiGatewayId ?? (env.AI_GATEWAY_ID as unknown as string)) : "ai-bridge";
     const slug = aigSlug(req.provider);
-    // Provider-specific passthrough path on the gateway.
-    url = `${AIG_BASE(account, gateway)}/${slug}/${req.provider === "openai" ? "chat/completions" : ""}`.replace(/\/$/, "");
+    // Provider-specific passthrough path on the gateway (openai→chat/completions,
+    // anthropic→v1/messages, workers-ai→v1/chat/completions).
+    url = `${AIG_BASE(account, gateway)}/${slug}/${AIG_PATH[req.provider] ?? "chat/completions"}`;
     headers["cf-aig-authorization"] = `Bearer ${gwToken}`;
     headers["Authorization"] = `Bearer ${providerKey}`;
   } else if (mode === "openai-compat") {
@@ -947,6 +956,7 @@ aiRouterRouter.openapi(
         mode: z.string(), gateway: z.string().nullable(),
         tokens_in: z.number(), tokens_out: z.number(), cost_usd: z.number(), body: z.unknown(),
       }) } } },
+      400: { description: "Invalid field (e.g. ':' in project/provider/model)", content: { "application/json": { schema: z.object({ error: z.string() }) } } },
       401: { description: "Bad ingress token", content: { "application/json": { schema: z.object({ error: z.string() }) } } },
       429: { description: "Circuit breaker / kill switch", content: { "application/json": { schema: z.object({
         request_uuid: z.string(), isCircuitBreaker: z.literal(true), circuitBrokenMessage: z.string() }) } } },
@@ -954,6 +964,16 @@ aiRouterRouter.openapi(
   }),
   async (c) => {
     const raw = c.req.valid("json");
+    // Reject ':' in scope-forming fields so circuit KV scope keys can't collide
+    // (e.g. project "a:b" vs scope prefixes like "project:"/"model:").
+    for (const f of ["project", "provider", "model"] as const) {
+      if (String((raw as Record<string, unknown>)[f] ?? "").includes(":")) {
+        return c.json({ error: `"${f}" must not contain ':'` }, 400);
+      }
+    }
+    // Normalize the Gemini alias so provider is canonical everywhere downstream
+    // (providers.ts / extractUsage key on "google").
+    if (raw.provider === "gemini") raw.provider = "google";
     const extra: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(raw)) if (!KNOWN.has(k)) extra[k] = v;
     const req: RouterRequest = { ...raw, extra } as RouterRequest;
