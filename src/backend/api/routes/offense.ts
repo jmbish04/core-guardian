@@ -28,6 +28,7 @@ import {
 import { guardianAuth } from "@/backend/api/routes/guardian";
 import { setKillSwitch } from "@/backend/guardian/ai-router/circuits";
 import { scanWorkers } from "@/backend/guardian/offense/scan-workers";
+import { scanGithub } from "@/backend/guardian/offense/scan-github";
 
 const errorResponseSchema = z.object({ error: z.string() });
 
@@ -247,6 +248,60 @@ offenseRouter.openapi(
   }),
   async (c) => {
     const summary = await scanWorkers(c.env);
+    return c.json(summary, 200);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /scan/github  (P3 — zero-AI GitHub Actions scanner)
+// ---------------------------------------------------------------------------
+
+offenseRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/scan/github",
+    operationId: "offenseScanGithub",
+    tags: ["Guardian Offense"],
+    summary: "Run the zero-AI GitHub Actions scanner and upsert scan_targets",
+    description:
+      "Lists the authenticated user's GitHub repos, reads each repo's .github/workflows/* (+ wrangler config), and regex-detects AI usage (Cloudflare AI / AI Gateway / *.hacolby.workers.dev / provider hosts). NO AI is used. A repo that uses AI in CI but has no rows in ai_router_requests / ai_usage_registrations is flagged as a bypass. Only AI-using repos are upserted (kind='github_action', keyed by full_name; first_seen preserved). Stops gracefully on GitHub rate limits and caps enumeration at 200 repos (both surfaced in the summary).",
+    responses: {
+      200: {
+        description: "GitHub scan summary: counts + the highest-risk repos",
+        content: {
+          "application/json": {
+            schema: z.object({
+              ok: z.boolean(),
+              error: z.string().optional(),
+              reposListed: z.number(),
+              reposScanned: z.number(),
+              aiRepos: z.number(),
+              bypasses: z.number(),
+              truncated: z.boolean(),
+              rateLimited: z.boolean(),
+              scannedAt: z.number(),
+              topRisk: z.array(
+                z.object({
+                  name: z.string(),
+                  riskScore: z.number(),
+                  guardianRegistered: z.boolean(),
+                  isBypass: z.boolean(),
+                  cronSchedules: z.array(z.string()),
+                  workerName: z.string().nullable(),
+                }),
+              ),
+            }),
+          },
+        },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => {
+    const summary = await scanGithub(c.env);
     return c.json(summary, 200);
   },
 );

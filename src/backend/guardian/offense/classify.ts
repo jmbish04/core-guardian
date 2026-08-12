@@ -159,6 +159,71 @@ export function peakCronRunsPerDay(exprs: string[]): number {
 }
 
 // ---------------------------------------------------------------------------
+// AI-signal text patterns (shared by text scanners: P3 GitHub, later local/gas)
+// ---------------------------------------------------------------------------
+
+/**
+ * Raw AI-usage signatures. A match means the scanned source/config text calls AI
+ * directly — Workers AI (`@cf/…`, `env.AI`/`.AI.run(`), an AI Gateway, a hacolby
+ * worker, a provider host, or an `/ai/run` endpoint.
+ *
+ * This is the text-side complement of {@link classifyBindings}: the P2 worker
+ * scanner reads structured bindings, the P3 GitHub scanner regexes workflow +
+ * wrangler text. Both feed the same {@link RiskSignals.ai} flag, so keeping the
+ * patterns here is the single source of truth.
+ */
+export const AI_SIGNAL_PATTERNS: readonly { readonly name: string; readonly re: RegExp }[] = [
+  { name: "ai-gateway", re: /gateway\.ai\.cloudflare\.com/i },
+  { name: "workers-ai-model", re: /@cf\// },
+  { name: "workers-ai-binding", re: /\benv\.AI\b|\.AI\.run\s*\(/ },
+  { name: "openai", re: /api\.openai\.com/i },
+  { name: "anthropic", re: /api\.anthropic\.com/i },
+  { name: "gemini", re: /generativelanguage\.googleapis\.com/i },
+  { name: "hacolby-worker", re: /[a-z0-9][a-z0-9-]*\.hacolby\.workers\.dev/i },
+  { name: "ai-run-path", re: /\/ai\/run\b/i },
+] as const;
+
+/**
+ * Guardian-routed signatures: the text calls core-guardian's own AI endpoint
+ * (`core-guardian`, `/api/guardian`, `/ai-router/run`). A guardian-routed hit is
+ * still an AI signal, but the usage IS reported/attributed — so it is NOT a
+ * bypass even when the player is otherwise unregistered.
+ */
+export const GUARDIAN_ROUTED_PATTERNS: readonly RegExp[] = [
+  /core-guardian/i,
+  /\/api\/guardian\b/i,
+  /\/ai-router\/run\b/i,
+] as const;
+
+/** Result of {@link detectAiSignals}. */
+export interface AiTextSignals {
+  /** Any AI-usage signature present (raw or guardian-routed). */
+  ai: boolean;
+  /** Usage is routed through core-guardian (reported — not a bypass). */
+  guardianRouted: boolean;
+  /** Names of the matched raw AI-signal patterns (for the bypass justification). */
+  matched: string[];
+}
+
+/**
+ * Regex-scans arbitrary source/config text for AI usage.
+ *
+ * `ai` is true when any raw signature OR a guardian-routed signature matches
+ * (calling guardian's `/ai-router/run` is itself AI usage). `guardianRouted`
+ * distinguishes reported usage from a bypass.
+ *
+ * @param text - Concatenated workflow YAML + wrangler config (or any source)
+ */
+export function detectAiSignals(text: string): AiTextSignals {
+  const matched: string[] = [];
+  for (const { name, re } of AI_SIGNAL_PATTERNS) {
+    if (re.test(text)) matched.push(name);
+  }
+  const guardianRouted = GUARDIAN_ROUTED_PATTERNS.some((re) => re.test(text));
+  return { ai: matched.length > 0 || guardianRouted, guardianRouted, matched };
+}
+
+// ---------------------------------------------------------------------------
 // Risk scorer
 // ---------------------------------------------------------------------------
 
@@ -273,6 +338,15 @@ if (import.meta.main) {
   if (!isScraping(true, 0, 0)) throw new Error("browser binding must read as scraping");
   if (!isScraping(false, 10, 50)) throw new Error("high subrequest ratio must read as scraping");
   if (isScraping(false, 10, 10)) throw new Error("low subrequest ratio must not be scraping");
+
+  // AI-signal text detector.
+  const rawAi = detectAiSignals("run: wrangler ai run model '@cf/openai/gpt-oss-120b'");
+  if (!rawAi.ai || rawAi.guardianRouted) throw new Error("raw @cf/ must be AI, not routed");
+  const routed = detectAiSignals("curl https://core-guardian.hacolby.workers.dev/ai-router/run");
+  if (!routed.ai || !routed.guardianRouted) throw new Error("guardian endpoint must read as routed");
+  const provider = detectAiSignals("headers: { host: api.anthropic.com }");
+  if (!provider.ai || !provider.matched.includes("anthropic")) throw new Error("provider host must be AI");
+  if (detectAiSignals("npm ci && npm run build").ai) throw new Error("plain CI must not be AI");
 
   // eslint-disable-next-line no-console
   console.log(`ok — static=${staticScore} hot=${hotScore} frequent=${frequent} daily=${daily}`);
