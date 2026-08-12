@@ -65,7 +65,12 @@ export const billableUsage = sqliteTable(
       .notNull()
       .$defaultFn(() => Date.now()),
   },
-  (t) => [index("idx_billable_usage_day_start").on(t.dayStart)],
+  (t) => [
+    index("idx_billable_usage_day_start").on(t.dayStart),
+    // Freshness probe `ORDER BY captured_at DESC LIMIT 1` was scanning ~1.3k rows
+    // per call; this serves it as a reverse index seek.
+    index("idx_billable_usage_captured_at").on(t.capturedAt),
+  ],
 );
 
 export const insertBillableUsageSchema = createInsertSchema(billableUsage);
