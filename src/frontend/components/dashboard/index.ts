@@ -7,6 +7,7 @@
 
 export { AdminDashboard } from "./AdminDashboard";
 export { ActionItems } from "./ActionItems";
+export { AiRouterConsole } from "./AiRouterConsole";
 export { AllowancesPanel } from "./AllowancesPanel";
 export { CostTraceIsland } from "./CostTraceIsland";
 export { DailyCost } from "./DailyCost";
