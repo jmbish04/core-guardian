@@ -757,6 +757,7 @@ const TOOLS: McpTool[] = [
     inputSchema: schema({ on: bool("true = block all AI.") }, ["on"]),
     handler: async (env, args) => {
       await setKillSwitch(env, args.on);
+      await audit(env, "ai-router", `Kill switch ${args.on ? "ENABLED (all AI blocked)" : "disabled"} via MCP`);
       return { killSwitch: args.on };
     },
   },
@@ -787,6 +788,7 @@ const TOOLS: McpTool[] = [
         window: args.window ?? "month",
         enabled: args.enabled ?? true,
       });
+      await audit(env, "ai-router", `Set circuit ${args.scope} via MCP: $${args.budgetUsd}/${args.window ?? "month"}`);
       return { ok: true, scope: args.scope };
     },
   },
