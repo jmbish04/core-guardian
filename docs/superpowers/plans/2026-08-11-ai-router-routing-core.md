@@ -541,51 +541,36 @@ Expected: `ok — providers verified`.
 
 ```ts
 /**
- * @fileoverview Split an AI call's cost into input vs output USD. Reuses the
- * KV price map + defaults from ai-proxy.ts so router pricing stays consistent
- * with the existing native breaker.
+ * @fileoverview Split an AI call's cost into input vs output USD, pricing from
+ * the MAINTAINED model catalog (OpenRouter + AI Pricing Guru + CF scrape) so
+ * current-generation models (gpt-5*, claude-4*, gemini-2*, workers-ai, …) are
+ * priced — not a stale hardcoded map. A $0 result means the model is genuinely
+ * unpriced in the catalog; the caller records cost 0 (and, since incrementSpend
+ * skips 0, that call won't accumulate against a breaker — an accepted limit for
+ * truly unknown models). `getModelCatalog` is KV-cached, so this is one cache
+ * read on the hot path.
  */
+import { getModelCatalog, matchCatalogModel } from "@/backend/guardian/model-catalog";
 import type { Usage } from "./types";
-
-// Re-declare the prefix price map access by importing ai-proxy internals is not
-// exported; replicate the tiny getter here against the same KV key + defaults.
-const PRICES_KEY = "ai:prices"; // read from CIRCUITS KV
-const DEFAULT_PRICES: Record<string, { in: number; out: number }> = {
-  "gpt-4o": { in: 2.5, out: 10 }, "gpt-4o-mini": { in: 0.15, out: 0.6 },
-  "claude-3-5-sonnet": { in: 3, out: 15 }, "claude-3-5-haiku": { in: 0.8, out: 4 },
-  "gemini-1.5-pro": { in: 1.25, out: 5 }, "gemini-1.5-flash": { in: 0.075, out: 0.3 },
-};
 
 export async function priceSplit(
   env: Env, model: string, usage: Usage,
 ): Promise<{ tokensInCost: number; tokensOutCost: number; costUsd: number }> {
-  // Price overrides live in CIRCUITS KV (NOT SESSIONS — that's Astro's).
-  const stored = (await env.CIRCUITS.get(PRICES_KEY, "json").catch(() => null)) as
-    | Record<string, { in: number; out: number }> | null;
-  const prices = { ...DEFAULT_PRICES, ...(stored ?? {}) };
-  const key = Object.keys(prices).find((k) => model.includes(k));
-  if (!key) return { tokensInCost: 0, tokensOutCost: 0, costUsd: 0 };
-  const p = prices[key];
-  const tokensInCost = (usage.tokensIn / 1_000_000) * p.in;
-  const tokensOutCost = (usage.tokensOut / 1_000_000) * p.out;
+  const catalog = await getModelCatalog(env);
+  const match = matchCatalogModel(catalog, model);
+  if (!match || match.inPerM === null || match.outPerM === null) {
+    return { tokensInCost: 0, tokensOutCost: 0, costUsd: 0 };
+  }
+  const tokensInCost = (usage.tokensIn / 1_000_000) * match.inPerM;
+  const tokensOutCost = (usage.tokensOut / 1_000_000) * match.outPerM;
   return { tokensInCost, tokensOutCost, costUsd: tokensInCost + tokensOutCost };
 }
-
-if (import.meta.main) {
-  // Pure-math check with an injected fake env.
-  const fakeEnv = { CIRCUITS: { get: async () => null } } as unknown as Env;
-  priceSplit(fakeEnv, "gpt-4o-2024", { tokensIn: 1_000_000, tokensOut: 1_000_000 }).then((r) => {
-    if (r.costUsd.toFixed(2) !== "12.50") throw new Error(`price split: ${r.costUsd}`);
-    // eslint-disable-next-line no-console
-    console.log("ok — pricing verified");
-  });
-}
 ```
-> Note: `pricing.ts` reuses the SAME `DEFAULT_PRICES` shape as `ai-proxy.ts` but reads overrides from `CIRCUITS` KV (key `ai:prices`), keeping the router off Astro's `SESSIONS`. A follow-up can migrate `ai-proxy.ts`'s own price map to the same `CIRCUITS` key so both share one source.
+> Note: no `import.meta.main` self-check — `priceSplit` is now I/O (catalog lookup), like `capture.ts`. Verified via `pnpm build`. This is the SAME catalog `driftCheck`/`snapshotGatewayCosts` price against, so router cost, the `ai_gateway_costs` roll-up, and drift all agree.
 
-- [ ] **Step 4: Run pricing self-check, verify, commit**
+- [ ] **Step 4: Verify (build), commit**
 
-Run: `bun run src/backend/guardian/ai-router/pricing.ts` → `ok — pricing verified`
+Run: `pnpm build && pnpm lint` (no bun self-check for pricing.ts anymore)
 Run: `pnpm build && pnpm lint`
 ```bash
 git add src/backend/guardian/ai-router/providers.ts src/backend/guardian/ai-router/pricing.ts
