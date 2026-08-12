@@ -537,7 +537,7 @@ import type { Usage } from "./types";
 
 // Re-declare the prefix price map access by importing ai-proxy internals is not
 // exported; replicate the tiny getter here against the same KV key + defaults.
-const PRICES_KEY = "ai:prices";
+const PRICES_KEY = "ai:prices"; // read from CIRCUITS KV
 const DEFAULT_PRICES: Record<string, { in: number; out: number }> = {
   "gpt-4o": { in: 2.5, out: 10 }, "gpt-4o-mini": { in: 0.15, out: 0.6 },
   "claude-3-5-sonnet": { in: 3, out: 15 }, "claude-3-5-haiku": { in: 0.8, out: 4 },
@@ -547,7 +547,8 @@ const DEFAULT_PRICES: Record<string, { in: number; out: number }> = {
 export async function priceSplit(
   env: Env, model: string, usage: Usage,
 ): Promise<{ tokensInCost: number; tokensOutCost: number; costUsd: number }> {
-  const stored = (await env.SESSIONS.get(PRICES_KEY, "json").catch(() => null)) as
+  // Price overrides live in CIRCUITS KV (NOT SESSIONS — that's Astro's).
+  const stored = (await env.CIRCUITS.get(PRICES_KEY, "json").catch(() => null)) as
     | Record<string, { in: number; out: number }> | null;
   const prices = { ...DEFAULT_PRICES, ...(stored ?? {}) };
   const key = Object.keys(prices).find((k) => model.includes(k));
@@ -560,7 +561,7 @@ export async function priceSplit(
 
 if (import.meta.main) {
   // Pure-math check with an injected fake env.
-  const fakeEnv = { SESSIONS: { get: async () => null } } as unknown as Env;
+  const fakeEnv = { CIRCUITS: { get: async () => null } } as unknown as Env;
   priceSplit(fakeEnv, "gpt-4o-2024", { tokensIn: 1_000_000, tokensOut: 1_000_000 }).then((r) => {
     if (r.costUsd.toFixed(2) !== "12.50") throw new Error(`price split: ${r.costUsd}`);
     // eslint-disable-next-line no-console
@@ -568,7 +569,7 @@ if (import.meta.main) {
   });
 }
 ```
-> Note: `pricing.ts` reads the price map from `SESSIONS` (where `ai-proxy.ts` already stores `ai:prices`). This is a read-only reuse of an existing key, not an Astro-session write — acceptable. If a reviewer objects, move the price map to `CIRCUITS` in a follow-up.
+> Note: `pricing.ts` reuses the SAME `DEFAULT_PRICES` shape as `ai-proxy.ts` but reads overrides from `CIRCUITS` KV (key `ai:prices`), keeping the router off Astro's `SESSIONS`. A follow-up can migrate `ai-proxy.ts`'s own price map to the same `CIRCUITS` key so both share one source.
 
 - [ ] **Step 4: Run pricing self-check, verify, commit**
 
