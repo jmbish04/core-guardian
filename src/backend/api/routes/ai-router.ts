@@ -4,7 +4,13 @@
  * guardianAuth-gated.
  */
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import { evaluateBreakers, incrementSpend } from "@/backend/guardian/ai-router/circuits";
+import { desc } from "drizzle-orm";
+import { guardianAuth } from "@/backend/api/routes/guardian";
+import { getDb } from "@/backend/db";
+import { aiRouterRequests, billingEvents } from "@/backend/db/schema";
+import {
+  breakGlass, deleteCircuit, evaluateBreakers, getKillSwitch, incrementSpend, listCircuits, setCircuit, setKillSwitch,
+} from "@/backend/guardian/ai-router/circuits";
 import { captureResult, storePrompt } from "@/backend/guardian/ai-router/capture";
 import { forward } from "@/backend/guardian/ai-router/router";
 import { forwardStream } from "@/backend/guardian/ai-router/router-stream";
@@ -133,3 +139,97 @@ aiRouterRouter.openapi(
     }
   },
 );
+
+// ---------------------------------------------------------------------------
+// Management routes (Task 10) — circuits CRUD, kill switch, break-glass,
+// recent requests. All guardianAuth-gated (admin), separate from /run.
+// ---------------------------------------------------------------------------
+
+const circuitSchema = z.object({
+  budgetUsd: z.number().positive(),
+  window: z.enum(["day", "week", "month", "total"]).default("month"),
+  enabled: z.boolean().default(true),
+});
+
+async function audit(env: Env, actionTaken: string) {
+  await getDb(env).insert(billingEvents).values({
+    id: crypto.randomUUID(), service: "ai-router", actionTaken, timestamp: Date.now(),
+  });
+}
+
+// All management routes require guardianAuth (admin), separate from /run.
+aiRouterRouter.use("/circuits", guardianAuth);
+aiRouterRouter.use("/circuits/*", guardianAuth);
+aiRouterRouter.use("/kill-switch", guardianAuth);
+aiRouterRouter.use("/requests", guardianAuth);
+
+aiRouterRouter.openapi(createRoute({
+  method: "get", path: "/circuits", operationId: "aiRouterListCircuits",
+  summary: "List circuit breakers + current spend",
+  responses: { 200: { description: "Circuits", content: { "application/json": { schema: z.object({
+    killSwitch: z.boolean(),
+    circuits: z.array(z.object({ scope: z.string(), circuit: z.object({
+      budgetUsd: z.number(), window: z.string(), enabled: z.boolean(), breakGlassUntil: z.number().optional() }),
+      spent: z.number() })) }) } } } },
+}), async (c) => c.json({ killSwitch: await getKillSwitch(c.env), circuits: await listCircuits(c.env) }, 200));
+
+aiRouterRouter.openapi(createRoute({
+  method: "put", path: "/circuits/{scope}", operationId: "aiRouterSetCircuit",
+  summary: "Create/update a circuit breaker (scope: global | provider:X | model:X/Y | project:Z)",
+  request: { params: z.object({ scope: z.string() }), body: { content: { "application/json": { schema: circuitSchema } } } },
+  responses: { 200: { description: "Saved", content: { "application/json": { schema: z.object({ ok: z.boolean() }) } } } },
+}), async (c) => {
+  const { scope } = c.req.valid("param"); const body = c.req.valid("json");
+  await setCircuit(c.env, scope, body);
+  await audit(c.env, `Set circuit ${scope}: $${body.budgetUsd}/${body.window} enabled=${body.enabled}`);
+  return c.json({ ok: true }, 200);
+});
+
+aiRouterRouter.openapi(createRoute({
+  method: "delete", path: "/circuits/{scope}", operationId: "aiRouterDeleteCircuit",
+  summary: "Delete a circuit breaker",
+  request: { params: z.object({ scope: z.string() }) },
+  responses: { 200: { description: "Deleted", content: { "application/json": { schema: z.object({ ok: z.boolean() }) } } } },
+}), async (c) => {
+  const { scope } = c.req.valid("param"); await deleteCircuit(c.env, scope);
+  await audit(c.env, `Deleted circuit ${scope}`); return c.json({ ok: true }, 200);
+});
+
+aiRouterRouter.openapi(createRoute({
+  method: "post", path: "/circuits/{scope}/break-glass", operationId: "aiRouterBreakGlass",
+  summary: "Temporarily bypass a circuit for N hours",
+  request: { params: z.object({ scope: z.string() }), body: { content: { "application/json": { schema: z.object({ hours: z.number().positive().max(168) }) } } } },
+  responses: { 200: { description: "Break-glass set", content: { "application/json": { schema: z.object({ ok: z.boolean() }) } } } },
+}), async (c) => {
+  const { scope } = c.req.valid("param"); const { hours } = c.req.valid("json");
+  await breakGlass(c.env, scope, hours, Date.now());
+  await audit(c.env, `Break-glass ${scope} for ${hours}h`); return c.json({ ok: true }, 200);
+});
+
+aiRouterRouter.openapi(createRoute({
+  method: "post", path: "/kill-switch", operationId: "aiRouterKillSwitch",
+  summary: "Toggle the global kill switch (rejects ALL AI). Turning OFF is confirm-gated.",
+  request: { body: { content: { "application/json": { schema: z.object({ on: z.boolean(), confirm: z.string().optional() }) } } } },
+  responses: {
+    200: { description: "Toggled", content: { "application/json": { schema: z.object({ killSwitch: z.boolean() }) } } },
+    400: { description: "Confirmation required to turn OFF", content: { "application/json": { schema: z.object({ error: z.string() }) } } },
+  },
+}), async (c) => {
+  const { on, confirm } = c.req.valid("json");
+  // Turning the kill switch OFF re-opens spend, so it is confirm-gated.
+  if (!on && confirm !== "disable kill switch") return c.json({ error: 'Confirmation must be "disable kill switch".' }, 400);
+  await setKillSwitch(c.env, on);
+  await audit(c.env, `Kill switch ${on ? "ENABLED (all AI blocked)" : "disabled"}`);
+  return c.json({ killSwitch: on }, 200);
+});
+
+aiRouterRouter.openapi(createRoute({
+  method: "get", path: "/requests", operationId: "aiRouterRequests",
+  summary: "Recent AI Router requests (newest first)",
+  request: { query: z.object({ limit: z.coerce.number().int().min(1).max(200).default(50).optional() }) },
+  responses: { 200: { description: "Rows", content: { "application/json": { schema: z.object({ requests: z.array(z.any()) }) } } } },
+}), async (c) => {
+  const limit = c.req.valid("query").limit ?? 50;
+  const rows = await getDb(c.env).select().from(aiRouterRequests).orderBy(desc(aiRouterRequests.at)).limit(limit);
+  return c.json({ requests: rows }, 200);
+});
