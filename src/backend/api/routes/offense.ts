@@ -43,10 +43,10 @@ import {
   type CircuitBreakAction,
 } from "@/backend/db/schema";
 import { guardianAuth } from "@/backend/api/routes/guardian";
-import { setKillSwitch } from "@/backend/guardian/ai-router/circuits";
+import { deleteCircuit, setKillSwitch } from "@/backend/guardian/ai-router/circuits";
 import { scanWorkers } from "@/backend/guardian/offense/scan-workers";
 import { scanGithub } from "@/backend/guardian/offense/scan-github";
-import { recordFindings } from "@/backend/guardian/offense/jules-dispatch";
+import { dispatchToJules, recordFindings } from "@/backend/guardian/offense/jules-dispatch";
 
 const errorResponseSchema = z.object({ error: z.string() });
 
@@ -128,6 +128,11 @@ function flippedKillSwitch(actions: CircuitBreakAction[] | null): boolean {
   return (actions ?? []).some((a) => a.kind === "kill_switch");
 }
 
+/** Did this incident's actions break a project circuit (setCircuit)? */
+function flippedCircuit(actions: CircuitBreakAction[] | null): boolean {
+  return (actions ?? []).some((a) => a.kind === "circuit_break");
+}
+
 offenseRouter.openapi(
   createRoute({
     method: "post",
@@ -155,6 +160,7 @@ offenseRouter.openapi(
             schema: z.object({
               incident: incidentSchema,
               killSwitchLifted: z.boolean(),
+              circuitLifted: z.boolean(),
             }),
           },
         },
@@ -183,24 +189,38 @@ offenseRouter.openapi(
 
     const now = Date.now();
     let killSwitchLifted = false;
+    let circuitLifted = false;
 
-    // Erroneous → false positive: undo an automated kill switch this incident set,
-    // but ONLY if no other still-active incident also relies on it (otherwise
-    // resolving an old incident would turn AI back on while a newer one wants it off).
-    if (action === "erroneous" && flippedKillSwitch(existing.actionsTaken)) {
-      // "read" incidents are still LIVE breakers (acknowledged, switch stays on),
-      // so they count too — otherwise resolving one erroneous incident would lift
-      // the switch while a read breaker still relies on it.
+    // Erroneous → false positive: undo the breakers THIS incident engaged, but
+    // never one another still-live incident also relies on. 'read' incidents are
+    // still live breakers (acknowledged, breaker stays on), so they count too.
+    if (action === "erroneous") {
       const others = await db
-        .select({ actionsTaken: circuitBreakEvents.actionsTaken })
+        .select({ scope: circuitBreakEvents.scope, actionsTaken: circuitBreakEvents.actionsTaken })
         .from(circuitBreakEvents)
         .where(
           and(inArray(circuitBreakEvents.status, ["active", "read"]), ne(circuitBreakEvents.id, id)),
         );
-      const stillNeeded = others.some((o) => flippedKillSwitch(o.actionsTaken));
-      if (!stillNeeded) {
+
+      // Lift the global kill switch, unless another live incident needs it.
+      if (
+        flippedKillSwitch(existing.actionsTaken) &&
+        !others.some((o) => flippedKillSwitch(o.actionsTaken))
+      ) {
         await setKillSwitch(c.env, false);
         killSwitchLifted = true;
+      }
+
+      // Restore AI for the project circuit this incident broke (e.g. a Jules
+      // incident that flipped project:X to a $0 budget) — the operator's override
+      // — unless another live incident broke the same scope.
+      if (
+        flippedCircuit(existing.actionsTaken) &&
+        existing.scope &&
+        !others.some((o) => o.scope === existing.scope && flippedCircuit(o.actionsTaken))
+      ) {
+        await deleteCircuit(c.env, existing.scope);
+        circuitLifted = true;
       }
     }
 
@@ -214,11 +234,11 @@ offenseRouter.openapi(
     await db.insert(billingEvents).values({
       id: crypto.randomUUID(),
       service: "offense",
-      actionTaken: `Resolved incident ${id} as ${action}${killSwitchLifted ? " (kill switch lifted)" : ""}.`,
+      actionTaken: `Resolved incident ${id} as ${action}${killSwitchLifted ? " (kill switch lifted)" : ""}${circuitLifted ? ` (circuit ${existing.scope} restored)` : ""}.`,
       timestamp: now,
     });
 
-    return c.json({ incident: updated, killSwitchLifted }, 200);
+    return c.json({ incident: updated, killSwitchLifted, circuitLifted }, 200);
   },
 );
 
@@ -408,6 +428,70 @@ offenseRouter.openapi(
           : rows;
 
     return c.json({ targets: filtered }, 200);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /dispatch/{targetId}  (P5 — hand a flagged target to Jules)
+// ---------------------------------------------------------------------------
+
+offenseRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/dispatch/{targetId}",
+    operationId: "offenseDispatchJules",
+    tags: ["Guardian Offense"],
+    summary: "Dispatch a Jules spend-audit session for a flagged scan target",
+    description:
+      "Operator-triggered (guardianAuth). Looks up the scan_targets row, resolves its GitHub owner/repo, mints a one-time nonce + pending jules_dispatches row, and creates a Jules session (AUTO_CREATE_PR) carrying a self-contained audit brief. The brief embeds the nonce (the sole credential for the /findings callback) and instructs Jules to comment out spend violations and open a PR. Returns the dispatch id + Jules session id. 400 when the target has no resolvable owner/repo or the Jules API call fails (the dispatch is marked failed). NO core-guardian-side AI.",
+    request: {
+      params: z.object({ targetId: z.string() }),
+    },
+    responses: {
+      200: {
+        description: "Jules session created; dispatch recorded",
+        content: {
+          "application/json": {
+            schema: z.object({
+              ok: z.literal(true),
+              dispatchId: z.string().nullable(),
+              julesSessionId: z.string().nullable(),
+            }),
+          },
+        },
+      },
+      400: {
+        description: "Target not dispatchable (no owner/repo) or the Jules API call failed",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+      404: {
+        description: "No scan target with that id",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => {
+    const { targetId } = c.req.valid("param");
+    const db = getDb(c.env);
+
+    const [target] = await db
+      .select()
+      .from(scanTargets)
+      .where(eq(scanTargets.id, targetId))
+      .limit(1);
+    if (!target) return c.json({ error: "No scan target with that id." }, 404);
+
+    const result = await dispatchToJules(c.env, target);
+    if (!result.ok) return c.json({ error: result.error ?? "Jules dispatch failed." }, 400);
+
+    return c.json(
+      { ok: true as const, dispatchId: result.dispatchId, julesSessionId: result.julesSessionId },
+      200,
+    );
   },
 );
 

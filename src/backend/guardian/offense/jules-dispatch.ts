@@ -25,10 +25,12 @@ import {
   circuitBreakEvents,
   julesDispatches,
   type CircuitBreakAction,
+  type ScanTargetRow,
 } from "@/backend/db/schema";
 import { NotificationsAgent } from "@/backend/ai/agents/NotificationsAgent";
 import { setCircuit } from "@/backend/guardian/ai-router/circuits";
 import type { JulesDispatchRow } from "@/backend/db/schemas/governance/offense/jules-dispatches";
+import { getSecret, getSecretStoreBinding } from "@/backend/utils/secrets";
 import { getAgentByName } from "agents";
 
 // ---------------------------------------------------------------------------
@@ -74,12 +76,14 @@ export interface RecordFindingsResult {
  *
  * @param env - Worker env (D1).
  * @param args.julesSessionId - The Jules session/run this dispatch is handed to.
+ *   Optional: {@link dispatchToJules} needs the nonce *before* it can create the
+ *   session, so it inserts with `""` and UPDATEs the real id after POST /sessions.
  * @param args.targetId - The scan_targets row being audited, if known.
  * @returns the new dispatch `id` and its `nonce`.
  */
 export async function createJulesDispatch(
   env: Env,
-  args: { julesSessionId: string; targetId?: string | null },
+  args: { julesSessionId?: string | null; targetId?: string | null },
 ): Promise<{ id: string; nonce: string }> {
   const db = getDb(env);
   const id = crypto.randomUUID();
@@ -87,13 +91,205 @@ export async function createJulesDispatch(
   await db.insert(julesDispatches).values({
     id,
     nonce,
-    julesSessionId: args.julesSessionId,
+    julesSessionId: args.julesSessionId ?? "",
     targetId: args.targetId ?? null,
     taskType: "spend_audit",
     status: "pending",
     dispatchedAt: Date.now(),
   });
   return { id, nonce };
+}
+
+// ---------------------------------------------------------------------------
+// Outbound dispatch (P5) — hand a flagged target to the Jules REST API
+// ---------------------------------------------------------------------------
+
+/** Jules public API base (v1alpha). Auth is the `X-Goog-Api-Key` header. */
+const JULES_BASE = "https://jules.googleapis.com/v1alpha";
+
+/** Outcome of one {@link dispatchToJules} run (never throws — errors are values). */
+export interface DispatchResult {
+  ok: boolean;
+  /** The pending `jules_dispatches` row minted for this attempt (null if we never got that far). */
+  dispatchId: string | null;
+  /** The Jules session id, once created. */
+  julesSessionId: string | null;
+  /** Human-readable failure reason when `ok` is false. */
+  error?: string;
+}
+
+/**
+ * Derive `{owner, repo}` from a scan_targets row's `name`. For github_action
+ * targets `name` is the repo full_name (`owner/repo`); a worker target only
+ * qualifies if its name is already in that shape. Anything else is undispatchable.
+ */
+function parseOwnerRepo(name: string): { owner: string; repo: string } | null {
+  const m = name.trim().match(/^([^/\s]+)\/([^/\s]+?)(?:\.git)?$/);
+  return m ? { owner: m[1], repo: m[2] } : null;
+}
+
+/**
+ * The self-contained audit brief handed to Jules. Real newlines via a template
+ * literal (house rule: never `.join("\n")`). The nonce is embedded as the ONLY
+ * credential for the findings callback; Jules is told not to leak the URL.
+ */
+function buildAuditPrompt(args: {
+  owner: string;
+  repo: string;
+  findingsUrl: string;
+  nonce: string;
+}): string {
+  const { owner, repo, findingsUrl, nonce } = args;
+  return `You are auditing the GitHub repository ${owner}/${repo} on behalf of core-guardian, an automated Cloudflare spend watchdog. Your job is to find and disable code that runs up the AI bill without reporting through core-guardian.
+
+AUDIT for these spend violations:
+1. Cron / scheduled AI: is a cron schedule (GitHub Actions \`schedule:\`, a Worker cron trigger, launchd/cron, etc.) driving an AI operation? A schedule multiplies the billable blast radius, so flag every scheduled path that reaches an AI call.
+2. Guardian bypass: does any AI integration bypass core-guardian's AI endpoint (https://core-guardian.hacolby.workers.dev/api/guardian/ai-router/run)?
+   - If the call goes through Cloudflare AI Gateway: are \`cf-aig-metadata\` tags present on the request so core-guardian can attribute the spend? Missing metadata is a violation.
+   - If the call uses raw Cloudflare Workers AI (\`env.AI.run\`, \`@cf/...\`) or a provider-native API (OpenAI, Anthropic, Google, OpenRouter, etc.) directly: is that usage reported to core-guardian at all? If not, it is a violation.
+
+REMEDIATE: for every violation you find, COMMENT OUT the offending code to disable it (do not delete it), then open a pull request with those changes. Do not merge the PR.
+
+REPORT: after opening the PR, call the findings API EXACTLY ONCE with curl:
+  curl -X POST '${findingsUrl}' \\
+    -H 'Content-Type: application/json' \\
+    -d '<json>'
+where <json> is:
+{
+  "repo": "${owner}/${repo}",
+  "repo_type": "<github_action|worker|py|gas|...>",
+  "worker_name": "<from wrangler.jsonc name, or omit>",
+  "cron_audit_findings": [],
+  "ai_audit_findings": [],
+  "pr_number": <the PR number you opened>,
+  "actions_taken": [],
+  "circuit_breaker_recommendation": [],
+  "core_guardian_project_identification": { "projectName": "<from config/metadata>", "projectType": "<worker|action|...>" },
+  "nonce": "${nonce}"
+}
+Fill cron_audit_findings, ai_audit_findings, actions_taken and circuit_breaker_recommendation with your findings. If you find no violations, still report once with empty finding arrays.
+
+SECURITY: the nonce above is a one-time secret that authenticates this report. Do NOT reference, print, log, or include the findings API URL or the nonce anywhere in the pull request, commit messages, code comments, or PR description. Use them only in the single curl call above.`;
+}
+
+/** Mark a dispatch failed (best-effort; used when the Jules call errors). */
+async function markDispatchFailed(env: Env, dispatchId: string): Promise<void> {
+  await getDb(env)
+    .update(julesDispatches)
+    .set({ status: "failed" })
+    .where(eq(julesDispatches.id, dispatchId));
+}
+
+/**
+ * Dispatch a Jules spend-audit session for a flagged scan target.
+ *
+ * Ordering (the nonce must exist before the prompt is built, the session id only
+ * exists after the API responds):
+ *   1. resolve owner/repo + read JULES_API_KEY,
+ *   2. mint the nonce + insert a `pending` dispatch row (session id ""),
+ *   3. POST /sessions with the nonce-carrying brief,
+ *   4. UPDATE the row with the returned jules_session_id.
+ * Any Jules API failure marks the dispatch `failed` and is returned as a value —
+ * this never throws.
+ *
+ * @param env - Worker env (D1, JULES_API_KEY Secrets Store binding, WORKER_BASE_URL).
+ * @param target - The scan_targets row to audit (github_action, or a worker whose
+ *   name is already `owner/repo`).
+ */
+export async function dispatchToJules(env: Env, target: ScanTargetRow): Promise<DispatchResult> {
+  const parsed = parseOwnerRepo(target.name);
+  if (!parsed) {
+    return {
+      ok: false,
+      dispatchId: null,
+      julesSessionId: null,
+      error: `Cannot resolve a GitHub owner/repo from target "${target.name}" (kind=${target.kind}). Only targets whose name is "owner/repo" are dispatchable.`,
+    };
+  }
+  const { owner, repo } = parsed;
+
+  // Secret Store bindings are async .get(); local-dev plain-var fallback.
+  const apiKey =
+    (await getSecretStoreBinding(env, "JULES_API_KEY")) ?? getSecret(env, "JULES_API_KEY");
+  if (!apiKey) {
+    return {
+      ok: false,
+      dispatchId: null,
+      julesSessionId: null,
+      error: "JULES_API_KEY is not configured (no Secrets Store binding, no local var).",
+    };
+  }
+
+  // Mint the nonce + pending row first — the prompt needs the nonce, the row's
+  // session id is backfilled after the API responds.
+  const { id: dispatchId, nonce } = await createJulesDispatch(env, {
+    julesSessionId: "",
+    targetId: target.id,
+  });
+
+  try {
+    const prompt = buildAuditPrompt({
+      owner,
+      repo,
+      findingsUrl: `${env.WORKER_BASE_URL}/api/guardian/offense/findings`,
+      nonce,
+    });
+    const res = await fetch(`${JULES_BASE}/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Goog-Api-Key": apiKey },
+      body: JSON.stringify({
+        prompt,
+        sourceContext: {
+          // ponytail: assume the default branch is `main` (scan_targets doesn't
+          // store it); pass the real branch here if that ever bites.
+          source: `sources/github/${owner}/${repo}`,
+          githubRepoContext: { startingBranch: "main" },
+        },
+        // Auto-approve the plan (unattended) and open a PR — but never auto-merge.
+        automationMode: "AUTO_CREATE_PR",
+        title: `core-guardian spend audit — ${owner}/${repo}`,
+      }),
+    });
+
+    if (!res.ok) {
+      const detail = (await res.text().catch(() => "")).slice(0, 500);
+      await markDispatchFailed(env, dispatchId);
+      return {
+        ok: false,
+        dispatchId,
+        julesSessionId: null,
+        error: `Jules session create failed (${res.status}): ${detail || res.statusText}`,
+      };
+    }
+
+    const json = (await res.json().catch(() => null)) as { id?: string; name?: string } | null;
+    // Response is `{ name: "sessions/<id>", id: "<id>", ... }`.
+    const sessionId = json?.id ?? json?.name?.split("/").pop() ?? "";
+    if (!sessionId) {
+      await markDispatchFailed(env, dispatchId);
+      return {
+        ok: false,
+        dispatchId,
+        julesSessionId: null,
+        error: "Jules session create returned no session id.",
+      };
+    }
+
+    await getDb(env)
+      .update(julesDispatches)
+      .set({ julesSessionId: sessionId })
+      .where(eq(julesDispatches.id, dispatchId));
+
+    return { ok: true, dispatchId, julesSessionId: sessionId };
+  } catch (err) {
+    await markDispatchFailed(env, dispatchId).catch(() => {});
+    return {
+      ok: false,
+      dispatchId,
+      julesSessionId: null,
+      error: `Jules dispatch error: ${String(err)}`,
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -246,6 +442,23 @@ if (import.meta.main) {
   assert(recommendsDisable(["Recommend DISABLING the project breaker"]), "case-insensitive");
   assert(!recommendsDisable(["monitor only", "no action"]), "no false positive");
   assert(!recommendsDisable([]), "empty → no flip");
+
+  // owner/repo resolution
+  assert(parseOwnerRepo("jmbish04/codra")?.repo === "codra", "parses owner/repo");
+  assert(parseOwnerRepo("jmbish04/codra.git")?.repo === "codra", "strips .git");
+  assert(parseOwnerRepo("just-a-worker-name") === null, "rejects non-owner/repo");
+  assert(parseOwnerRepo("a/b/c") === null, "rejects deep paths");
+
+  // the nonce (and not the URL) must be carried; the brief must forbid leaking it
+  const prompt = buildAuditPrompt({
+    owner: "o",
+    repo: "r",
+    findingsUrl: "https://x/api/guardian/offense/findings",
+    nonce: "NONCE-123",
+  });
+  assert(prompt.includes("NONCE-123"), "prompt carries the nonce");
+  assert(/Do NOT reference/i.test(prompt), "prompt forbids leaking the URL/nonce in the PR");
+
   // eslint-disable-next-line no-console
-  console.log("ok — jules-dispatch recommendation classifier verified");
+  console.log("ok — jules-dispatch recommendation classifier + dispatch helpers verified");
 }
