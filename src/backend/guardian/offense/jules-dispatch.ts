@@ -17,18 +17,19 @@
  * strings plus the presence of a project name. No model is consulted here.
  */
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, gt } from "drizzle-orm";
 
 import { getDb } from "@/backend/db";
 import {
   billingEvents,
   circuitBreakEvents,
   julesDispatches,
+  scanTargets,
   type CircuitBreakAction,
   type ScanTargetRow,
 } from "@/backend/db/schema";
 import { NotificationsAgent } from "@/backend/ai/agents/NotificationsAgent";
-import { setCircuit } from "@/backend/guardian/ai-router/circuits";
+import { getCircuit, setCircuit, type CircuitScope } from "@/backend/guardian/ai-router/circuits";
 import type { JulesDispatchRow } from "@/backend/db/schemas/governance/offense/jules-dispatches";
 import { getSecret, getSecretStoreBinding } from "@/backend/utils/secrets";
 import { getAgentByName } from "agents";
@@ -60,8 +61,8 @@ export interface FindingsPayload {
 
 /** Outcome of one {@link recordFindings} run. */
 export interface RecordFindingsResult {
-  /** The `circuit_break_events` incident filed for this report. */
-  incidentId: string;
+  /** The `circuit_break_events` incident filed, or null if the nonce was already spent/expired. */
+  incidentId: string | null;
   /** True when a project circuit breaker was flipped as a result. */
   circuitFlipped: boolean;
 }
@@ -167,7 +168,7 @@ where <json> is:
   "core_guardian_project_identification": { "projectName": "<from config/metadata>", "projectType": "<worker|action|...>" },
   "nonce": "${nonce}"
 }
-Fill cron_audit_findings, ai_audit_findings, actions_taken and circuit_breaker_recommendation with your findings. If you find no violations, still report once with empty finding arrays.
+Fill cron_audit_findings, ai_audit_findings, and actions_taken with your findings. For circuit_breaker_recommendation: ONLY if you determine this project's AI access must be disabled to stop runaway spend, include the EXACT token "DISABLE_AI_ACCESS" as an element of the array (you may add human-readable strings alongside it). If disabling is not warranted, leave circuit_breaker_recommendation empty — do not include the token in any negative or explanatory sentence. If you find no violations, still report once with empty finding arrays.
 
 SECURITY: the nonce above is a one-time secret that authenticates this report. Do NOT reference, print, log, or include the findings API URL or the nonce anywhere in the pull request, commit messages, code comments, or PR description. Use them only in the single curl call above.`;
 }
@@ -197,6 +198,18 @@ async function markDispatchFailed(env: Env, dispatchId: string): Promise<void> {
  *   name is already `owner/repo`).
  */
 export async function dispatchToJules(env: Env, target: ScanTargetRow): Promise<DispatchResult> {
+  // Only github_action targets carry a trustworthy repo full_name (from the
+  // GitHub scan of the owner's own account). A worker's name is a script id, and
+  // a worker literally named "owner/repo" would otherwise aim Jules at an
+  // arbitrary repository — refuse anything but github_action.
+  if (target.kind !== "github_action") {
+    return {
+      ok: false,
+      dispatchId: null,
+      julesSessionId: null,
+      error: `Only github_action targets are dispatchable to Jules (got kind=${target.kind}); worker→repo mapping is not yet available.`,
+    };
+  }
   const parsed = parseOwnerRepo(target.name);
   if (!parsed) {
     return {
@@ -302,7 +315,10 @@ export async function dispatchToJules(env: Env, target: ScanTargetRow): Promise<
  * ponytail: keyword heuristic; tighten the vocabulary if false positives appear.
  */
 function recommendsDisable(recommendations: string[]): boolean {
-  return recommendations.some((r) => /\bdisabl/i.test(r));
+  // Structured token ONLY — never a free-text substring. An LLM writing
+  // "do NOT recommend disabling" must not trip an outage, so we require the exact
+  // opt-in token Jules is instructed to emit.
+  return recommendations.some((r) => r.trim().toUpperCase() === "DISABLE_AI_ACCESS");
 }
 
 /**
@@ -326,33 +342,75 @@ export async function recordFindings(
 ): Promise<RecordFindingsResult> {
   const db = getDb(env);
   const now = Date.now();
+  const NONCE_TTL_MS = 2 * 60 * 60 * 1000; // pending dispatches expire after 2h
 
-  // Spend the nonce: mark the dispatch reported and store the raw findings.
-  // Guard on status='pending' so a concurrent double-report can't both win.
-  await db
+  // ATOMIC claim: spend the nonce as the FIRST write, guarded on still-pending
+  // AND not expired, and CHECK the result. Concurrent/replayed reports race on
+  // this single UPDATE — only the row-changing winner proceeds, so incidents,
+  // breaker flips, and notifications never double-fire.
+  const claimed = await db
     .update(julesDispatches)
     .set({
       status: "reported",
       reportedAt: now,
       findings: findings as unknown as Record<string, unknown>,
     })
-    .where(and(eq(julesDispatches.id, dispatch.id), eq(julesDispatches.status, "pending")));
+    .where(
+      and(
+        eq(julesDispatches.id, dispatch.id),
+        eq(julesDispatches.status, "pending"),
+        gt(julesDispatches.dispatchedAt, now - NONCE_TTL_MS),
+      ),
+    )
+    .returning({ id: julesDispatches.id });
+  if (claimed.length === 0) {
+    // Lost the race, already reported, or the nonce expired → no side effects.
+    return { incidentId: null, circuitFlipped: false };
+  }
 
   const ident = findings.core_guardian_project_identification;
   const projectName = ident?.projectName?.trim();
   const wantsDisable = recommendsDisable(findings.circuit_breaker_recommendation);
   const scope = projectName ? `project:${projectName}` : null;
 
-  // Auto-act: flip the project's breaker to a zero budget (rejects every AI call
-  // for that project) when Jules recommends it AND named the project.
+  // ANTI-INJECTION: the circuit scope must be tied to the DISPATCHED target, not
+  // to whatever project name Jules echoed out of untrusted repo content. Only
+  // auto-flip when the reported projectName matches a trusted identity of the
+  // target we actually dispatched (its worker_name or repo name). A mismatch is
+  // filed for the operator, but nothing is auto-broken — a malicious repo can't
+  // name a victim project and DoS it.
+  let projectMatchesTarget = false;
+  if (projectName && dispatch.targetId) {
+    const [t] = await db
+      .select({ name: scanTargets.name, workerName: scanTargets.workerName })
+      .from(scanTargets)
+      .where(eq(scanTargets.id, dispatch.targetId))
+      .limit(1);
+    const trusted = [t?.workerName, t?.name]
+      .filter((v): v is string => !!v)
+      .map((v) => v.toLowerCase());
+    projectMatchesTarget = trusted.includes(projectName.toLowerCase());
+  }
+
+  // Auto-act: flip the breaker to a $0 budget only when Jules emitted the
+  // structured DISABLE_AI_ACCESS token AND the project matches the dispatched
+  // target. Snapshot any prior circuit so an operator override can RESTORE it.
   const actionsTaken: CircuitBreakAction[] = [];
   let circuitFlipped = false;
-  if (wantsDisable && projectName && scope) {
-    await setCircuit(env, scope, { budgetUsd: 0, window: "month", enabled: true });
+  let priorCircuit: unknown = null;
+  if (wantsDisable && projectName && scope && projectMatchesTarget) {
+    priorCircuit = await getCircuit(env, scope as CircuitScope);
+    await setCircuit(env, scope as CircuitScope, { budgetUsd: 0, window: "month", enabled: true });
     circuitFlipped = true;
     actionsTaken.push({
       kind: "circuit_break",
       detail: `Flipped ${scope} to a $0 monthly budget — Jules recommended disabling this project's AI access.`,
+      at: now,
+    });
+  } else if (wantsDisable && projectName && !projectMatchesTarget) {
+    actionsTaken.push({
+      kind: "jules_action",
+      detail: `Jules recommended disabling "${projectName}", but it does not match the dispatched target — NOT auto-flipped; operator review required.`,
       at: now,
     });
   }
@@ -394,6 +452,7 @@ export async function recordFindings(
         aiAuditFindings: findings.ai_audit_findings,
         julesActions: findings.actions_taken,
         circuitFlipped,
+        priorCircuit,
       },
     },
     createdAt: now,
@@ -438,8 +497,12 @@ if (import.meta.main) {
   const assert = (cond: boolean, m: string) => {
     if (!cond) throw new Error(m);
   };
-  assert(recommendsDisable(["disable core-guardian access for project"]), "matches 'disable'");
-  assert(recommendsDisable(["Recommend DISABLING the project breaker"]), "case-insensitive");
+  assert(recommendsDisable(["DISABLE_AI_ACCESS"]), "exact structured token matches");
+  assert(recommendsDisable(["disabled per audit", "disable_ai_access"]), "token among strings, ci");
+  assert(
+    !recommendsDisable(["I do NOT recommend disabling this project's AI access"]),
+    "free-text negation must NOT trip an outage",
+  );
   assert(!recommendsDisable(["monitor only", "no action"]), "no false positive");
   assert(!recommendsDisable([]), "empty → no flip");
 

@@ -43,7 +43,7 @@ import {
   type CircuitBreakAction,
 } from "@/backend/db/schema";
 import { guardianAuth } from "@/backend/api/routes/guardian";
-import { deleteCircuit, setKillSwitch } from "@/backend/guardian/ai-router/circuits";
+import { deleteCircuit, setCircuit, setKillSwitch } from "@/backend/guardian/ai-router/circuits";
 import { scanWorkers } from "@/backend/guardian/offense/scan-workers";
 import { scanGithub } from "@/backend/guardian/offense/scan-github";
 import { dispatchToJules, recordFindings } from "@/backend/guardian/offense/jules-dispatch";
@@ -219,7 +219,16 @@ offenseRouter.openapi(
         existing.scope &&
         !others.some((o) => o.scope === existing.scope && flippedCircuit(o.actionsTaken))
       ) {
-        await deleteCircuit(c.env, existing.scope);
+        // Restore the circuit that existed BEFORE this incident overwrote it to
+        // $0 (snapshotted in recommendation.details.priorCircuit) rather than
+        // deleting outright — otherwise a legit prior budget would be wiped.
+        const prior = (existing.recommendation as { details?: { priorCircuit?: unknown } } | null)
+          ?.details?.priorCircuit;
+        if (prior) {
+          await setCircuit(c.env, existing.scope, prior as Parameters<typeof setCircuit>[2]);
+        } else {
+          await deleteCircuit(c.env, existing.scope);
+        }
         circuitLifted = true;
       }
     }
@@ -546,8 +555,8 @@ offensePublicRouter.openapi(
         content: {
           "application/json": {
             schema: z.object({
-              ok: z.literal(true),
-              incidentId: z.string(),
+              ok: z.boolean(),
+              incidentId: z.string().nullable(),
               circuitFlipped: z.boolean(),
             }),
           },
@@ -579,6 +588,7 @@ offensePublicRouter.openapi(
     if (!dispatch) return c.json({ error: "Invalid or expired token." }, 403);
 
     const { incidentId, circuitFlipped } = await recordFindings(c.env, dispatch, body);
-    return c.json({ ok: true as const, incidentId, circuitFlipped }, 200);
+    // incidentId null → the nonce was already spent/expired (idempotent no-op).
+    return c.json({ ok: incidentId !== null, incidentId, circuitFlipped }, 200);
   },
 );
