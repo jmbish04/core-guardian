@@ -11,6 +11,8 @@ export { AiRouterConsole } from "./AiRouterConsole";
 export { AiRouterUsage } from "./AiRouterUsage";
 export { AllowancesPanel } from "./AllowancesPanel";
 export { CostTraceIsland } from "./CostTraceIsland";
+export { IncidentsPanel } from "./IncidentsPanel";
+export { RiskTargetsPanel } from "./RiskTargetsPanel";
 export { SpendOverview } from "./SpendOverview";
 export { DailyCost } from "./DailyCost";
 export { BillableUsage } from "./BillableUsage";
