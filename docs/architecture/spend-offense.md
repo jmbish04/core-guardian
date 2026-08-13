@@ -167,6 +167,36 @@ from a false positive:
 Both thresholds live in `global-config` (env-overridable). The incident's resolve flow lets the
 user flip the kill switch or lift it.
 
+## P8 — Actionable Insights (the accumulation + one-click-action layer)
+
+**Why:** the v1 dashboard showed per-day model cost (`gpt-oss-120b $22`) with no date, no
+accumulation, and no "since last visit" — so a recurring $22/day drip read as a static bug, not
+"5 days running = $110." The owner found the $600 on Cloudflare's dashboard, not ours. Fix: make the
+recurrence + accumulation the loudest thing, attribute it to a project, and put the fix one click away.
+Zero AI in the analysis.
+
+### Insight layer (all from data we already have — daily_cost, workersAiModels, ai_router_requests)
+- **Period accumulation**: headline = MTD running total (not a per-day figure).
+- **Since-last-visit delta**: a visit log (KV `SESSIONS`, key `dashboard:last-visit` → `{at, mtdUsd}`).
+  On load, record the visit and show "up $X since your last visit N days ago" under the headline.
+- **Recurrence/anomaly detection** (`GET /api/guardian/offense/insights`, deterministic):
+  per model + per project, walk the daily series → consecutive-days-in-a-row, accumulated total over
+  the streak, cadence class (hourly/daily/weekly from call timestamps), call count, neurons/day.
+  Emit ranked anomalies: "model X · N days running · $Y total · daily · project Z · K calls".
+  Attribution + call counts + (where stored) prompt come from `ai_router_requests` / PROMPTS KV.
+
+### Action layer (surface the fix next to the problem — "end the bleeding")
+`POST /api/guardian/offense/controls/*`, guardianAuth, each wrapping an existing capability:
+- **project-circuit**: set/lower budget · lock-for-month (`setCircuit budget 0 window month`) ·
+  freeze-permanent (sticky enabled, budget 0) · unfreeze (deleteCircuit / restore). AI bleed → stopped.
+- **kill-cron**: delete a worker's cron trigger via `cfApi DELETE /workers/scripts/{name}/schedules`.
+- **archive-r2**: hand off to guardian's existing R2 archive/action-item flow.
+- **code-fix**: Jules dispatch (P5) for a real change, or a hardcoded OctoKit surgical edit
+  (comment out a cron in wrangler.jsonc / disable a DO) → PR → deploy. (later)
+
+**No migration** — visit log in KV, everything else reads existing tables / wraps existing helpers.
+Build order: insight layer first (the failure), then project-circuit controls, then cron/R2/code.
+
 ## New secrets (wrangler.jsonc Secrets Store)
 
 `JULES_API_KEY` (Jules dispatch), `GH_TOKEN` (GitHub scan), `LOCAL_AUDIT_ACCESS_TOKEN` +
