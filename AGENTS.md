@@ -182,6 +182,48 @@ breaker system. Full spec: `docs/architecture/spend-offense.md`.
   route errors through the shared `dashboard/shared.tsx#InlineError` (which
   `console.error`s for the global ErrorLogger). Monolith dark, `ring-1 ring-border/40`.
 
+**P8 — Actionable Insights** (the accumulation + one-click-action layer; the fix
+for the $600 miss where a recurring `$22/day` drip read as a static bug). ZERO AI —
+pure queries + arithmetic in `guardian/offense/insights.ts`.
+- **API** (`api/routes/billing-insights.ts`, mounted `/api/guardian/billing`, `guardianAuth`):
+  - `GET  /insights` → `{ mtdUsd, projectedMonthEnd, sinceLastVisit:{deltaUsd,daysSince,at},
+    anomalies[] }`. `mtdUsd` is the running month-to-date total; `projectedMonthEnd` its
+    straight-line projection; `sinceLastVisit` diffs this visit's MTD against the prior
+    visit **and records this one in KV `SESSIONS` (`dashboard:last-visit`) on every read** —
+    so call it **once per page load** (a second reader zeroes the delta). Each anomaly:
+    `{source:"router"|"workers-ai-neurons", model, provider, project, streakDays,
+    streakTotalUsd, perDayUsd, cadence, callCount, neuronsPerDay, lastDay}`, ranked by
+    `streakTotalUsd` desc.
+  - `POST /controls/project-circuit` body `{project, action:"set-budget"|"lock-month"|
+    "freeze"|"unfreeze", budgetUsd?}` → wraps the AI Router's `project:<name>` circuit
+    (no parallel breaker), audits to `billing_events`, returns `{project, action, scope,
+    circuit, eventId, timestamp}`.
+- **Frontend** (`components/dashboard/`, first elements on `guardian.astro`, order
+  headline → anomalies → incidents → spend overview → risk targets):
+  - `SpendHeadline.tsx` — the first thing seen. Owns the single `/insights` fetch. Two
+    stat cards (2-up on mobile): big MTD total with the since-last-visit line underneath
+    in the same card (red up-arrow if spend rose, muted if first visit / unchanged), and a
+    projected-month-end card that goes destructive-ring red when the projection towers over
+    the run-rate (`projected − mtd > max($5, 50% of mtd)`). Renders `<AnomaliesPanel>`
+    below from the same payload; passes `load` as its `onActed` refetch.
+  - `AnomaliesPanel.tsx` — the star. One anomaly = one sentence: `` `{model}` — **{n} days
+    running** · **${total}** · {cadence} · project {p}/no attribution · ${perDay}/day ·
+    {neurons}/day · {calls} calls``. A row goes LOUD (destructive ring + tint + warning
+    icon) when `streakTotalUsd ≥ $50`. Project-scoped rows carry inline one-click controls →
+    `POST /controls/project-circuit`: **Freeze** (AlertDialog), **Lock month** (AlertDialog),
+    **Set budget** (Dialog + one number Input), **Unfreeze** (direct). Success shows an inline
+    note + refetches; project-less rows explain "route it through core-guardian to enable
+    controls". Empty state is positive ("nothing accumulating").
+  - Stock shadcn only (`components/ui/*`), Monolith dark, `ring-1 ring-border/40`, `usd()`
+    from `lib/format.ts`, errors via `dashboard/shared.tsx#InlineError`. No mock data.
+
+**How to add a new one-click control**: add the action to the `action` enum + `circuitFor`
+switch in `api/routes/billing-insights.ts` (return the `Circuit` it should write, or `null`
+to delete), then add a button in `AnomaliesPanel.tsx#AnomalyCard`: an `<AlertDialog>`-gated
+`<ConfirmAction>` for anything destructive (or a plain `<Button>` for restorative ones),
+wiring `onRun(project, "<action>", budgetUsd?)`, and a line in `successLine()`. Nothing else —
+the audit row and circuit write are handled server-side.
+
 **How to extend**:
 - *Add a new scanner* (e.g. a Cloud Run / Vercel enumerator): write
   `guardian/offense/scan-<x>.ts` returning `NewScanTargetRow[]`, reuse

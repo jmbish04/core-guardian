@@ -10,6 +10,7 @@ export { ActionItems } from "./ActionItems";
 export { AiRouterConsole } from "./AiRouterConsole";
 export { AiRouterUsage } from "./AiRouterUsage";
 export { AllowancesPanel } from "./AllowancesPanel";
+export { SpendHeadline } from "./SpendHeadline";
 export { CostTraceIsland } from "./CostTraceIsland";
 export { IncidentsPanel } from "./IncidentsPanel";
 export { RiskTargetsPanel } from "./RiskTargetsPanel";
