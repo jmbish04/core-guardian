@@ -1,0 +1,109 @@
+/**
+ * @fileoverview Pure builder for per-language integration instructions.
+ * No I/O: given a base URL, lang, and pull mode it returns copy-paste strings
+ * (pull command, `GUARDIAN` var stub, secret commands, usage snippet) with the
+ * live base URL and current client version interpolated. Surfaced by
+ * `routes/integration.ts` and the `guardian_integration_instructions` MCP tool.
+ */
+
+const REPO = "jmbish04/core-guardian";
+const RAW = `https://raw.githubusercontent.com/${REPO}/main`;
+
+// ponytail: keep in sync with clients/VERSION — integration.test.ts asserts equality.
+export const CLIENT_VERSION = "1.0.0";
+
+export type IntegrationLang = "ts" | "python" | "gas";
+export type IntegrationMode = "curl" | "submodule" | "degit";
+
+export const SUPPORTED_LANGS: IntegrationLang[] = ["ts", "python", "gas"];
+export const SUPPORTED_MODES: IntegrationMode[] = ["curl", "submodule", "degit"];
+
+type LangMeta = { path: string; dest: string; usage: string };
+
+const LANGS: Record<IntegrationLang, LangMeta> = {
+  ts: {
+    path: "clients/ts/guardian-client.ts",
+    dest: "src/lib/guardian/guardian-client.ts",
+    usage: [
+      'import { GuardianClient } from "./lib/guardian/guardian-client";',
+      "const g = GuardianClient.fromEnv(env);",
+      'const r = await g.ai.run({ provider: "openai", model: "gpt-4o-mini", input: { messages: [{ role: "user", content: "hi" }] } });',
+    ].join("\n"),
+  },
+  python: {
+    path: "clients/python/guardian_client.py",
+    dest: "guardian_client.py",
+    usage: [
+      "from guardian_client import GuardianClient",
+      "g = GuardianClient.from_env(os.environ)",
+      'r = g.ai.run(provider="openai", model="gpt-4o-mini", input={"messages": [{"role": "user", "content": "hi"}]})',
+    ].join("\n"),
+  },
+  gas: {
+    path: "clients/gas/GuardianClient.gs",
+    dest: "GuardianClient.gs",
+    usage: [
+      "const g = GuardianClient.fromScriptProperties();",
+      'const r = g.ai.run({ provider: "openai", model: "gpt-4o-mini", input: { messages: [{ role: "user", content: "hi" }] } });',
+    ].join("\n"),
+  },
+};
+
+const VARS_STUB = JSON.stringify(
+  {
+    GUARDIAN: {
+      project: "my-worker",
+      repo: "you/my-worker",
+      priority: "normal",
+      budget: 25,
+      baseUrl: "https://core-guardian.hacolby.workers.dev",
+    },
+  },
+  null,
+  2,
+);
+
+const SECRETS = [
+  "wrangler secret put GUARDIAN_AI_TOKEN",
+  "wrangler secret put GUARDIAN_API_KEY",
+];
+
+function pullCommand(meta: LangMeta, mode: IntegrationMode): string {
+  switch (mode) {
+    case "curl":
+      return `curl -fsSL -o ${meta.dest} ${RAW}/${meta.path}`;
+    case "degit":
+      return `npx degit ${REPO}/${meta.path} ${meta.dest}`;
+    case "submodule":
+      return `git submodule add https://github.com/${REPO}.git vendor/core-guardian\n# then reference vendor/core-guardian/${meta.path}`;
+    default:
+      throw new RangeError(`unknown mode: ${mode as string}`);
+  }
+}
+
+export function buildInstructions(opts: {
+  baseUrl: string;
+  lang: IntegrationLang;
+  mode: IntegrationMode;
+}): {
+  version: string;
+  lang: IntegrationLang;
+  mode: IntegrationMode;
+  pull: string;
+  varsStub: string;
+  secrets: string[];
+  usage: string;
+} {
+  const meta = LANGS[opts.lang];
+  if (!meta) throw new RangeError(`unknown lang: ${opts.lang as string}`);
+  if (!SUPPORTED_MODES.includes(opts.mode)) throw new RangeError(`unknown mode: ${opts.mode as string}`);
+  return {
+    version: CLIENT_VERSION,
+    lang: opts.lang,
+    mode: opts.mode,
+    pull: pullCommand(meta, opts.mode),
+    varsStub: VARS_STUB.replace("https://core-guardian.hacolby.workers.dev", opts.baseUrl),
+    secrets: SECRETS,
+    usage: meta.usage,
+  };
+}
