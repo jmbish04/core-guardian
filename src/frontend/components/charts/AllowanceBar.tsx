@@ -45,9 +45,13 @@ export type BarGeometry = {
  * projected, the 100% line} so nothing renders flush against the right edge.
  */
 export function barGeometry(included: number, usedSoFar: number, projected: number): BarGeometry {
-  const noFreeTier = included <= 0 && usedSoFar > 0;
-  const currentFraction = noFreeTier ? 1 : included > 0 ? usedSoFar / included : 0;
-  const projectedFraction = noFreeTier ? 1 : included > 0 ? projected / included : 0;
+  // Sanitize: negative / NaN / Infinity data must never yield negative or NaN CSS.
+  const inc = Number.isFinite(included) ? included : 0;
+  const used = Number.isFinite(usedSoFar) ? Math.max(0, usedSoFar) : 0;
+  const proj = Number.isFinite(projected) ? Math.max(0, projected) : 0;
+  const noFreeTier = inc <= 0 && used > 0;
+  const currentFraction = noFreeTier ? 1 : inc > 0 ? used / inc : 0;
+  const projectedFraction = noFreeTier ? 1 : inc > 0 ? proj / inc : 0;
 
   const maxFrac = Math.max(currentFraction, projectedFraction, 1);
   const scaleMax = Math.max(1.15, maxFrac * 1.15);
@@ -129,7 +133,7 @@ export function AllowanceBar({
         <div className="absolute inset-0 rounded-full bg-muted" />
         {g.underPct > 0 && (
           <div
-            className="absolute inset-y-0 left-0 rounded-full"
+            className={`absolute inset-y-0 left-0 ${g.overPct > 0 ? "rounded-l-full" : "rounded-full"}`}
             style={{ width: `${g.underPct}%`, background: underColor }}
           />
         )}
