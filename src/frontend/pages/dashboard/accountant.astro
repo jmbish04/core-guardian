@@ -1,0 +1,27 @@
+---
+/**
+ * `/dashboard/accountant` — the owner's accountant.
+ *
+ * Thin Astro shell over the `<AccountantView>` React island. Two layers on one
+ * screen: Layer 1 is the actual-billed Cloudflare SKU lines (the same dollars
+ * the CF bill dashboard shows, ranked by actual $), Layer 2 is guardian's
+ * value-add per line — est-vs-actual discrepancy, AI attribution, projection.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { AccountantView } from "@/components/dashboard";
+---
+
+<BaseLayout
+  title="Accountant"
+  description="The bill, line for line: actual-billed Cloudflare SKU ranking that ties out to your CF dashboard, plus est-vs-actual discrepancy (dispute evidence), AI attribution (which model/project drove the neurons), and month-end projection."
+>
+  <main class="container mx-auto flex max-w-6xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/guardian"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Core Guardian
+    </a>
+    <AccountantView client:load />
+  </main>
+</BaseLayout>
