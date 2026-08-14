@@ -32,7 +32,7 @@
  * @see {@link file://src/backend/db/schemas/governance/ai-router-requests.ts}
  */
 
-import { and, desc, gte, sql } from "drizzle-orm";
+import { and, gte, sql } from "drizzle-orm";
 
 import { getDb } from "@/backend/db";
 import { aiRouterRequests, dailyCost } from "@/backend/db/schema";
@@ -46,11 +46,6 @@ const NONTRIVIAL_USD = 0.01;
 
 /** Max analysis window (days). Router history is capped in rows too, see below. */
 const MAX_WINDOW_DAYS = 30;
-
-/** Ceiling on router rows pulled for cadence/attribution in one insights call. */
-// ponytail: 5000 recent rows is plenty for a personal Guardian; raise (or
-// pre-aggregate cadence in SQL) only if a single project ever exceeds this/window.
-const ROUTER_ROW_CAP = 5000;
 
 export type Cadence = "hourly" | "daily" | "weekly" | "sporadic";
 
@@ -207,13 +202,19 @@ export function projectMonthEnd(mtdUsd: number, nowMs: number): number {
 // Anomaly builders (pure — take already-fetched rows)
 // ---------------------------------------------------------------------------
 
-/** Minimal shape pulled from `ai_router_requests` for anomaly analysis. */
+/**
+ * One PRE-AGGREGATED (project, provider, model, day) row from `ai_router_requests`
+ * — cost summed and calls counted in SQL. Aggregating in the DB rather than
+ * capping raw rows keeps a high-traffic project's accumulation EXACT (a raw-row
+ * cap drops the oldest days → computeStreak breaks early → undercounts the drip).
+ */
 export interface RouterRow {
-  at: number;
   project: string;
   provider: string;
   model: string;
+  day: string;
   costUsd: number;
+  calls: number;
 }
 
 /**
@@ -227,12 +228,12 @@ export function buildRouterAnomalies(rows: RouterRow[], days: string[]): Anomaly
     provider: string;
     model: string;
     dayCost: Map<string, number>;
-    times: number[];
     callCount: number;
   }
   const groups = new Map<string, G>();
   for (const r of rows) {
-    const key = `${r.project} ${r.provider} ${r.model}`;
+    // JSON key avoids delimiter collisions (e.g. a project name with spaces).
+    const key = JSON.stringify([r.project, r.provider, r.model]);
     let g = groups.get(key);
     if (!g) {
       g = {
@@ -240,15 +241,12 @@ export function buildRouterAnomalies(rows: RouterRow[], days: string[]): Anomaly
         provider: r.provider,
         model: r.model,
         dayCost: new Map(),
-        times: [],
         callCount: 0,
       };
       groups.set(key, g);
     }
-    const day = utcDayKey(r.at);
-    g.dayCost.set(day, (g.dayCost.get(day) ?? 0) + (r.costUsd ?? 0));
-    g.times.push(r.at);
-    g.callCount++;
+    g.dayCost.set(r.day, (g.dayCost.get(r.day) ?? 0) + (r.costUsd ?? 0));
+    g.callCount += r.calls ?? 0;
   }
 
   const out: Anomaly[] = [];
@@ -263,7 +261,7 @@ export function buildRouterAnomalies(rows: RouterRow[], days: string[]): Anomaly
       streakDays: s.streakDays,
       streakTotalUsd: s.streakTotalUsd,
       perDayUsd: s.perDayUsd,
-      cadence: cadenceFromGaps(g.times),
+      cadence: cadenceFromDays([...g.dayCost.keys()]),
       callCount: g.callCount,
       neuronsPerDay: null,
       lastDay: s.lastDay,
@@ -371,19 +369,26 @@ export async function getInsights(env: Env, nowMs = Date.now()): Promise<Insight
   const mtdUsd = mtdFromReport(report.totalByDay, nowMs);
   const projectedMonthEnd = projectMonthEnd(mtdUsd, nowMs);
 
-  // Router history: raw recent rows, grouped/cadence-analysed in JS.
+  // Router history AGGREGATED per (project, provider, model, UTC day) in SQL —
+  // exact totals with bounded output, no raw-row cap that could drop old days
+  // and undercount a streak.
   const routerRows = (await db
     .select({
-      at: aiRouterRequests.at,
       project: aiRouterRequests.project,
       provider: aiRouterRequests.provider,
       model: aiRouterRequests.model,
-      costUsd: aiRouterRequests.costUsd,
+      day: sql<string>`strftime('%Y-%m-%d', ${aiRouterRequests.at} / 1000, 'unixepoch')`,
+      costUsd: sql<number>`coalesce(sum(${aiRouterRequests.costUsd}), 0)`,
+      calls: sql<number>`count(*)`,
     })
     .from(aiRouterRequests)
     .where(gte(aiRouterRequests.at, cutoff))
-    .orderBy(desc(aiRouterRequests.at))
-    .limit(ROUTER_ROW_CAP)) as RouterRow[];
+    .groupBy(
+      aiRouterRequests.project,
+      aiRouterRequests.provider,
+      aiRouterRequests.model,
+      sql`strftime('%Y-%m-%d', ${aiRouterRequests.at} / 1000, 'unixepoch')`,
+    )) as RouterRow[];
 
   // Workers-AI per-model neuron rows (dimension != "" is the per-model split).
   const cutoffDay = utcDayKey(cutoff);
@@ -430,8 +435,16 @@ async function recordVisit(env: Env, mtdUsd: number, nowMs: number): Promise<Sin
   await env.SESSIONS.put(VISIT_KEY, JSON.stringify({ at: nowMs, mtdUsd }));
 
   if (!prev) return { deltaUsd: null, daysSince: null, at: null };
+  // Across a month boundary MTD resets to ~0, so a raw subtraction yields a bogus
+  // negative. Same month → true delta; different month → this month's whole MTD
+  // has accrued since the (last-month) visit.
+  const prevDate = new Date(prev.at);
+  const nowDate = new Date(nowMs);
+  const sameMonth =
+    prevDate.getUTCFullYear() === nowDate.getUTCFullYear() &&
+    prevDate.getUTCMonth() === nowDate.getUTCMonth();
   return {
-    deltaUsd: mtdUsd - prev.mtdUsd,
+    deltaUsd: sameMonth ? mtdUsd - prev.mtdUsd : mtdUsd,
     daysSince: (nowMs - prev.at) / DAY_MS,
     at: prev.at,
   };
@@ -498,9 +511,9 @@ if (import.meta.main) {
   // Router anomaly end-to-end: one project/model, 3 daily calls.
   const rowAnoms = buildRouterAnomalies(
     [
-      { at: Date.UTC(2026, 7, 5), project: "acre", provider: "openai", model: "gpt-5", costUsd: 3 },
-      { at: Date.UTC(2026, 7, 6), project: "acre", provider: "openai", model: "gpt-5", costUsd: 4 },
-      { at: Date.UTC(2026, 7, 7), project: "acre", provider: "openai", model: "gpt-5", costUsd: 5 },
+      { project: "acre", provider: "openai", model: "gpt-5", day: "2026-08-05", costUsd: 3, calls: 1 },
+      { project: "acre", provider: "openai", model: "gpt-5", day: "2026-08-06", costUsd: 4, calls: 1 },
+      { project: "acre", provider: "openai", model: "gpt-5", day: "2026-08-07", costUsd: 5, calls: 1 },
     ],
     win,
   );
