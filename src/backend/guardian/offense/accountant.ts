@@ -210,7 +210,7 @@ export function buildAccountant(
 
   // AI attribution is shared across the (usually one) AI SKUs.
   const aiAttribution: SkuAttribution = {
-    byModel: estimate.workersAiModels.models.map((m) => ({
+    byModel: (estimate.workersAiModels?.models ?? []).map((m) => ({
       model: m.model,
       usd: m.costUsd ?? 0,
       neurons: m.neurons,
@@ -225,7 +225,10 @@ export function buildAccountant(
 
   const skus: AccountantSku[] = ranked.map((sv) => {
     const category = classify(sv.service);
-    const hasEst = estByCategory.has(category) && !estUsedBy.has(category);
+    // "other" is a grab-bag of unrelated products — never attach a category-summed
+    // estimate to a single SKU there, or it claims the others' estimates too.
+    const hasEst =
+      category !== "other" && estByCategory.has(category) && !estUsedBy.has(category);
     const estimateUsd = hasEst ? estByCategory.get(category)! : null;
     if (hasEst) estUsedBy.add(category);
     const { discrepancyUsd, discrepancyPct } = discrepancy(sv.totalUsd, estimateUsd);
