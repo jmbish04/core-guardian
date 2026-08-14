@@ -56,7 +56,7 @@ const incidentSchema = z.object({
   projectIdentification: z.record(z.string(), z.unknown()).nullable(),
   scope: z.string().nullable(),
   reason: z.string(),
-  source: z.enum(["scanner", "jules", "auto_spend"]),
+  source: z.enum(["scanner", "jules", "auto_spend", "budget_cap", "infra_spike"]),
   status: z.enum(["active", "read", "erroneous"]),
   julesPr: z.string().nullable(),
   actionsTaken: z.array(z.record(z.string(), z.unknown())).nullable(),

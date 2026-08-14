@@ -37,7 +37,8 @@ export const CIRCUIT_BREAK_EVENTS_COLUMN_DESCRIPTIONS: Record<string, string> = 
     "JSON: the project/target this incident is about, when known (null for account-wide sustained-spend).",
   scope: "Circuit scope the incident concerns (e.g. 'global', 'project:acre'), or null.",
   reason: "Human-readable reason the incident was filed.",
-  source: "What raised it: scanner | jules | auto_spend. P1 writes auto_spend only.",
+  source:
+    "What raised it: scanner | jules | auto_spend | budget_cap | infra_spike. P1 writes auto_spend; P9a adds budget_cap (nuclear total-CF-budget breaker) and infra_spike (non-AI infra-spike guard).",
   status: "active | read | erroneous. Active rows are live breakers shown on the dashboard.",
   jules_pr: "PR opened by Jules for this incident, if any (later phases).",
   actions_taken: "JSON: automated actions performed (e.g. kill switch flipped). Empty when recommend-only.",
@@ -77,7 +78,9 @@ export const circuitBreakEvents = sqliteTable(
     >(),
     scope: text("scope"),
     reason: text("reason").notNull(),
-    source: text("source", { enum: ["scanner", "jules", "auto_spend"] }).notNull(),
+    source: text("source", {
+      enum: ["scanner", "jules", "auto_spend", "budget_cap", "infra_spike"],
+    }).notNull(),
     status: text("status", { enum: ["active", "read", "erroneous"] })
       .notNull()
       .default("active"),
