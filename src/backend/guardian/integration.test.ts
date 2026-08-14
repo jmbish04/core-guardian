@@ -23,6 +23,11 @@ test("ts+curl instructions carry base url, version, and a raw pull command", () 
   assert.match(r.usage, /GuardianClient/);
 });
 
+test("ref is honestly stamped as main — the pull ref the commands actually use", () => {
+  const r = buildInstructions({ baseUrl: BASE, lang: "ts", mode: "curl" });
+  assert.equal(r.ref, "main");
+});
+
 test("submodule mode emits a git submodule command", () => {
   const r = buildInstructions({ baseUrl: BASE, lang: "ts", mode: "submodule" });
   assert.match(r.pull, /git submodule add/);

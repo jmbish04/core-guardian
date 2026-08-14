@@ -32,6 +32,15 @@ test("ai.run posts to /api/ai-router/run with AI token and injected project+impo
   assert.equal(sent.stream, false);
 });
 
+test("unrecognized priority falls back to low importance, never undefined", async () => {
+  for (const priority of ["Normal", ""]) {
+    const { fn, calls } = stubFetch(200, { request_uuid: "u", status: 200, provider: "p", model: "m", mode: "gateway", gateway: null, tokens_in: 0, tokens_out: 0, cost_usd: 0, body: {} });
+    const g = new GuardianClient({ ...cfg, priority: priority as never, aiToken: "AI", apiKey: "API", fetch: fn });
+    await g.ai.run({ provider: "p", model: "m", input: {} });
+    assert.equal(JSON.parse(calls[0].init.body as string).importance, "low");
+  }
+});
+
 test("per-call importance overrides config priority", async () => {
   const { fn, calls } = stubFetch(200, { request_uuid: "u", status: 200, provider: "p", model: "m", mode: "gateway", gateway: null, tokens_in: 0, tokens_out: 0, cost_usd: 0, body: {} });
   const g = new GuardianClient({ ...cfg, aiToken: "AI", apiKey: "API", fetch: fn });
@@ -77,6 +86,20 @@ test("fromEnv parses GUARDIAN as object and as JSON string; missing project thro
   assert.ok(asStr instanceof GuardianClient);
   assert.throws(() => GuardianClient.fromEnv({ GUARDIAN: { repo: "x" } }));
   assert.throws(() => GuardianClient.fromEnv({}));
+});
+
+test("fromEnv throws a helpful message on malformed GUARDIAN JSON", () => {
+  assert.throws(
+    () => GuardianClient.fromEnv({ GUARDIAN: "{not valid json" }),
+    /GuardianClient\.fromEnv: env\.GUARDIAN is not valid JSON/,
+  );
+});
+
+test("tokens never leak into a serialized client instance", () => {
+  const g = new GuardianClient({ ...cfg, aiToken: "SECRET_AI_TOKEN", apiKey: "SECRET_API_KEY", fetch: stubFetch(200, {}).fn });
+  const serialized = JSON.stringify(g);
+  assert.ok(!serialized.includes("SECRET_AI_TOKEN"));
+  assert.ok(!serialized.includes("SECRET_API_KEY"));
 });
 
 test("VERSION file matches the version the client reports", () => {

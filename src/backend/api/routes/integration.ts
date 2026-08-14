@@ -21,6 +21,7 @@ const responseSchema = z.object({
   version: z.string(),
   lang: z.enum(["ts", "python", "gas"]),
   mode: z.enum(["curl", "submodule", "degit"]),
+  ref: z.string(),
   pull: z.string(),
   varsStub: z.string(),
   secrets: z.array(z.string()),
@@ -40,7 +41,7 @@ integrationRouter.openapi(
   }),
   (c) => {
     const { lang, mode } = c.req.valid("query");
-    const baseUrl = new URL(c.req.url).origin;
+    const baseUrl = c.env.WORKER_BASE_URL || new URL(c.req.url).origin;
     return c.json(buildInstructions({ baseUrl, lang, mode }), 200);
   },
 );

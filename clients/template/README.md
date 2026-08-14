@@ -21,6 +21,8 @@ Pin a release instead of `main` when you want stability:
 GUARDIAN_CLIENT_REF=v1.0.0 node scripts/pull-guardian.mjs
 ```
 
+If the fetch fails but a vendored copy is already committed on disk, the script warns and keeps the existing copy (exit 0) instead of failing the install/deploy — a GitHub-raw outage should never block a deploy that already has a valid committed client.
+
 ## 3. Add the config stub to wrangler.jsonc
 
 ```jsonc

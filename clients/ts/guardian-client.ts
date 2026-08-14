@@ -114,7 +114,9 @@ export class GuardianClient {
 
   constructor(opts: Opts) {
     if (!opts.project) throw new Error("GuardianClient: config.project is required");
-    this.cfg = opts;
+    // Narrowed copy — never spread aiToken/apiKey into cfg, or a logged/serialized
+    // client instance would leak both secrets (see private fields below).
+    this.cfg = { project: opts.project, repo: opts.repo, priority: opts.priority, budget: opts.budget, baseUrl: opts.baseUrl };
     this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     this.aiToken = opts.aiToken;
     this.apiKey = opts.apiKey;
@@ -123,7 +125,12 @@ export class GuardianClient {
 
   static fromEnv(env: Record<string, unknown>): GuardianClient {
     const raw = env.GUARDIAN;
-    const cfg = (typeof raw === "string" ? JSON.parse(raw) : raw) as GuardianConfig | undefined;
+    let cfg: GuardianConfig | undefined;
+    try {
+      cfg = (typeof raw === "string" ? JSON.parse(raw) : raw) as GuardianConfig | undefined;
+    } catch {
+      throw new Error("GuardianClient.fromEnv: env.GUARDIAN is not valid JSON");
+    }
     if (!cfg || !cfg.project) throw new Error("GuardianClient.fromEnv: env.GUARDIAN.project missing");
     return new GuardianClient({
       ...cfg,
@@ -133,7 +140,7 @@ export class GuardianClient {
   }
 
   private importanceFor(over?: Importance): Importance {
-    return over ?? PRIORITY_TO_IMPORTANCE[this.cfg.priority ?? "normal"];
+    return over ?? (PRIORITY_TO_IMPORTANCE[this.cfg.priority ?? "normal"] ?? "low");
   }
 
   private runBody(i: RunInput, stream: boolean) {
@@ -215,5 +222,14 @@ export class GuardianClient {
 
   project(): Promise<unknown> {
     return this.getJson(`/api/guardian/projects/${encodeURIComponent(this.cfg.project)}`, this.apiKey);
+  }
+
+  // TS `private` is compile-time only — aiToken/apiKey are still plain enumerable
+  // instance properties at runtime, so JSON.stringify(client) would otherwise
+  // dump both secrets (e.g. via a structured logger). toJSON() is the standard
+  // JS hook JSON.stringify checks for; this excludes them without changing the
+  // field-declaration style.
+  toJSON(): unknown {
+    return { cfg: this.cfg, baseUrl: this.baseUrl };
   }
 }

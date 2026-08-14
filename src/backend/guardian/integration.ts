@@ -54,12 +54,17 @@ const SECRETS = [
   "wrangler secret put GUARDIAN_API_KEY",
 ];
 
+/** Strips the trailing `/<file>` segment off a path, e.g. "clients/ts/guardian-client.ts" -> "clients/ts". */
+function dirOf(path: string): string {
+  return path.replace(/\/[^/]+$/, "");
+}
+
 function pullCommand(meta: LangMeta, mode: IntegrationMode): string {
   switch (mode) {
     case "curl":
-      return `curl -fsSL -o ${meta.dest} ${RAW}/${meta.path}`;
+      return `curl -fsSL --create-dirs -o ${meta.dest} ${RAW}/${meta.path}`;
     case "degit":
-      return `npx degit ${REPO}/${meta.path} ${meta.dest}`;
+      return `npx degit --force ${REPO}/${dirOf(meta.path)} ${dirOf(meta.dest)}`;
     case "submodule":
       return `git submodule add https://github.com/${REPO}.git vendor/core-guardian\n# then reference vendor/core-guardian/${meta.path}`;
     default:
@@ -75,6 +80,7 @@ export function buildInstructions(opts: {
   version: string;
   lang: IntegrationLang;
   mode: IntegrationMode;
+  ref: string;
   pull: string;
   varsStub: string;
   secrets: string[];
@@ -99,6 +105,7 @@ export function buildInstructions(opts: {
     version: CLIENT_VERSION,
     lang: opts.lang,
     mode: opts.mode,
+    ref: "main", // the pull ref the commands above actually use — RAW is pinned to main
     pull: pullCommand(meta, opts.mode), // throws RangeError on unknown mode — single source of truth
     varsStub,
     secrets: SECRETS,

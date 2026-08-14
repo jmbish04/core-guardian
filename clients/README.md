@@ -25,12 +25,16 @@ wrangler secret put GUARDIAN_AI_TOKEN   # core-guardian CLOUDFLARE_AI_GATEWAY_TO
 wrangler secret put GUARDIAN_API_KEY    # core-guardian WORKER_API_KEY (metering/budget/project)
 ```
 
+All consumers share the same core-guardian AI-gateway token; the `project` string is self-declared, so project-scoped circuit breakers are advisory, not a security boundary. Rotate the token to revoke fleet-wide.
+
 ## TypeScript / Workers
 
 ```bash
-curl -fsSL -o src/lib/guardian/guardian-client.ts \
+curl -fsSL --create-dirs -o src/lib/guardian/guardian-client.ts \
   https://raw.githubusercontent.com/jmbish04/core-guardian/main/clients/ts/guardian-client.ts
 ```
+
+The `main` pull tracks latest; pin `GUARDIAN_CLIENT_REF=<git tag>` (or a tagged raw URL) when you need a frozen version.
 
 ```ts
 import { GuardianClient } from "./lib/guardian/guardian-client";
