@@ -82,6 +82,15 @@ export function formatCount(n: number, unit?: string): string {
 }
 
 /**
+ * A metered quantity for a quota display: byte units get {@link humanSize}
+ * ("3.2 GB"), everything else a compact count ("14.3B"). The unit string is the
+ * probe's `unit` (e.g. "rows read", "bytes stored").
+ */
+export function formatUsage(unit: string, n: number): string {
+  return unit.includes("bytes") ? humanSize(n) : formatCount(Math.round(n));
+}
+
+/**
  * Exact figure with grouping separators — for a standout number the reader is
  * meant to dwell on (a headline total, an audit-log value). `1248879489` →
  * `1,248,879,489`; with a unit, `1,248,879,489 rows`. Reserve for emphasis;
