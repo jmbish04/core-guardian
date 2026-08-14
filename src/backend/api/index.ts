@@ -37,6 +37,7 @@ import { dashboardRouter } from "./routes/dashboard";
 import { docsRouter } from "./routes/docs";
 import { driveRouter } from "./routes/drive-config";
 import { guardianRouter, r2Router, vectorizeRouter } from "./routes/guardian";
+import { guardianProjectsRouter } from "./routes/guardian-projects";
 import { offensePublicRouter, offenseRouter } from "./routes/offense";
 import { healthRouter } from "./routes/health";
 import { inboxRouter } from "./routes/inbox";
@@ -158,6 +159,9 @@ app.route("/api/guardian", guardianRouter);
 // wildcard in the flattened trie. Do not reorder. See routes/offense.ts header.
 app.route("/api/guardian/offense", offensePublicRouter);
 app.route("/api/guardian/offense", offenseRouter);
+// P14a unified project + Jules-session registry (guardianAuth). Distinct from
+// the generic /api/projects task-container router.
+app.route("/api/guardian/projects", guardianProjectsRouter);
 app.route("/api/guardian/billing", billingInsightsRouter);
 app.route("/api/r2", r2Router);
 app.route("/api/vectorize", vectorizeRouter);

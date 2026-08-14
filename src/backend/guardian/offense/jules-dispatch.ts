@@ -24,6 +24,7 @@ import {
   billingEvents,
   circuitBreakEvents,
   julesDispatches,
+  julesSessions,
   scanTargets,
   type CircuitBreakAction,
   type ScanTargetRow,
@@ -292,6 +293,27 @@ export async function dispatchToJules(env: Env, target: ScanTargetRow): Promise<
       .update(julesDispatches)
       .set({ julesSessionId: sessionId })
       .where(eq(julesDispatches.id, dispatchId));
+
+    // P14a: record the session so the /jules lifecycle poller can track it from
+    // pending → terminal. Best-effort — a session-row failure must not fail the
+    // dispatch (the dispatch/nonce is the load-bearing part).
+    try {
+      await getDb(env)
+        .insert(julesSessions)
+        .values({
+          id: crypto.randomUUID(),
+          sessionId,
+          dispatchId,
+          project: target.workerName ?? null,
+          repo: `${owner}/${repo}`,
+          status: "pending",
+          sessionUrl: `https://jules.google.com/session/${sessionId}`,
+        });
+    } catch (err) {
+      console.error(
+        JSON.stringify({ level: "ERROR", source: "guardian.offense.jules.session", error: String(err) }),
+      );
+    }
 
     return { ok: true, dispatchId, julesSessionId: sessionId };
   } catch (err) {

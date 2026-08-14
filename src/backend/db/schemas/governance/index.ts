@@ -11,6 +11,7 @@ export * from "./cron-runs";
 export * from "./daily-cost";
 export * from "./drive-folders";
 export * from "./offense";
+export * from "./projects";
 export * from "./pricing";
 export * from "./usage-snapshots";
 export * from "./webhook-events";

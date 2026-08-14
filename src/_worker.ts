@@ -68,6 +68,8 @@ import { evaluateUsage } from "./backend/guardian/collect";
 import { backfillDailyCost, snapshotDailyCost } from "./backend/guardian/daily-cost";
 import { checkSustainedSpend } from "./backend/guardian/offense/auto-break";
 import { checkInfraSpikes, checkNuclearBudget } from "./backend/guardian/offense/nuclear";
+import { pollJulesSessions } from "./backend/guardian/projects/poll-jules";
+import { syncWorkerProjects } from "./backend/guardian/projects/sync-workers";
 import { scrapeAllPricing } from "./backend/guardian/pricing-scrape";
 
 // Re-export Durable Object classes (Pattern B: the @astrojs/cloudflare adapter
@@ -184,6 +186,23 @@ async function runGuardianEvaluation(env: Env) {
   } catch (err) {
     console.error(
       JSON.stringify({ level: "ERROR", source: "guardian.offense.infraSpike", error: String(err) }),
+    );
+  }
+  // Nightly (UTC-06): reconcile the P14a unified project registry with the live
+  // account (workers + AI-only callers). Idempotent full reconcile.
+  try {
+    await maybeSyncProjects(env);
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.projects.sync", error: String(err) }),
+    );
+  }
+  // Hourly (every run): advance in-flight Jules sessions pending → terminal.
+  try {
+    await pollJules(env);
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.projects.pollJules", error: String(err) }),
     );
   }
 }
@@ -313,6 +332,27 @@ async function maybeCheckInfraSpikes(env: Env) {
     console.warn(
       JSON.stringify({ level: "WARN", source: "guardian.offense.infraSpike", ...result }),
     );
+  }
+}
+
+/**
+ * Nightly gate (UTC-06) for the P14a project sync. The cron is hourly, so run
+ * once per day — the sync is a full idempotent reconcile of guardian_projects.
+ */
+async function maybeSyncProjects(env: Env) {
+  if (new Date().getUTCHours() !== 6) return;
+  const summary = await syncWorkerProjects(env);
+  console.warn(JSON.stringify({ level: "INFO", source: "guardian.projects.sync", ...summary }));
+}
+
+/**
+ * P14a Jules-session poller. Runs EVERY cron invocation (hourly) — Jules
+ * sessions are short-lived, so no daily gate. No-op when nothing is in flight.
+ */
+async function pollJules(env: Env) {
+  const summary = await pollJulesSessions(env);
+  if (summary.updated > 0) {
+    console.warn(JSON.stringify({ level: "INFO", source: "guardian.projects.pollJules", ...summary }));
   }
 }
 
