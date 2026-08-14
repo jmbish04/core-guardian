@@ -109,7 +109,7 @@ export function SpendHeadline() {
             >
               {mtdSource === "actual"
                 ? `actual billed · est ${usd(estimateUsd, false)}`
-                : "estimate — actual billing not synced, may undercount"}
+                : "estimate — actual billing lags ~24h (or not synced yet)"}
             </span>
             {delta === null ? (
               <span className="text-xs text-muted-foreground">

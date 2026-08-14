@@ -379,9 +379,13 @@ export async function getInsights(env: Env, nowMs = Date.now()): Promise<Insight
   ]);
   const estimateUsd = mtdFromReport(estReport.totalByDay, nowMs);
   const actualUsd = actualReport ? mtdFromReport(actualReport.totalByDay, nowMs) : 0;
-  const useActual = actualReport != null && actualUsd > 0;
-  const mtdUsd = useActual ? actualUsd : estimateUsd;
-  const mtdSource: "actual" | "estimate" = useActual ? "actual" : "estimate";
+  // Show the HIGHER of billed-actual vs reconstructed-estimate. A spend guard
+  // must never HIDE a spike: CF billing lags ~24h+, so a spike today lands in the
+  // estimate before it lands in actuals — taking the max keeps it visible, while
+  // still preferring actual in the normal case (where the estimate undercounts).
+  const mtdUsd = Math.max(actualUsd, estimateUsd);
+  const mtdSource: "actual" | "estimate" =
+    actualUsd > 0 && actualUsd >= estimateUsd ? "actual" : "estimate";
   const projectedMonthEnd = projectMonthEnd(mtdUsd, nowMs);
 
   // Router history AGGREGATED per (project, provider, model, UTC day) in SQL —
