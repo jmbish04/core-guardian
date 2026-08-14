@@ -11,8 +11,24 @@
  *                                    a live breaker) or `erroneous` (false positive;
  *                                    lift any kill switch this incident engaged).
  *
- * P1 is read-only + resolve. The scanners, Jules dispatch, and nonce-authed
- * findings intake are later phases (see docs/architecture/spend-offense.md).
+ * P1 is read-only + resolve; P2/P3 add the scanners.
+ *
+ * ## Two routers, two auth models (P4 security structuring)
+ * Every route on {@link offenseRouter} is guarded by {@link guardianAuth} via a
+ * fail-CLOSED `use("*", …)` — so any route added to it is authenticated by
+ * default. The Jules findings-intake endpoint must NOT sit behind guardianAuth
+ * (its per-dispatch nonce IS the auth), so it lives on a **separate**
+ * {@link offensePublicRouter} that carries no auth middleware at all.
+ *
+ * Both mount at `/api/guardian/offense`. Hono flattens both sub-apps into one
+ * trie and runs matching handlers in **registration order**, so the public
+ * router MUST be mounted before the guarded one (see api/index.ts): the
+ * `/findings` handler then resolves and responds before the guarded router's
+ * `/*` middleware can run. Verified: public-first ⇒ `/findings` bypasses auth
+ * (200) while `/incidents` still enforces it (401); guarded-first ⇒ `/findings`
+ * would 401. The failure mode of a wrong order is fail-SAFE (Jules is blocked,
+ * never a silent bypass), but the order is load-bearing — do not reorder.
+ * The nonce lookup (pending + spend_audit) is the only credential check.
  */
 
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
@@ -22,13 +38,15 @@ import { getDb } from "@/backend/db";
 import {
   billingEvents,
   circuitBreakEvents,
+  julesDispatches,
   scanTargets,
   type CircuitBreakAction,
 } from "@/backend/db/schema";
 import { guardianAuth } from "@/backend/api/routes/guardian";
-import { setKillSwitch } from "@/backend/guardian/ai-router/circuits";
+import { deleteCircuit, setCircuit, setKillSwitch } from "@/backend/guardian/ai-router/circuits";
 import { scanWorkers } from "@/backend/guardian/offense/scan-workers";
 import { scanGithub } from "@/backend/guardian/offense/scan-github";
+import { dispatchToJules, recordFindings } from "@/backend/guardian/offense/jules-dispatch";
 
 const errorResponseSchema = z.object({ error: z.string() });
 
@@ -110,6 +128,11 @@ function flippedKillSwitch(actions: CircuitBreakAction[] | null): boolean {
   return (actions ?? []).some((a) => a.kind === "kill_switch");
 }
 
+/** Did this incident's actions break a project circuit (setCircuit)? */
+function flippedCircuit(actions: CircuitBreakAction[] | null): boolean {
+  return (actions ?? []).some((a) => a.kind === "circuit_break");
+}
+
 offenseRouter.openapi(
   createRoute({
     method: "post",
@@ -137,6 +160,7 @@ offenseRouter.openapi(
             schema: z.object({
               incident: incidentSchema,
               killSwitchLifted: z.boolean(),
+              circuitLifted: z.boolean(),
             }),
           },
         },
@@ -165,24 +189,47 @@ offenseRouter.openapi(
 
     const now = Date.now();
     let killSwitchLifted = false;
+    let circuitLifted = false;
 
-    // Erroneous → false positive: undo an automated kill switch this incident set,
-    // but ONLY if no other still-active incident also relies on it (otherwise
-    // resolving an old incident would turn AI back on while a newer one wants it off).
-    if (action === "erroneous" && flippedKillSwitch(existing.actionsTaken)) {
-      // "read" incidents are still LIVE breakers (acknowledged, switch stays on),
-      // so they count too — otherwise resolving one erroneous incident would lift
-      // the switch while a read breaker still relies on it.
+    // Erroneous → false positive: undo the breakers THIS incident engaged, but
+    // never one another still-live incident also relies on. 'read' incidents are
+    // still live breakers (acknowledged, breaker stays on), so they count too.
+    if (action === "erroneous") {
       const others = await db
-        .select({ actionsTaken: circuitBreakEvents.actionsTaken })
+        .select({ scope: circuitBreakEvents.scope, actionsTaken: circuitBreakEvents.actionsTaken })
         .from(circuitBreakEvents)
         .where(
           and(inArray(circuitBreakEvents.status, ["active", "read"]), ne(circuitBreakEvents.id, id)),
         );
-      const stillNeeded = others.some((o) => flippedKillSwitch(o.actionsTaken));
-      if (!stillNeeded) {
+
+      // Lift the global kill switch, unless another live incident needs it.
+      if (
+        flippedKillSwitch(existing.actionsTaken) &&
+        !others.some((o) => flippedKillSwitch(o.actionsTaken))
+      ) {
         await setKillSwitch(c.env, false);
         killSwitchLifted = true;
+      }
+
+      // Restore AI for the project circuit this incident broke (e.g. a Jules
+      // incident that flipped project:X to a $0 budget) — the operator's override
+      // — unless another live incident broke the same scope.
+      if (
+        flippedCircuit(existing.actionsTaken) &&
+        existing.scope &&
+        !others.some((o) => o.scope === existing.scope && flippedCircuit(o.actionsTaken))
+      ) {
+        // Restore the circuit that existed BEFORE this incident overwrote it to
+        // $0 (snapshotted in recommendation.details.priorCircuit) rather than
+        // deleting outright — otherwise a legit prior budget would be wiped.
+        const prior = (existing.recommendation as { details?: { priorCircuit?: unknown } } | null)
+          ?.details?.priorCircuit;
+        if (prior) {
+          await setCircuit(c.env, existing.scope, prior as Parameters<typeof setCircuit>[2]);
+        } else {
+          await deleteCircuit(c.env, existing.scope);
+        }
+        circuitLifted = true;
       }
     }
 
@@ -196,11 +243,11 @@ offenseRouter.openapi(
     await db.insert(billingEvents).values({
       id: crypto.randomUUID(),
       service: "offense",
-      actionTaken: `Resolved incident ${id} as ${action}${killSwitchLifted ? " (kill switch lifted)" : ""}.`,
+      actionTaken: `Resolved incident ${id} as ${action}${killSwitchLifted ? " (kill switch lifted)" : ""}${circuitLifted ? ` (circuit ${existing.scope} restored)` : ""}.`,
       timestamp: now,
     });
 
-    return c.json({ incident: updated, killSwitchLifted }, 200);
+    return c.json({ incident: updated, killSwitchLifted, circuitLifted }, 200);
   },
 );
 
@@ -390,5 +437,158 @@ offenseRouter.openapi(
           : rows;
 
     return c.json({ targets: filtered }, 200);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /dispatch/{targetId}  (P5 — hand a flagged target to Jules)
+// ---------------------------------------------------------------------------
+
+offenseRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/dispatch/{targetId}",
+    operationId: "offenseDispatchJules",
+    tags: ["Guardian Offense"],
+    summary: "Dispatch a Jules spend-audit session for a flagged scan target",
+    description:
+      "Operator-triggered (guardianAuth). Looks up the scan_targets row, resolves its GitHub owner/repo, mints a one-time nonce + pending jules_dispatches row, and creates a Jules session (AUTO_CREATE_PR) carrying a self-contained audit brief. The brief embeds the nonce (the sole credential for the /findings callback) and instructs Jules to comment out spend violations and open a PR. Returns the dispatch id + Jules session id. 400 when the target has no resolvable owner/repo or the Jules API call fails (the dispatch is marked failed). NO core-guardian-side AI.",
+    request: {
+      params: z.object({ targetId: z.string() }),
+    },
+    responses: {
+      200: {
+        description: "Jules session created; dispatch recorded",
+        content: {
+          "application/json": {
+            schema: z.object({
+              ok: z.literal(true),
+              dispatchId: z.string().nullable(),
+              julesSessionId: z.string().nullable(),
+            }),
+          },
+        },
+      },
+      400: {
+        description: "Target not dispatchable (no owner/repo) or the Jules API call failed",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+      404: {
+        description: "No scan target with that id",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => {
+    const { targetId } = c.req.valid("param");
+    const db = getDb(c.env);
+
+    const [target] = await db
+      .select()
+      .from(scanTargets)
+      .where(eq(scanTargets.id, targetId))
+      .limit(1);
+    if (!target) return c.json({ error: "No scan target with that id." }, 404);
+
+    const result = await dispatchToJules(c.env, target);
+    if (!result.ok) return c.json({ error: result.error ?? "Jules dispatch failed." }, 400);
+
+    return c.json(
+      { ok: true as const, dispatchId: result.dispatchId, julesSessionId: result.julesSessionId },
+      200,
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Public (nonce-authed) router — POST /findings  (P4 — Jules reports back)
+// ---------------------------------------------------------------------------
+
+/**
+ * The findings-intake router. Deliberately has **no** guardianAuth: the
+ * per-dispatch nonce is the credential. Mounted at the same base path as
+ * {@link offenseRouter}; its middleware stack is independent, so `/findings`
+ * never inherits the session/bearer guard. See the file header for the rationale.
+ */
+export const offensePublicRouter = new OpenAPIHono<{ Bindings: Env }>();
+
+/** The reporting contract Jules curls back (see docs → "Jules instruction contract"). */
+const findingsBodySchema = z.object({
+  repo: z.string(),
+  repo_type: z.string(),
+  worker_name: z.string().optional(),
+  cron_audit_findings: z.array(z.string()),
+  ai_audit_findings: z.array(z.string()),
+  pr_number: z.number().optional(),
+  actions_taken: z.array(z.string()),
+  circuit_breaker_recommendation: z.array(z.string()),
+  core_guardian_project_identification: z
+    .object({
+      projectName: z.string(),
+      projectType: z.string().optional(),
+    })
+    .passthrough(),
+  nonce: z.uuid(),
+});
+
+offensePublicRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/findings",
+    operationId: "offenseRecordFindings",
+    tags: ["Guardian Offense"],
+    summary: "Jules reports spend-audit findings (nonce-authenticated) and guardian auto-acts",
+    description:
+      "Nonce-authenticated: NOT behind guardianAuth. The presented `nonce` must match a PENDING `jules_dispatches` row of task_type `spend_audit`; no match → 403 (generic). On match the dispatch is spent (→ reported, one-time), the findings are persisted, an incident (source=jules) is filed, and — if Jules recommends disabling the identified project — that project's circuit breaker is flipped to a $0 budget. NO AI.",
+    request: {
+      body: {
+        content: { "application/json": { schema: findingsBodySchema } },
+      },
+    },
+    responses: {
+      200: {
+        description: "Findings recorded; auto-action (if any) applied",
+        content: {
+          "application/json": {
+            schema: z.object({
+              ok: z.boolean(),
+              incidentId: z.string().nullable(),
+              circuitFlipped: z.boolean(),
+            }),
+          },
+        },
+      },
+      403: {
+        description: "Nonce did not match a pending spend_audit dispatch (generic — does not leak)",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => {
+    const body = c.req.valid("json");
+    const db = getDb(c.env);
+
+    // Auth IS the lookup: only a pending spend_audit dispatch matches. A replayed
+    // (already reported) or unknown nonce finds nothing → generic 403, no leak.
+    const [dispatch] = await db
+      .select()
+      .from(julesDispatches)
+      .where(
+        and(
+          eq(julesDispatches.nonce, body.nonce),
+          eq(julesDispatches.status, "pending"),
+          eq(julesDispatches.taskType, "spend_audit"),
+        ),
+      )
+      .limit(1);
+    if (!dispatch) return c.json({ error: "Invalid or expired token." }, 403);
+
+    const { incidentId, circuitFlipped } = await recordFindings(c.env, dispatch, body);
+    // incidentId null → the nonce was already spent/expired (idempotent no-op).
+    return c.json({ ok: incidentId !== null, incidentId, circuitFlipped }, 200);
   },
 );

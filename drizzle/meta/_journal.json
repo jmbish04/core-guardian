@@ -169,6 +169,13 @@
       "when": 1786561498021,
       "tag": "0023_aromatic_falcon",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1786589360138,
+      "tag": "0024_calm_mongoose",
+      "breakpoints": true
     }
   ]
 }
