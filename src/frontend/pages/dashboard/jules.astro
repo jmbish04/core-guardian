@@ -1,0 +1,28 @@
+---
+/**
+ * `/dashboard/jules` — Jules coding-session monitor.
+ *
+ * Thin shell over the <JulesSessions> island (client:load). Data comes from
+ * `GET /api/guardian/projects/jules/sessions`.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { JulesSessions } from "@/components/projects";
+---
+
+<BaseLayout
+  title="Jules Sessions"
+  description="Live monitor of Jules coding sessions across every project — status, repo, and jump-out links to the session and its PR."
+>
+  <main class="container mx-auto flex max-w-7xl flex-col gap-8 px-4 py-12">
+    <header class="flex flex-col gap-2">
+      <h1 class="text-3xl font-semibold tracking-tight">Jules sessions</h1>
+      <p class="max-w-3xl text-base text-muted-foreground">
+        Every dispatched Jules coding session and its current state. Filter by
+        status and jump straight to the live session or the pull request it
+        opened.
+      </p>
+    </header>
+
+    <JulesSessions client:load />
+  </main>
+</BaseLayout>
