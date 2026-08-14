@@ -58,6 +58,7 @@ import {
 } from "@/backend/guardian/billable-usage";
 import { calculateOperations } from "@/backend/guardian/cost-calculator";
 import { refreshModelCatalog } from "@/backend/guardian/model-catalog";
+import { USAGE_PROBES } from "@/backend/guardian/probes";
 import {
   getRecommendations,
   syncRecommendationAlerts,
@@ -1012,6 +1013,20 @@ guardianRouter.openapi(
 // GET /api/guardian/allowances  — billing period + per-binding used/remaining
 // ---------------------------------------------------------------------------
 
+/**
+ * Probe id → display metadata from the in-repo probe registry. Lets the
+ * allowances route label a row "D1" (not the probe id "d1") and name the real
+ * `wrangler.jsonc` binding, with no live Cloudflare call. Placeholder bindings
+ * (`(account-wide)`, `(this Worker)`, …) are dropped so the caption only shows
+ * a binding the reader can actually find in their config.
+ */
+const PROBE_META: Record<string, { label: string; binding?: string }> = Object.fromEntries(
+  USAGE_PROBES.map((p) => [
+    p.id,
+    { label: p.label, binding: p.bindings.find((b) => !b.startsWith("(")) },
+  ]),
+);
+
 guardianRouter.openapi(
   createRoute({
     method: "get",
@@ -1034,6 +1049,8 @@ guardianRouter.openapi(
               allowances: z.array(
                 z.object({
                   service: z.string(),
+                  displayName: z.string(),
+                  binding: z.string().optional(),
                   unit: z.string(),
                   comparable: z.boolean(),
                   reset: z.enum(["monthly", "daily"]),
@@ -1100,8 +1117,11 @@ guardianRouter.openapi(
           : usedSoFar;
         const projectedFraction = a.comparable ? projected / included : null;
         const overageUnits = Math.max(0, projected - included);
+        const meta = PROBE_META[service];
         rows.push({
           service,
+          displayName: meta?.label ?? service,
+          binding: meta?.binding,
           unit: a.unit,
           comparable: a.comparable,
           reset,

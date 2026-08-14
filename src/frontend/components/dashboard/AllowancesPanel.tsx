@@ -1,11 +1,11 @@
 /**
  * @fileoverview Allowances panel — per-binding included-allowance quota meters.
  *
- * Reads /api/guardian/allowances and renders a UsageQuotaMeter per comparable
- * probe (projected % of the monthly/daily included allowance, used / included,
- * remaining), tone-graded so "heading to red / on fire" reads at a glance. Non-
- * comparable probes (unit mismatch) show raw usage with the reason, never a
- * fabricated percent.
+ * Reads /api/guardian/allowances and renders an AllowanceBar per comparable
+ * probe: a horizontal bullet bar with the included allowance as a reference line
+ * at 100%, current usage filling to it (tone-graded), overage overflowing past
+ * it in red, and a ghost marker at the projected run-rate. Non-comparable probes
+ * (unit mismatch) show raw usage with the reason, never a fabricated percent.
  *
  * @param service - restrict to one probe (used on the per-binding page); omit
  *   for the account-wide grid.
@@ -16,12 +16,14 @@
 import { Loader2Icon } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
-import { UsageQuotaMeter, toneForFraction } from "@/components/charts";
+import { AllowanceBar } from "@/components/charts";
 import { ApiError, apiGet } from "@/lib/api";
-import { formatCount, formatExact, humanSize } from "@/lib/format";
+import { formatUsage } from "@/lib/format";
 
 type Allowance = {
   service: string;
+  displayName: string;
+  binding?: string;
   unit: string;
   comparable: boolean;
   reset: "monthly" | "daily";
@@ -39,12 +41,7 @@ type Payload = {
   allowances: Allowance[];
 };
 
-const PANEL = "rounded-xl border border-border/60 bg-background/40 p-6";
-
-/** Bytes units get humanSize; everything else gets a compact count. */
-function fmt(unit: string, n: number): string {
-  return unit.includes("bytes") ? humanSize(n) : formatExact(Math.round(n));
-}
+const PANEL = "rounded-xl bg-card p-6 ring-1 ring-border/40";
 
 export function AllowancesPanel({ service }: { service?: string }) {
   const [data, setData] = useState<Payload | null>(null);
@@ -108,38 +105,33 @@ export function AllowancesPanel({ service }: { service?: string }) {
       )}
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        {comparable.map((a) => {
-          const pct = Math.round((a.projectedFraction ?? 0) * 100);
-          return (
-            <UsageQuotaMeter
-              key={a.service}
-              meterLabel={a.service}
-              meterCaption={`${a.unit} · projected to period end`}
-              percent={pct}
-              used={fmt(a.unit, a.usedSoFar)}
-              limit={fmt(a.unit, a.included)}
-              unitLabel="projected"
-              tone={toneForFraction(a.projectedFraction ?? 0)}
-              facts={[
-                { label: "Projected", value: fmt(a.unit, a.projected) },
-                a.overageCostUsd !== null && a.overageCostUsd > 0
-                  ? { label: data.plan === "paid" ? "Est. overage" : "Over cap by", value: `$${a.overageCostUsd.toFixed(2)}` }
-                  : { label: "Remaining", value: a.remaining !== null ? fmt(a.unit, a.remaining) : "—" },
-                { label: "Of allowance", value: `${pct}%` },
-              ]}
-            />
-          );
-        })}
+        {comparable.map((a) => (
+          <AllowanceBar
+            key={`${a.service}-${a.binding ?? a.unit}`}
+            label={a.displayName}
+            binding={a.binding}
+            unit={a.unit}
+            included={a.included}
+            usedSoFar={a.usedSoFar}
+            projected={a.projected}
+            overageCostUsd={a.overageCostUsd}
+            remaining={a.remaining}
+            plan={data.plan}
+          />
+        ))}
       </div>
 
       {raw.length > 0 && (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
           {raw.map((a) => (
-            <div key={a.service} className={PANEL}>
+            <div key={`${a.service}-${a.binding ?? a.unit}`} className={PANEL}>
               <div className="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
-                {a.service}
+                {a.displayName}
+                {a.binding && <span className="ml-1 normal-case tracking-normal">· {a.binding}</span>}
               </div>
-              <div className="mt-1 text-2xl font-semibold tabular-nums">{formatCount(a.usedSoFar)}</div>
+              <div className="mt-1 text-2xl font-semibold tabular-nums">
+                {formatUsage(a.unit, a.usedSoFar)}
+              </div>
               <div className="mt-0.5 text-xs text-muted-foreground">{a.unit} · not comparable</div>
               {a.note && <p className="mt-2 text-xs text-muted-foreground/80">{a.note}</p>}
             </div>
