@@ -26,11 +26,25 @@ import { billingEvents } from "@/backend/db/schema";
 import {
   deleteCircuit,
   getCircuit,
+  getKillSwitch,
   setCircuit,
 } from "@/backend/guardian/ai-router/circuits";
 import type { Circuit } from "@/backend/guardian/ai-router/types";
+import { getDailyCostReport } from "@/backend/guardian/daily-cost";
 import { getInsights } from "@/backend/guardian/offense/insights";
+import {
+  DEFAULT_INFRA_SPIKE_USD,
+  getMtdTotal,
+  INFRA_SPIKE_KEY,
+  monthPrefix,
+  nonAiServiceMtds,
+  NUCLEAR_BUDGET_KEY,
+  overBudget,
+  overThreshold,
+  readConfigNumber,
+} from "@/backend/guardian/offense/nuclear";
 
+import { upsertConfig } from "./config";
 import { guardianAuth } from "./guardian";
 
 export const billingInsightsRouter = new OpenAPIHono<{ Bindings: Env }>();
@@ -193,6 +207,148 @@ billingInsightsRouter.openapi(
 
     return c.json(
       { project, action, scope, circuit: await getCircuit(c.env, scope), eventId, timestamp },
+      200,
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/guardian/billing/budget-status
+// ---------------------------------------------------------------------------
+
+const budgetStatusSchema = z.object({
+  mtdUsd: z.number(),
+  mtdSource: z.enum(["billed", "estimated"]),
+  nuclearBudgetUsd: z.number().nullable(),
+  overBudget: z.boolean(),
+  killSwitchEngaged: z.boolean(),
+  infraThresholdUsd: z.number(),
+  nonAiServices: z.array(
+    z.object({ service: z.string(), mtdUsd: z.number(), overThreshold: z.boolean() }),
+  ),
+});
+
+billingInsightsRouter.openapi(
+  createRoute({
+    method: "get",
+    path: "/budget-status",
+    operationId: "guardianBillingBudgetStatus",
+    summary: "Total-CF-budget meter + non-AI infra breakdown (the nuclear-breaker state)",
+    description:
+      "The P9a dashboard header. `mtdUsd` is month-to-date TOTAL Cloudflare spend — preferring Cloudflare's actual billed figures and falling back to the reconstructed estimate (`mtdSource`). `nuclearBudgetUsd` is the configured total-CF budget (null = unset, nuke disabled); `overBudget` compares the two; `killSwitchEngaged` reflects whether all AI is currently blocked. `nonAiServices` breaks non-AI spend out by service with `overThreshold` flagging an infra spike. Zero AI in the analysis.",
+    responses: {
+      200: {
+        description: "Total-budget meter + infra breakdown",
+        content: { "application/json": { schema: budgetStatusSchema } },
+      },
+      401: unauthorized,
+    },
+  }),
+  async (c) => {
+    const [{ mtdUsd, mtdSource }, nuclearBudgetUsd, infraThresholdRaw, killSwitchEngaged, report] =
+      await Promise.all([
+        getMtdTotal(c.env),
+        readConfigNumber(c.env, NUCLEAR_BUDGET_KEY, null),
+        readConfigNumber(c.env, INFRA_SPIKE_KEY, DEFAULT_INFRA_SPIKE_USD),
+        getKillSwitch(c.env),
+        getDailyCostReport(c.env, 35),
+      ]);
+    const infraThresholdUsd = infraThresholdRaw ?? DEFAULT_INFRA_SPIKE_USD;
+    const nonAiServices = nonAiServiceMtds(report, monthPrefix()).map((s) => ({
+      service: s.service,
+      mtdUsd: s.mtdUsd,
+      overThreshold: overThreshold(s.mtdUsd, infraThresholdUsd),
+    }));
+
+    return c.json(
+      {
+        mtdUsd,
+        mtdSource,
+        nuclearBudgetUsd,
+        overBudget: nuclearBudgetUsd != null && nuclearBudgetUsd > 0 && overBudget(mtdUsd, nuclearBudgetUsd),
+        killSwitchEngaged,
+        infraThresholdUsd,
+        nonAiServices,
+      },
+      200,
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/guardian/billing/budget-config
+// ---------------------------------------------------------------------------
+
+billingInsightsRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/budget-config",
+    operationId: "guardianBillingBudgetConfig",
+    summary: "Set the nuclear total-CF budget and/or the non-AI infra-spike threshold",
+    description:
+      "Upserts the P9a guard config into `global_config` (`nuclear_budget_usd`, `infra_spike_threshold_usd`). Both fields are optional — send only what you want to change. Every change appends a `billing_events` audit row. Returns the effective config after the write.",
+    request: {
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              nuclearBudgetUsd: z.number().nonnegative().optional(),
+              infraThresholdUsd: z.number().nonnegative().optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "Config upserted + audited",
+        content: {
+          "application/json": {
+            schema: z.object({
+              nuclearBudgetUsd: z.number().nullable(),
+              infraThresholdUsd: z.number(),
+              eventId: z.string(),
+              timestamp: z.number(),
+            }),
+          },
+        },
+      },
+      401: unauthorized,
+    },
+  }),
+  async (c) => {
+    const { nuclearBudgetUsd, infraThresholdUsd } = c.req.valid("json");
+
+    const changes: string[] = [];
+    if (nuclearBudgetUsd !== undefined) {
+      await upsertConfig(c.env, NUCLEAR_BUDGET_KEY, nuclearBudgetUsd);
+      changes.push(`nuclear_budget_usd → $${nuclearBudgetUsd}`);
+    }
+    if (infraThresholdUsd !== undefined) {
+      await upsertConfig(c.env, INFRA_SPIKE_KEY, infraThresholdUsd);
+      changes.push(`infra_spike_threshold_usd → $${infraThresholdUsd}`);
+    }
+
+    const eventId = crypto.randomUUID();
+    const timestamp = Date.now();
+    await getDb(c.env)
+      .insert(billingEvents)
+      .values({
+        id: eventId,
+        service: "offense",
+        actionTaken: `budget-config: ${changes.length ? changes.join(", ") : "no change"}`,
+        timestamp,
+      });
+
+    return c.json(
+      {
+        nuclearBudgetUsd: await readConfigNumber(c.env, NUCLEAR_BUDGET_KEY, null),
+        infraThresholdUsd:
+          (await readConfigNumber(c.env, INFRA_SPIKE_KEY, DEFAULT_INFRA_SPIKE_USD)) ??
+          DEFAULT_INFRA_SPIKE_USD,
+        eventId,
+        timestamp,
+      },
       200,
     );
   },

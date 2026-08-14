@@ -67,6 +67,7 @@ import { scrapeAllModelPricing } from "./backend/guardian/ai-model-pricing";
 import { evaluateUsage } from "./backend/guardian/collect";
 import { backfillDailyCost, snapshotDailyCost } from "./backend/guardian/daily-cost";
 import { checkSustainedSpend } from "./backend/guardian/offense/auto-break";
+import { checkInfraSpikes, checkNuclearBudget } from "./backend/guardian/offense/nuclear";
 import { scrapeAllPricing } from "./backend/guardian/pricing-scrape";
 
 // Re-export Durable Object classes (Pattern B: the @astrojs/cloudflare adapter
@@ -166,6 +167,23 @@ async function runGuardianEvaluation(env: Env) {
   } catch (err) {
     console.error(
       JSON.stringify({ level: "ERROR", source: "guardian.offense", error: String(err) }),
+    );
+  }
+  // Daily (P9a): nuclear total-CF-budget breaker + non-AI infra-spike guard.
+  // Same UTC-08 gate as the sustained-spend check — both are idempotent (dedupe
+  // on an active incident), so a redundant run is a no-op.
+  try {
+    await maybeCheckNuclearBudget(env);
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.offense.nuclear", error: String(err) }),
+    );
+  }
+  try {
+    await maybeCheckInfraSpikes(env);
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.offense.infraSpike", error: String(err) }),
     );
   }
 }
@@ -272,6 +290,29 @@ async function maybeCheckSustainedSpend(env: Env) {
   const result = await checkSustainedSpend(env);
   if (result.incidentFiled) {
     console.warn(JSON.stringify({ level: "WARN", source: "guardian.offense", ...result }));
+  }
+}
+
+/**
+ * Daily gate (UTC-08) for the P9a nuclear total-CF-budget breaker. No-op until
+ * `nuclear_budget_usd` is configured; idempotent via active-incident dedupe.
+ */
+async function maybeCheckNuclearBudget(env: Env) {
+  if (new Date().getUTCHours() !== 8) return;
+  const result = await checkNuclearBudget(env);
+  if (result.incidentFiled) {
+    console.warn(JSON.stringify({ level: "WARN", source: "guardian.offense.nuclear", ...result }));
+  }
+}
+
+/** Daily gate (UTC-08) for the P9a non-AI infra-spike guard (recommend-only). */
+async function maybeCheckInfraSpikes(env: Env) {
+  if (new Date().getUTCHours() !== 8) return;
+  const result = await checkInfraSpikes(env);
+  if (result.incidentsFiled > 0) {
+    console.warn(
+      JSON.stringify({ level: "WARN", source: "guardian.offense.infraSpike", ...result }),
+    );
   }
 }
 
