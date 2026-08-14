@@ -61,6 +61,7 @@ import {
   getKillSwitch, listCircuits, setCircuit, setKillSwitch,
 } from "@/backend/guardian/ai-router/circuits";
 import { collectUsage } from "@/backend/guardian/collect";
+import { buildInstructions } from "@/backend/guardian/integration";
 import { getWorkersPlan, setWorkersPlan } from "@/backend/guardian/plan";
 import { listUsageRegistrations, registerDirectUsage } from "@/backend/guardian/register-usage";
 import {
@@ -811,6 +812,22 @@ const TOOLS: McpTool[] = [
         .limit(args?.limit ?? 50);
       return { requests: rows };
     },
+  },
+  {
+    name: "guardian_integration_instructions",
+    title: "Guardian integration instructions",
+    description:
+      "How to integrate a project with core-guardian: the command to vendor the client for a language, the GUARDIAN var stub, the two secret bindings, and a usage snippet. Non-destructive (read-only docs).",
+    inputSchema: schema({
+      lang: { type: "string", enum: ["ts", "python", "gas"], description: "Client language (default ts)." },
+      mode: { type: "string", enum: ["curl", "submodule", "degit"], description: "Pull mechanism (default curl)." },
+    }),
+    handler: async (env, args) =>
+      buildInstructions({
+        baseUrl: env.WORKER_BASE_URL ?? "https://core-guardian.hacolby.workers.dev",
+        lang: args.lang ?? "ts",
+        mode: args.mode ?? "curl",
+      }),
   },
 ];
 
