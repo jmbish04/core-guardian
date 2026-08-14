@@ -10,7 +10,7 @@
 "use client";
 
 import { LockIcon, PauseIcon, PlayIcon, ShieldAlertIcon, TrashIcon, WalletIcon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   AlertDialog,
@@ -86,6 +86,10 @@ export function CircuitPanel({
   const [busy, setBusy] = useState(false);
   const [budgetOpen, setBudgetOpen] = useState(false);
   const [budget, setBudget] = useState(circuit?.budgetUsd != null ? String(circuit.budgetUsd) : "");
+  // Keep the input in sync when the circuit reloads from an external change.
+  useEffect(() => {
+    setBudget(circuit?.budgetUsd != null ? String(circuit.budgetUsd) : "");
+  }, [circuit?.budgetUsd]);
 
   const enabled = circuit?.enabled ?? false;
 
@@ -228,6 +232,12 @@ function ConfirmDelete({
   const [typed, setTyped] = useState("");
   const phrase = `delete ${name}`;
   const matches = typed === phrase;
+  // Reset whenever the dialog closes — the confirm button closes it programmatically
+  // (bypassing onOpenChange), so a failed delete must not leave the input pre-filled
+  // and the destructive button instantly re-enabled on reopen.
+  useEffect(() => {
+    if (!open) setTyped("");
+  }, [open]);
   return (
     <AlertDialog
       open={open}
