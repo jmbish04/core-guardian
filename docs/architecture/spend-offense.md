@@ -167,6 +167,76 @@ from a false positive:
 Both thresholds live in `global-config` (env-overridable). The incident's resolve flow lets the
 user flip the kill switch or lift it.
 
+## P8 — Actionable Insights (the accumulation + one-click-action layer)
+
+**Why:** the v1 dashboard showed per-day model cost (`gpt-oss-120b $22`) with no date, no
+accumulation, and no "since last visit" — so a recurring $22/day drip read as a static bug, not
+"5 days running = $110." The owner found the $600 on Cloudflare's dashboard, not ours. Fix: make the
+recurrence + accumulation the loudest thing, attribute it to a project, and put the fix one click away.
+Zero AI in the analysis.
+
+### Insight layer (all from data we already have — daily_cost, workersAiModels, ai_router_requests)
+- **Period accumulation**: headline = MTD running total (not a per-day figure).
+- **Since-last-visit delta**: a visit log (KV `SESSIONS`, key `dashboard:last-visit` → `{at, mtdUsd}`).
+  On load, record the visit and show "up $X since your last visit N days ago" under the headline.
+- **Recurrence/anomaly detection** (`GET /api/guardian/offense/insights`, deterministic):
+  per model + per project, walk the daily series → consecutive-days-in-a-row, accumulated total over
+  the streak, cadence class (hourly/daily/weekly from call timestamps), call count, neurons/day.
+  Emit ranked anomalies: "model X · N days running · $Y total · daily · project Z · K calls".
+  Attribution + call counts + (where stored) prompt come from `ai_router_requests` / PROMPTS KV.
+
+### Action layer (surface the fix next to the problem — "end the bleeding")
+`POST /api/guardian/offense/controls/*`, guardianAuth, each wrapping an existing capability:
+- **project-circuit**: set/lower budget · lock-for-month (`setCircuit budget 0 window month`) ·
+  freeze-permanent (sticky enabled, budget 0) · unfreeze (deleteCircuit / restore). AI bleed → stopped.
+- **kill-cron**: delete a worker's cron trigger via `cfApi DELETE /workers/scripts/{name}/schedules`.
+- **archive-r2**: hand off to guardian's existing R2 archive/action-item flow.
+- **code-fix**: Jules dispatch (P5) for a real change, or a hardcoded OctoKit surgical edit
+  (comment out a cron in wrangler.jsonc / disable a DO) → PR → deploy. (later)
+
+**No migration** — visit log in KV, everything else reads existing tables / wraps existing helpers.
+Build order: insight layer first (the failure), then project-circuit controls, then cron/R2/code.
+
+## P9 — Budgets, Projects & the Nuclear Breaker (total-spend guard)
+
+**Reframe:** this is a **total-Cloudflare-spend** guard, not an AI-only one. Owner expects ~$10/mo
+infra (Workers Paid $5 + Images $5); AI (Workers AI) should be the only meaningful line. The PRIOR
+$600 was **Durable Objects** (alarm loop), not AI. So: any non-AI infra spike is an EMERGENCY —
+flagged loud + capped immediately. Reuses AI Router circuits (project/model/global budgets + kill
+switch), the existing daily_cost all-service tracking, and the existing AI Gateway billing read.
+
+### Build order — disaster protection FIRST
+1. **Nuclear breaker (total CF budget).** Config a total monthly CF spend budget (KV/global-config).
+   A check (cron + on-demand) compares MTD `daily_cost` total to it; at/over budget → `setKillSwitch(true)`
+   + a nuclear incident (source `budget_cap`). Because core-guardian gates all AI, "total budget
+   reached" = all AI blocked through our APIs, regardless of per-project circuits. Even after the
+   nuke, the dashboard still shows the per-project breakdown so the owner sees WHO overspent.
+2. **Non-AI infra spike guard.** Owner expects ~$0 non-AI. Any non-AI `daily_cost` service (DO / D1 /
+   R2 / etc.) over a LOW threshold → immediate loud incident (source `infra_spike`) + the actions
+   layer surfaces the fix (kill-cron via CF API, archive-R2 via existing tools, code-fix via
+   Jules/OctoKit). core-guardian can't gate non-AI directly, so here it flags + one-click-executes
+   the specific remediation.
+3. **Projects table** (`projects`) — the metadata layer over the circuit. A "project" = any AI caller
+   (worker / outside app / python / gas / local), keyed by the AI-router `project` field.
+   Columns: `name` (pk, the project id), `note`, `criticality` enum (hobby|normal|important|critical),
+   `budget_usd`, `budget_window`, `budget_ttl_days`, `budget_floor_usd` (budget after TTL),
+   `budget_set_at`. The circuit holds enforcement; this holds intent + TTL. Criticality drives
+   priority (critical projects survive tightening longest).
+4. **Budget TTL / decay.** A daily cron re-evaluates each project: if `now - budget_set_at >
+   budget_ttl_days`, decay `budget_usd` → `budget_floor_usd` (often 0) and re-`setCircuit`. So a
+   $100/30d allocation auto-drops to $20 (or 0) — no bleeding on a forgotten demo.
+5. **Per-model budgets** across all projects — already exist as `model:X/Y` circuits; surface + manage them.
+6. **AI Gateway budget sync (bidirectional).** Read the gateway `spendingLimit` + per-provider spend
+   (exists). Set it FROM core-guardian if the CF API supports create/update (TO VERIFY — today's route
+   only reads/removes). Regular sync so a change made in the AI Gateway UI is reflected here, and
+   core-guardian's controls effectuate into the gateway.
+
+### Dashboard (below the top stats)
+A "Budgets by project" section: each project — spend-this-period vs its budget (progress bar),
+criticality badge, TTL/decay countdown, note, and inline controls (set budget / lock / freeze /
+adjust TTL). A total-CF-budget meter at the very top with the nuclear-breaker state. Non-AI infra
+spikes render as loud red flags above everything (emergency framing).
+
 ## New secrets (wrangler.jsonc Secrets Store)
 
 `JULES_API_KEY` (Jules dispatch), `GH_TOKEN` (GitHub scan), `LOCAL_AUDIT_ACCESS_TOKEN` +

@@ -114,3 +114,130 @@ no mock data.
 - **Auth**: signed session cookie only (no `users`/`sessions` table). Auth gates
   `/api/admin/*`; the feature APIs are intentionally open so the template runs
   out of the box. Tighten before production.
+
+## Spend Offense
+
+**Purpose**: catch runaway AI / D1 / Durable-Object / Vectorize / Browser-Rendering
+spend *before* a huge bill lands. "Defense" (the local watchdog + allowances panel)
+reacts to spikes after they bill; **offense** hunts the *players* — cron/agent
+workers and GitHub Actions that quietly rack up spend — and files incidents.
+**Hard rule: NO AI runs in this analysis.** Every classifier is a cold CF/GitHub
+API query + regex + deterministic scoring in the Worker. The only AI in the loop is
+**Jules** (external), which core-guardian *dispatches to* but never runs itself. It
+reuses the AI Router's circuit breakers + kill switch — it does NOT build a parallel
+breaker system. Full spec: `docs/architecture/spend-offense.md`.
+
+**Phase map** (build order; auto-break first so the fastest guard ships first):
+- **P1** — `circuit_break_events` table + `auto-break.ts` (2-day sustained-spend →
+  incident, recommend-only; hard-ceiling → kill switch) + `GET /incidents` +
+  `POST /incidents/{id}/resolve` + local-watchdog poll.
+- **P2** — `scan_targets` table + `scan-workers.ts` (cron/bindings/frequency → risk),
+  `guardian_registered` cross-check, `POST /scan`, `GET /targets`.
+- **P3** — `scan-github.ts` (regex over `.github/workflows/*` + wrangler) → targets.
+- **P4** — `jules_dispatches` table + `findings-intake.ts` (nonce-authed) + auto-act.
+- **P5** — `jules-dispatch.ts` (`JULES_API_KEY`) sends uncertain targets to Jules.
+- **P6 (this branch)** — the dashboard surfaces below.
+- **Branch status**: `main` ships **P1–P3**; **P4–P5 land in PR #22** (`jules_dispatches`
+  table, `POST /dispatch/{targetId}`, `POST /findings`, and the resolve response's
+  `circuitLifted` field). Frontend must degrade gracefully where P4–P5 aren't merged.
+
+**D1 tables** (`db/schemas/governance/offense/`):
+- `circuit_break_events` — one incident per row: `id, projectIdentification(json),
+  scope, reason, source(scanner|jules|auto_spend), status(active|read|erroneous),
+  julesPr, actionsTaken(json {kind,detail,at}[]), recommendation(json {summary,details}),
+  createdAt(ms), resolvedAt(ms)`. Active rows are live breakers until resolved.
+- `scan_targets` — one player per row, upserted by `(kind,name)`: `id, kind(worker|
+  github_action|local|gas), name, workerName, cronSchedules(json string[]),
+  riskSignals(json {cron,browser,scraping,d1,vectorize,durableObject,ai}),
+  riskScore(0–100), guardianRegistered(bool), bypass(json {isBypass,why}),
+  firstSeen, lastScan`.
+- `jules_dispatches` (PR #22) — capability-token auth: `id, nonce(uuid unique),
+  julesSessionId, targetId, taskType('spend_audit'), status(pending|reported|failed|
+  expired), dispatchedAt, reportedAt, findings(json)`.
+
+**API surface** (`api/routes/offense.ts`, mounted `/api/guardian/offense`, all
+`guardianAuth` except findings which is nonce-authed):
+- `GET  /incidents?status=active|read|erroneous|all` → `{incidents[]}` newest first.
+- `POST /incidents/{id}/resolve` body `{action:"read"|"erroneous"}` →
+  `{incident, killSwitchLifted, circuitLifted?}`. `read` acknowledges (breaker stays
+  live); `erroneous` is a false-positive that lifts any breaker this incident engaged.
+- `POST /scan` → enumerate CF workers, score, upsert `scan_targets`; returns a summary.
+- `POST /scan/github` → same for GitHub Actions repos (AI-using repos only).
+- `GET  /targets?bypass=true|false|all&minRisk=N` → `{targets[]}` newest scan first.
+- `POST /dispatch/{targetId}` (PR #22) → send an uncertain target to Jules.
+- `POST /findings` (PR #22, **nonce** auth) → Jules reports; auto-acts.
+
+**Frontend panels** (`components/dashboard/`, mounted on `pages/dashboard/guardian.astro`):
+- `IncidentsPanel.tsx` — the alarm. Filter `active|read|erroneous|all`; active
+  incidents render loud (destructive ring/tint). Per-incident source badge,
+  reason, date-stamp, scope, `actionsTaken` badges, recommendation summary, Jules
+  PR link. "Mark read" (acknowledge) and "Mark erroneous / restore" (AlertDialog-
+  gated, lifts the breaker). Surfaces `killSwitchLifted`/`circuitLifted` inline.
+- `RiskTargetsPanel.tsx` — the "who runs up the bill" table. Sortable (risk desc
+  default) / filterable (bypass-only Switch, min-risk input) `scan_targets` table:
+  risk bar, signal badges (AI/cron/D1/DurableObject/Vectorize/browser), loud BYPASS
+  badge, cron schedules, guardian-registered, last scan. Per-row "Send to Jules
+  audit" → `POST /dispatch/{id}`, degrades on 404 until PR #22 merges.
+- Both fetch real APIs via `lib/api.ts` (`apiGet`/`apiSend`), never mock data, and
+  route errors through the shared `dashboard/shared.tsx#InlineError` (which
+  `console.error`s for the global ErrorLogger). Monolith dark, `ring-1 ring-border/40`.
+
+**P8 — Actionable Insights** (the accumulation + one-click-action layer; the fix
+for the $600 miss where a recurring `$22/day` drip read as a static bug). ZERO AI —
+pure queries + arithmetic in `guardian/offense/insights.ts`.
+- **API** (`api/routes/billing-insights.ts`, mounted `/api/guardian/billing`, `guardianAuth`):
+  - `GET  /insights` → `{ mtdUsd, projectedMonthEnd, sinceLastVisit:{deltaUsd,daysSince,at},
+    anomalies[] }`. `mtdUsd` is the running month-to-date total; `projectedMonthEnd` its
+    straight-line projection; `sinceLastVisit` diffs this visit's MTD against the prior
+    visit **and records this one in KV `SESSIONS` (`dashboard:last-visit`) on every read** —
+    so call it **once per page load** (a second reader zeroes the delta). Each anomaly:
+    `{source:"router"|"workers-ai-neurons", model, provider, project, streakDays,
+    streakTotalUsd, perDayUsd, cadence, callCount, neuronsPerDay, lastDay}`, ranked by
+    `streakTotalUsd` desc.
+  - `POST /controls/project-circuit` body `{project, action:"set-budget"|"lock-month"|
+    "freeze"|"unfreeze", budgetUsd?}` → wraps the AI Router's `project:<name>` circuit
+    (no parallel breaker), audits to `billing_events`, returns `{project, action, scope,
+    circuit, eventId, timestamp}`.
+- **Frontend** (`components/dashboard/`, first elements on `guardian.astro`, order
+  headline → anomalies → incidents → spend overview → risk targets):
+  - `SpendHeadline.tsx` — the first thing seen. Owns the single `/insights` fetch. Two
+    stat cards (2-up on mobile): big MTD total with the since-last-visit line underneath
+    in the same card (red up-arrow if spend rose, muted if first visit / unchanged), and a
+    projected-month-end card that goes destructive-ring red when the projection towers over
+    the run-rate (`projected − mtd > max($5, 50% of mtd)`). Renders `<AnomaliesPanel>`
+    below from the same payload; passes `load` as its `onActed` refetch.
+  - `AnomaliesPanel.tsx` — the star. One anomaly = one sentence: `` `{model}` — **{n} days
+    running** · **${total}** · {cadence} · project {p}/no attribution · ${perDay}/day ·
+    {neurons}/day · {calls} calls``. A row goes LOUD (destructive ring + tint + warning
+    icon) when `streakTotalUsd ≥ $50`. Project-scoped rows carry inline one-click controls →
+    `POST /controls/project-circuit`: **Freeze** (AlertDialog), **Lock month** (AlertDialog),
+    **Set budget** (Dialog + one number Input), **Unfreeze** (direct). Success shows an inline
+    note + refetches; project-less rows explain "route it through core-guardian to enable
+    controls". Empty state is positive ("nothing accumulating").
+  - Stock shadcn only (`components/ui/*`), Monolith dark, `ring-1 ring-border/40`, `usd()`
+    from `lib/format.ts`, errors via `dashboard/shared.tsx#InlineError`. No mock data.
+
+**How to add a new one-click control**: add the action to the `action` enum + `circuitFor`
+switch in `api/routes/billing-insights.ts` (return the `Circuit` it should write, or `null`
+to delete), then add a button in `AnomaliesPanel.tsx#AnomalyCard`: an `<AlertDialog>`-gated
+`<ConfirmAction>` for anything destructive (or a plain `<Button>` for restorative ones),
+wiring `onRun(project, "<action>", budgetUsd?)`, and a line in `successLine()`. Nothing else —
+the audit row and circuit write are handled server-side.
+
+**How to extend**:
+- *Add a new scanner* (e.g. a Cloud Run / Vercel enumerator): write
+  `guardian/offense/scan-<x>.ts` returning `NewScanTargetRow[]`, reuse
+  `classify.ts` for signals + score, upsert into `scan_targets` with a new `kind`,
+  and add a `POST /scan/<x>` route. Add the `kind` to `KIND_LABEL` in
+  `RiskTargetsPanel.tsx`.
+- *Add a new incident source*: extend the `source` enum on `circuit_break_events`
+  (additive migration), write the row from your detector, and add its label to
+  `SOURCE_LABEL` in `IncidentsPanel.tsx`.
+- *Add a new risk signal* (e.g. Queues, R2): add the boolean to `RiskSignals` in
+  `scan-targets.ts`, detect it in `classify.ts` (regex/binding check) and weight it
+  in the score, mirror the field in `offense.ts#riskSignalsSchema`, and add a
+  `[key,label]` entry to `SIGNAL_LABELS` in `RiskTargetsPanel.tsx`.
+- *Add a new circuit-breaker recommendation*: emit a `recommendation.summary` (+
+  optional `details`) from the writer; it renders automatically. If it takes an
+  automated action, push a `{kind,detail,at}` onto `actionsTaken` and map the new
+  `kind` in `IncidentsPanel.tsx#actionLabel`.

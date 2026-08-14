@@ -29,6 +29,7 @@ import { aiModelsRouter } from "./routes/ai-models";
 import { aiProxyRouter } from "./routes/ai-proxy";
 import { aiRouterRouter } from "./routes/ai-router";
 import { authRouter } from "./routes/auth";
+import { billingInsightsRouter } from "./routes/billing-insights";
 import { clientErrorRouter } from "./routes/client-error";
 import { alertingRouter, cloudflareWebhookRouter } from "./routes/cloudflare-webhook";
 import { adminRouter, configRouter } from "./routes/config";
@@ -157,6 +158,7 @@ app.route("/api/guardian", guardianRouter);
 // wildcard in the flattened trie. Do not reorder. See routes/offense.ts header.
 app.route("/api/guardian/offense", offensePublicRouter);
 app.route("/api/guardian/offense", offenseRouter);
+app.route("/api/guardian/billing", billingInsightsRouter);
 app.route("/api/r2", r2Router);
 app.route("/api/vectorize", vectorizeRouter);
 app.route("/api/storage", storageRouter);

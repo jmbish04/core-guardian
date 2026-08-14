@@ -108,6 +108,20 @@ export function formatRatio(value: number, limit: number): string | null {
   return `${Math.round(ratio * 100)}%`;
 }
 
+/**
+ * USD money for display. `usd(1234.5)` → `$1,234.50`; `usd(1234.5, false)` →
+ * `$1,235` (no cents, for a big scannable headline). Reserve the cents form for
+ * figures the reader acts on (an anomaly's accumulated total, a budget input).
+ */
+export function usd(n: number, cents = true): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: cents ? 2 : 0,
+    maximumFractionDigits: cents ? 2 : 0,
+  }).format(n);
+}
+
 /** Human-readable byte size, e.g. "0 B", "1.4 KB", "3.2 MB". */
 export function humanSize(bytes: number | null | undefined): string {
   if (bytes === null || bytes === undefined || Number.isNaN(bytes)) return "";
