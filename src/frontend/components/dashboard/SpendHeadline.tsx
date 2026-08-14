@@ -29,6 +29,8 @@ import { InlineError } from "./shared";
 
 interface Insights {
   mtdUsd: number;
+  mtdSource: "actual" | "estimate";
+  estimateUsd: number;
   projectedMonthEnd: number;
   sinceLastVisit: { deltaUsd: number | null; daysSince: number | null; at: number | null };
   anomalies: Anomaly[];
@@ -78,7 +80,7 @@ export function SpendHeadline() {
   if (error && !data) return <InlineError message={error} onRetry={load} />;
   if (!data) return null;
 
-  const { mtdUsd, projectedMonthEnd, sinceLastVisit, anomalies } = data;
+  const { mtdUsd, mtdSource, estimateUsd, projectedMonthEnd, sinceLastVisit, anomalies } = data;
   const delta = sinceLastVisit.deltaUsd;
   const up = delta !== null && delta > 0;
   const down = delta !== null && delta < 0;
@@ -97,6 +99,17 @@ export function SpendHeadline() {
             </span>
             <span className="text-4xl font-semibold tabular-nums tracking-tight sm:text-5xl">
               {usd(mtdUsd, false)}
+            </span>
+            <span
+              className={
+                mtdSource === "actual"
+                  ? "font-mono text-[10px] uppercase tracking-wider text-emerald-500"
+                  : "font-mono text-[10px] uppercase tracking-wider text-amber-500"
+              }
+            >
+              {mtdSource === "actual"
+                ? `actual billed · est ${usd(estimateUsd, false)}`
+                : "estimate — actual billing lags ~24h (or not synced yet)"}
             </span>
             {delta === null ? (
               <span className="text-xs text-muted-foreground">

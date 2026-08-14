@@ -237,6 +237,43 @@ criticality badge, TTL/decay countdown, note, and inline controls (set budget / 
 adjust TTL). A total-CF-budget meter at the very top with the nuclear-breaker state. Non-AI infra
 spikes render as loud red flags above everything (emergency framing).
 
+## P10 — Dashboard information architecture (overview-of-overviews)
+
+Owner is an ex-Google dashboard builder. Principle: **a dashboard synthesizes data → information;
+the landing page is an overview OF overviews.** Rules:
+- **No scrolling for important insights** — if it needs a scroll it may not be seen. Responsive
+  (mobile + desktop). Pretty AND useful.
+- **Dedicated page per billable**: AI, D1, R2, Durable Objects, KV. Each is macro-in-isolation
+  (one page's worth of the key insights for that product, no scroll).
+- **Landing page** = a summary across all those pages: overall spend (actual, from P8 fix), overall
+  usage, and — surfaced without scrolling — *are there alerts on the other pages? insights needing
+  attention?* Replace the current cost-trace mind-map (the "not helpful" page).
+- Format every number with commas + currency (`usd`/`formatExact`) everywhere, not just the headline.
+
+## P11 — AI recommendations page (model savings)
+
+Own page. Core-guardian already scrapes the model-pricing catalog + registers every AI call, so it
+can compare market rates/capabilities against actual project usage. Surface:
+- Insight cards: "switch project X off kimi-2.7 → gpt-5-mini, save $Y/mo" (already prototyped inline).
+- A graph: projects × current model spend this month, with the **top-3 cheaper alternatives + the
+  savings** for each.
+- Actionable buttons: **send Jules** to (a) update one project's model, (b) switch a project to
+  best-model routing, or (c) GLOBALLY update every project using model X → the cheaper model.
+This proves core-guardian's value as the single AI layer: one place to see cross-project spend +
+savings as Cloudflare/providers churn model pricing.
+
+## P12 — Smart AI proxy + model-substitution rule
+
+- **Smart routing endpoint**: instead of naming a model, the caller sends `{ project, importance,
+  budgetUsd }` and core-guardian picks the best model (cheap/"budget" model for low importance, a
+  stable model for high). A named model still passes through. A "smart proxy" on top of the fence.
+- **Model-substitution ("translation") rule**: like a circuit breaker but a rewrite — a per-project
+  rule "when this project sends model X, swap to Y" applied at the proxy, so the offending project's
+  code never has to change (e.g. globally trade kimi-2.7 → an OpenAI model). Toggle on the dashboard.
+
+Roadmap order (all after the P8 accuracy fix lands): **P9** (nuclear budget breaker + infra-spike
+guard) → **P10** (dashboard IA) → **P11** (AI recs page) → **P12** (smart proxy + translation).
+
 ## New secrets (wrangler.jsonc Secrets Store)
 
 `JULES_API_KEY` (Jules dispatch), `GH_TOKEN` (GitHub scan), `LOCAL_AUDIT_ACCESS_TOKEN` +

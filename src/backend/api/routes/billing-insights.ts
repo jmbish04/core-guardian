@@ -62,6 +62,8 @@ const anomalySchema = z.object({
 
 const insightsResponseSchema = z.object({
   mtdUsd: z.number(),
+  mtdSource: z.enum(["actual", "estimate"]),
+  estimateUsd: z.number(),
   projectedMonthEnd: z.number(),
   sinceLastVisit: z.object({
     deltaUsd: z.number().nullable(),
