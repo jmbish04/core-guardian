@@ -11,11 +11,14 @@ test("CLIENT_VERSION stays in sync with clients/VERSION", () => {
 });
 
 test("ts+curl instructions carry base url, version, and a raw pull command", () => {
-  const r = buildInstructions({ baseUrl: BASE, lang: "ts", mode: "curl" });
+  const distinctBase = "https://staging.example.com";
+  const r = buildInstructions({ baseUrl: distinctBase, lang: "ts", mode: "curl" });
   assert.equal(r.version, CLIENT_VERSION);
   assert.match(r.pull, /raw\.githubusercontent\.com\/jmbish04\/core-guardian/);
   assert.match(r.pull, /clients\/ts\/guardian-client\.ts/);
   assert.match(r.varsStub, /"project"/);
+  assert.ok(r.varsStub.includes(distinctBase));
+  assert.ok(!r.varsStub.includes("core-guardian.hacolby.workers.dev"));
   assert.deepEqual(r.secrets, ["wrangler secret put GUARDIAN_AI_TOKEN", "wrangler secret put GUARDIAN_API_KEY"]);
   assert.match(r.usage, /GuardianClient/);
 });
@@ -38,6 +41,13 @@ test("every supported lang×mode builds without throwing and stamps the version"
 test("unknown lang throws a RangeError", () => {
   assert.throws(
     () => buildInstructions({ baseUrl: BASE, lang: "cobol" as never, mode: "curl" }),
+    RangeError,
+  );
+});
+
+test("unknown mode throws a RangeError", () => {
+  assert.throws(
+    () => buildInstructions({ baseUrl: BASE, lang: "ts", mode: "sftp" as never }),
     RangeError,
   );
 });

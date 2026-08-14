@@ -49,20 +49,6 @@ const LANGS: Record<IntegrationLang, LangMeta> = {
   },
 };
 
-const VARS_STUB = JSON.stringify(
-  {
-    GUARDIAN: {
-      project: "my-worker",
-      repo: "you/my-worker",
-      priority: "normal",
-      budget: 25,
-      baseUrl: "https://core-guardian.hacolby.workers.dev",
-    },
-  },
-  null,
-  2,
-);
-
 const SECRETS = [
   "wrangler secret put GUARDIAN_AI_TOKEN",
   "wrangler secret put GUARDIAN_API_KEY",
@@ -96,13 +82,25 @@ export function buildInstructions(opts: {
 } {
   const meta = LANGS[opts.lang];
   if (!meta) throw new RangeError(`unknown lang: ${opts.lang as string}`);
-  if (!SUPPORTED_MODES.includes(opts.mode)) throw new RangeError(`unknown mode: ${opts.mode as string}`);
+  const varsStub = JSON.stringify(
+    {
+      GUARDIAN: {
+        project: "my-worker",
+        repo: "you/my-worker",
+        priority: "normal",
+        budget: 25,
+        baseUrl: opts.baseUrl,
+      },
+    },
+    null,
+    2,
+  );
   return {
     version: CLIENT_VERSION,
     lang: opts.lang,
     mode: opts.mode,
-    pull: pullCommand(meta, opts.mode),
-    varsStub: VARS_STUB.replace("https://core-guardian.hacolby.workers.dev", opts.baseUrl),
+    pull: pullCommand(meta, opts.mode), // throws RangeError on unknown mode — single source of truth
+    varsStub,
     secrets: SECRETS,
     usage: meta.usage,
   };
