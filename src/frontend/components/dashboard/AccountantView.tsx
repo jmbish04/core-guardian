@@ -16,7 +16,7 @@
 "use client";
 
 import { ChevronRightIcon, Loader2Icon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import {
@@ -299,12 +299,18 @@ export function AccountantView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Request-id guard: a slower older fetch (rapid days-selector clicks) must not
+  // overwrite a newer one's result.
+  const reqId = useRef(0);
   const load = useCallback(async () => {
+    const id = ++reqId.current;
     setLoading(true);
     setError(null);
     try {
-      setReport(await apiGet<AccountantReport>("/guardian/billing/accountant", { days }));
+      const r = await apiGet<AccountantReport>("/guardian/billing/accountant", { days });
+      if (id === reqId.current) setReport(r);
     } catch (err) {
+      if (id !== reqId.current) return;
       setError(
         err instanceof ApiError && err.status === 401
           ? "Sign in to view the bill."
@@ -313,7 +319,7 @@ export function AccountantView() {
             : "Failed to load the accountant.",
       );
     } finally {
-      setLoading(false);
+      if (id === reqId.current) setLoading(false);
     }
   }, [days]);
 
