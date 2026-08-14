@@ -143,7 +143,7 @@ breaker system. Full spec: `docs/architecture/spend-offense.md`.
 
 **D1 tables** (`db/schemas/governance/offense/`):
 - `circuit_break_events` — one incident per row: `id, projectIdentification(json),
-  scope, reason, source(scanner|jules|auto_spend), status(active|read|erroneous),
+  scope, reason, source(scanner|jules|auto_spend|budget_cap|infra_spike), status(active|read|erroneous),
   julesPr, actionsTaken(json {kind,detail,at}[]), recommendation(json {summary,details}),
   createdAt(ms), resolvedAt(ms)`. Active rows are live breakers until resolved.
 - `scan_targets` — one player per row, upserted by `(kind,name)`: `id, kind(worker|
@@ -216,6 +216,27 @@ pure queries + arithmetic in `guardian/offense/insights.ts`.
     controls". Empty state is positive ("nothing accumulating").
   - Stock shadcn only (`components/ui/*`), Monolith dark, `ring-1 ring-border/40`, `usd()`
     from `lib/format.ts`, errors via `dashboard/shared.tsx#InlineError`. No mock data.
+
+**P9a — Total budget & the nuclear breaker** (the TOTAL-CF-spend guard; the prior $600 was
+Durable Objects, not AI, so any non-AI spike is an EMERGENCY). ZERO AI — MTD `daily_cost` totals
+vs configured budgets.
+- **API** (`api/routes/billing-insights.ts`, mounted `/api/guardian/billing`, `guardianAuth`):
+  - `GET  /budget-status` → `{ mtdUsd, mtdSource:"billed"|"estimated", nuclearBudgetUsd:number|null,
+    overBudget, killSwitchEngaged, infraThresholdUsd, nonAiServices:[{service, mtdUsd, overThreshold}] }`.
+  - `POST /budget-config` body `{ nuclearBudgetUsd?:>=0, infraThresholdUsd?:>=0 }` → the new config.
+  - Two new incident sources land in `circuit_break_events.source`: `budget_cap` (nuke line reached →
+    kill switch) and `infra_spike` (a non-AI service over the low infra threshold).
+- **Frontend** (`components/dashboard/`, the FIRST elements on `guardian.astro`, above `SpendHeadline`):
+  - `BudgetMeter.tsx` — the nuclear-breaker control. Owns the single `/budget-status` fetch. A
+    MTD-vs-nuclear-budget meter (div bar: emerald <70%, amber 70–99%, destructive ≥100%) showing
+    `usd(mtd)` / `usd(budget)` + the % + `mtdSource`. LOUD destructive banner when
+    `killSwitchEngaged` ("AI HALTED — total budget reached", links to `#incidents`). Setup/empty
+    state when `nuclearBudgetUsd` is null ("set your nuke line"). Dialog (nuclear budget + infra
+    threshold number Inputs) → `POST /budget-config`, refetches on save.
+  - `InfraSpikeFlags.tsx` — presentational, rendered by `BudgetMeter` from the same payload (one
+    fetch). Every `nonAiServices[].overThreshold` renders as a LOUD red flag (service, `usd(mtd)`,
+    "non-AI spend should be ~$0 — investigate / archive / kill cron"); a quiet one-liner when clean.
+  - `IncidentsPanel.tsx` `SOURCE_LABEL` gains `budget_cap` → "Budget cap", `infra_spike` → "Infra spike".
 
 **How to add a new one-click control**: add the action to the `action` enum + `circuitFor`
 switch in `api/routes/billing-insights.ts` (return the `Circuit` it should write, or `null`

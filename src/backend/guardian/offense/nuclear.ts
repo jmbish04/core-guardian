@@ -251,17 +251,29 @@ export async function checkNuclearBudget(env: Env): Promise<NuclearResult> {
       note: `under budget: $${mtdUsd.toFixed(2)} < $${budgetUsd} (${mtdSource})`,
     };
   }
+  // SAFETY: engage the kill switch whenever over budget and it isn't already on,
+  // INDEPENDENT of incident dedupe — so a manual lift while still over budget
+  // re-engages the nuke on the next check. The way to allow more spend is to
+  // RAISE the budget, not lift the switch.
+  const alreadyOn = await getKillSwitch(env);
+  const killSwitchEngaged = !alreadyOn;
+  if (killSwitchEngaged) await setKillSwitch(env, true);
+
+  // Dedupe the INCIDENT only (the kill switch is already handled above): don't
+  // file a second active budget_cap row.
   if (await hasActiveIncident(env, "budget_cap")) {
-    return { ...base, incidentFiled: false, note: "active budget_cap incident already on record" };
+    return {
+      ...base,
+      killSwitchEngaged,
+      incidentFiled: false,
+      note: killSwitchEngaged
+        ? "re-engaged kill switch; active budget_cap incident already on record"
+        : "active budget_cap incident already on record",
+    };
   }
 
   const db = getDb(env);
   const now = Date.now();
-
-  // Engage the kill switch unless it's already on (don't double-flip).
-  const alreadyOn = await getKillSwitch(env);
-  const killSwitchEngaged = !alreadyOn;
-  if (killSwitchEngaged) await setKillSwitch(env, true);
 
   const reason =
     `NUCLEAR: month-to-date total Cloudflare spend $${mtdUsd.toFixed(2)} (${mtdSource}) reached the ` +

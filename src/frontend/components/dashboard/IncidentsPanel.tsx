@@ -56,7 +56,7 @@ import { EmptyState, InlineError } from "./shared";
 
 // --- Wire shapes (mirror routes/offense.ts incidentSchema) ------------------
 
-type IncidentSource = "scanner" | "jules" | "auto_spend";
+type IncidentSource = "scanner" | "jules" | "auto_spend" | "budget_cap" | "infra_spike";
 type IncidentStatus = "active" | "read" | "erroneous";
 type StatusFilter = IncidentStatus | "all";
 
@@ -99,6 +99,8 @@ const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
 /** Human label for the incident source badge. */
 const SOURCE_LABEL: Record<IncidentSource, string> = {
   auto_spend: "Auto-spend guard",
+  budget_cap: "Budget cap",
+  infra_spike: "Infra spike",
   jules: "Jules audit",
   scanner: "Scanner",
 };
