@@ -31,6 +31,7 @@ import {
 } from "@/backend/guardian/ai-router/circuits";
 import type { Circuit } from "@/backend/guardian/ai-router/types";
 import { getDailyCostReport } from "@/backend/guardian/daily-cost";
+import { getAccountantReport } from "@/backend/guardian/offense/accountant";
 import { getInsights } from "@/backend/guardian/offense/insights";
 import {
   DEFAULT_INFRA_SPIKE_USD,
@@ -351,5 +352,83 @@ billingInsightsRouter.openapi(
       },
       200,
     );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/guardian/billing/accountant
+// ---------------------------------------------------------------------------
+
+const categoryEnum = z.enum([
+  "ai",
+  "durable_objects",
+  "d1",
+  "r2",
+  "kv",
+  "vectorize",
+  "queues",
+  "other",
+]);
+
+const attributionSchema = z.object({
+  byModel: z.array(z.object({ model: z.string(), usd: z.number(), neurons: z.number() })),
+  byProject: z.array(z.object({ project: z.string(), usd: z.number(), calls: z.number() })),
+});
+
+const accountantSkuSchema = z.object({
+  sku: z.string(),
+  family: z.string(),
+  unit: z.string(),
+  actualUsd: z.number(),
+  estimateUsd: z.number().nullable(),
+  discrepancyUsd: z.number().nullable(),
+  discrepancyPct: z.number().nullable(),
+  category: categoryEnum,
+  projectedMonthEnd: z.number(),
+  attribution: attributionSchema.nullable(),
+});
+
+const accountantResponseSchema = z.object({
+  currency: z.string(),
+  days: z.number(),
+  totalActualUsd: z.number(),
+  windowAccuracy: z.number().nullable(),
+  skus: z.array(accountantSkuSchema),
+  flags: z.array(
+    z.object({
+      sku: z.string(),
+      actualUsd: z.number(),
+      estimateUsd: z.number().nullable(),
+      discrepancyUsd: z.number(),
+      discrepancyPct: z.number().nullable(),
+      severity: z.enum(["low", "medium", "high"]),
+    }),
+  ),
+});
+
+billingInsightsRouter.openapi(
+  createRoute({
+    method: "get",
+    path: "/accountant",
+    operationId: "guardianBillingAccountant",
+    summary: "The bill, line for line: actual-billed SKU ranking + est-vs-actual + AI attribution",
+    description:
+      "core-guardian AS the owner's accountant. `skus` mirrors the official Cloudflare bill line-for-line — one entry per billed SKU with the SAME `actualUsd` the owner sees in CF's dashboard — ranked by ACTUAL billed dollars desc, so Workers AI is the giant bar and D1 sits quietly at ~$4 (no equal-weight alarms on lines that don't cost money). Guardian's value-add rides on each line: `estimateUsd`/`discrepancyUsd`/`discrepancyPct` (our reconstructed estimate vs the real bill — dispute evidence), `attribution` (AI lines only — which model + which project drove the spend, which CF's bill can't tell you), and `projectedMonthEnd` (run-rate). `flags` is the dispute list: SKUs where the estimate is off by ≥25% AND >$1. `windowAccuracy` is the overall estimate accuracy. Zero AI in the analysis — pure D1 queries + arithmetic.",
+    request: {
+      query: z.object({
+        days: z.coerce.number().int().positive().max(90).optional(),
+      }),
+    },
+    responses: {
+      200: {
+        description: "Ranked SKU ledger with discrepancy flags + AI attribution",
+        content: { "application/json": { schema: accountantResponseSchema } },
+      },
+      401: unauthorized,
+    },
+  }),
+  async (c) => {
+    const { days } = c.req.valid("query");
+    return c.json(await getAccountantReport(c.env, days ?? 30), 200);
   },
 );
