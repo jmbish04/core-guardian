@@ -37,6 +37,7 @@ import { and, gte, sql } from "drizzle-orm";
 import { getDb } from "@/backend/db";
 import { aiRouterRequests, dailyCost } from "@/backend/db/schema";
 import { getDailyCostReport } from "@/backend/guardian/daily-cost";
+import { getBillableUsageReport } from "@/backend/guardian/billable-usage";
 
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
@@ -84,6 +85,10 @@ export interface SinceLastVisit {
 
 export interface InsightsReport {
   mtdUsd: number;
+  /** Where mtdUsd came from: "actual" = CF Billable Usage; "estimate" = daily reconstruction fallback. */
+  mtdSource: "actual" | "estimate";
+  /** The reconstructed estimate, always included so the UI can reconcile est-vs-actual. */
+  estimateUsd: number;
   projectedMonthEnd: number;
   sinceLastVisit: SinceLastVisit;
   anomalies: Anomaly[];
@@ -363,10 +368,20 @@ export async function getInsights(env: Env, nowMs = Date.now()): Promise<Insight
   const days = orderedDays(cutoff, nowMs);
   const db = getDb(env);
 
-  // MTD + projection from the reconstructed daily rollup (covers the whole
-  // month even if today is late — 31d window then filtered by month prefix).
-  const report = await getDailyCostReport(env, 31);
-  const mtdUsd = mtdFromReport(report.totalByDay, nowMs);
+  // MTD headline: prefer the ACTUAL billed figure from the Cloudflare Billable
+  // Usage API (the real ContractedCost). The reconstructed daily rollup is only
+  // an estimate and undercounts (that's the "$9 when it's really $500" bug), so
+  // it's the LABELED fallback used only when actuals aren't synced yet (missing
+  // Billing:Read scope or a stale sync).
+  const [estReport, actualReport] = await Promise.all([
+    getDailyCostReport(env, 31),
+    getBillableUsageReport(env, 35).catch(() => null),
+  ]);
+  const estimateUsd = mtdFromReport(estReport.totalByDay, nowMs);
+  const actualUsd = actualReport ? mtdFromReport(actualReport.totalByDay, nowMs) : 0;
+  const useActual = actualReport != null && actualUsd > 0;
+  const mtdUsd = useActual ? actualUsd : estimateUsd;
+  const mtdSource: "actual" | "estimate" = useActual ? "actual" : "estimate";
   const projectedMonthEnd = projectMonthEnd(mtdUsd, nowMs);
 
   // Router history AGGREGATED per (project, provider, model, UTC day) in SQL —
@@ -417,7 +432,7 @@ export async function getInsights(env: Env, nowMs = Date.now()): Promise<Insight
 
   const sinceLastVisit = await recordVisit(env, mtdUsd, nowMs);
 
-  return { mtdUsd, projectedMonthEnd, sinceLastVisit, anomalies };
+  return { mtdUsd, mtdSource, estimateUsd, projectedMonthEnd, sinceLastVisit, anomalies };
 }
 
 const VISIT_KEY = "dashboard:last-visit";
