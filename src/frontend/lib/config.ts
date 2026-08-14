@@ -53,6 +53,7 @@ export const siteConfig: SiteConfig = {
       label: "Dashboards",
       items: [
         { href: "/dashboard/guardian", label: "Core Guardian" },
+        { href: "/dashboard/accountant", label: "Accountant" },
         { href: "/dashboard/projects", label: "Projects" },
         { href: "/dashboard/jules", label: "Jules Sessions" },
         { href: "/dashboard/action-items", label: "Action Items" },

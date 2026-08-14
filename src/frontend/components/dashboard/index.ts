@@ -5,6 +5,7 @@
  * is an internal implementation detail of the feature folder.
  */
 
+export { AccountantView } from "./AccountantView";
 export { AdminDashboard } from "./AdminDashboard";
 export { ActionItems } from "./ActionItems";
 export { AiRouterConsole } from "./AiRouterConsole";
