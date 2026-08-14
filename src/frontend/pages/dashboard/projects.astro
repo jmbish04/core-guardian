@@ -1,0 +1,28 @@
+---
+/**
+ * `/dashboard/projects` — the unified project registry, ordered money-first.
+ *
+ * Thin shell over the <ProjectsTable> island (client:load — above the fold and
+ * interactive). Data comes from `GET /api/guardian/projects`.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { ProjectsTable } from "@/components/projects";
+---
+
+<BaseLayout
+  title="Projects"
+  description="Every tracked project — workers, AI projects, and scripts — with this month's spend, criticality, and last-seen. Who's costing what, at a glance."
+>
+  <main class="container mx-auto flex max-w-7xl flex-col gap-8 px-4 py-12">
+    <header class="flex flex-col gap-2">
+      <h1 class="text-3xl font-semibold tracking-tight">Projects</h1>
+      <p class="max-w-3xl text-base text-muted-foreground">
+        The unified registry of everything Guardian watches — synced Cloudflare
+        Workers plus every distinct AI-Router caller — sorted by this month's
+        spend so the costliest surfaces first.
+      </p>
+    </header>
+
+    <ProjectsTable client:load />
+  </main>
+</BaseLayout>

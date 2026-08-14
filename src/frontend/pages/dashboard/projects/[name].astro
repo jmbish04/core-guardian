@@ -1,0 +1,25 @@
+---
+/**
+ * `/dashboard/projects/[name]` — single-project viewport.
+ *
+ * SSR (output: "server") — `name` resolves at request time. Thin shell over the
+ * <ProjectDetail> island; data comes from `GET /api/guardian/projects/{name}`.
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { ProjectDetail } from "@/components/projects";
+
+const { name } = Astro.params;
+if (!name) return Astro.redirect("/dashboard/projects");
+---
+
+<BaseLayout title={name} description={`Spend, budget circuit, Jules sessions, and settings for ${name}.`}>
+  <main class="container mx-auto flex max-w-5xl flex-col gap-6 px-4 py-12">
+    <a
+      href="/dashboard/projects"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Projects
+    </a>
+    <ProjectDetail name={name} client:load />
+  </main>
+</BaseLayout>
