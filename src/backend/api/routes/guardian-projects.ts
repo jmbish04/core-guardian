@@ -13,12 +13,14 @@
  *  - `GET  /jules/sessions`        — list jules_sessions, newest first.
  *  - `POST /sync`                  — run syncWorkerProjects now (returns counts).
  *  - `GET  /{name}`                — one project + its jules_sessions + circuit.
- *  - `POST /{name}`                — update {note?, criticality?} (audited).
+ *  - `POST /{name}/config`         — update {note?, criticality?} (audited).
  *  - `DELETE /{name}/worker`       — DESTRUCTIVE: delete the CF worker (confirm-gated).
  *  - `POST /{name}/disable-crons`  — delete the worker's cron triggers (confirm-gated).
  *
- * Static paths (`/sync`, `/jules/sessions`) are registered before the `/{name}`
- * param route so the param never captures them. NO AI anywhere.
+ * The write endpoints are all two-segment (`/{name}/config|worker|disable-crons`)
+ * so they never collide with the static `/sync` or `/jules/sessions` paths. The
+ * only single-segment `/{name}` route is a GET, and there is no GET `/sync`. NO
+ * AI anywhere.
  */
 
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
@@ -306,7 +308,7 @@ guardianProjectsRouter.openapi(
 guardianProjectsRouter.openapi(
   createRoute({
     method: "post",
-    path: "/{name}",
+    path: "/{name}/config",
     operationId: "guardianProjectsUpdate",
     tags: ["Guardian Projects"],
     summary: "Update a project's note / criticality (audited)",

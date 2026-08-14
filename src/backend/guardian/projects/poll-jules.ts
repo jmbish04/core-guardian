@@ -114,8 +114,17 @@ export async function pollJulesSessions(env: Env): Promise<PollSummary> {
         headers: { "X-Goog-Api-Key": apiKey },
       });
       if (!res.ok) {
-        // 404/5xx — leave the row as-is for the next run; a persistent 404 could
-        // be handled later, but never fabricate a terminal state here.
+        // Gone (404/410) → the Jules session no longer exists; mark terminal so
+        // it stops being re-polled forever. Transient errors (5xx / auth / rate
+        // limit) stay retryable — leave the row untouched for the next run.
+        if (res.status === 404 || res.status === 410) {
+          await db
+            .update(julesSessions)
+            .set({ status: "failed", updatedAt: now })
+            .where(inArray(julesSessions.id, [row.id]));
+          summary.updated++;
+          summary.terminal++;
+        }
         continue;
       }
       const session = (await res.json().catch(() => null)) as Record<string, any> | null;
