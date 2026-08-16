@@ -78,24 +78,30 @@ async function importPrivateKey(pem: string): Promise<CryptoKey> {
 }
 
 /**
- * Exchange a signed SA JWT for a Drive access token.
+ * Mint + exchange a signed SA JWT for a Google OAuth access token, for any
+ * scope. `subject` triggers domain-wide-delegation impersonation (used for
+ * Drive so uploads land in a real My Drive); omit it to act as the SA itself
+ * (used for Cloud Billing, where the SA is granted `billing.budgets.list`).
  *
  * @param nowSec - current time in seconds (passed in so callers stay testable /
  *   deterministic; the Worker passes `Date.now()/1000`)
  */
-export async function getDriveAccessToken(env: Env, nowSec: number): Promise<string> {
+export async function getGoogleServiceAccountToken(
+  env: Env,
+  scope: string,
+  nowSec: number,
+  subject?: string,
+): Promise<string> {
   const { email, pem } = await serviceAccount(env);
   const header = { alg: "RS256", typ: "JWT" };
-  const claim = {
+  const claim: Record<string, unknown> = {
     iss: email,
-    // Domain-wide delegation: act AS this Workspace user, so uploads land in a
-    // real My Drive with real quota rather than the SA's (non-existent) quota.
-    sub: impersonateSubject(env),
-    scope: DRIVE_SCOPE,
+    scope,
     aud: TOKEN_ENDPOINT,
     iat: Math.floor(nowSec),
     exp: Math.floor(nowSec) + 3600,
   };
+  if (subject) claim.sub = subject;
   const signingInput = `${b64urlJson(header)}.${b64urlJson(claim)}`;
   const key = await importPrivateKey(pem);
   const sig = await crypto.subtle.sign(
@@ -118,6 +124,14 @@ export async function getDriveAccessToken(env: Env, nowSec: number): Promise<str
     throw new Error(`Google token exchange failed: ${json.error_description ?? res.status}`);
   }
   return json.access_token;
+}
+
+/**
+ * Exchange a signed SA JWT for a Drive access token (impersonating the
+ * Workspace user via domain-wide delegation).
+ */
+export function getDriveAccessToken(env: Env, nowSec: number): Promise<string> {
+  return getGoogleServiceAccountToken(env, DRIVE_SCOPE, nowSec, impersonateSubject(env));
 }
 
 export type DriveFolder = {

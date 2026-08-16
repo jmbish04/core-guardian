@@ -56,6 +56,7 @@ import {
   aiModelPricing,
   billableUsage,
   dailyCost,
+  providerCost,
   scrapeRuns,
 } from "./backend/db/schema";
 import { handleInboundEmail } from "./backend/email/inbound";
@@ -68,6 +69,7 @@ import { evaluateUsage } from "./backend/guardian/collect";
 import { backfillDailyCost, snapshotDailyCost } from "./backend/guardian/daily-cost";
 import { checkSustainedSpend } from "./backend/guardian/offense/auto-break";
 import { checkInfraSpikes, checkNuclearBudget } from "./backend/guardian/offense/nuclear";
+import { checkProviderSpendAlerts, syncProviderCosts } from "./backend/guardian/providers/sync";
 import { pollJulesSessions } from "./backend/guardian/projects/poll-jules";
 import { syncWorkerProjects } from "./backend/guardian/projects/sync-workers";
 import { scrapeAllPricing } from "./backend/guardian/pricing-scrape";
@@ -150,6 +152,17 @@ async function runGuardianEvaluation(env: Env) {
   } catch (err) {
     console.error(
       JSON.stringify({ level: "ERROR", source: "guardian.billableUsage", error: String(err) }),
+    );
+  }
+  // Daily: pull external AI provider billing (Anthropic/OpenAI/Cursor cost APIs
+  // + Gemini Cloud Billing budget) into provider_cost, then run the per-provider
+  // budget threshold alerts. Gated on 1 day; each provider is skipped when its
+  // key/config is absent (non-fatal).
+  try {
+    await maybeSyncProviderCosts(env);
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.providers", error: String(err) }),
     );
   }
   // Daily: refresh the merged model-pricing candidate catalog (OpenRouter + AI
@@ -274,6 +287,25 @@ async function maybeSyncBillableUsage(env: Env) {
   if (latest && Date.now() - latest.capturedAt < ONE_DAY_MS) return;
   const rows = await syncBillableUsage(env, 35);
   console.warn(JSON.stringify({ level: "INFO", source: "guardian.billableUsage", rows }));
+}
+
+async function maybeSyncProviderCosts(env: Env) {
+  const [latest] = await getDb(env)
+    .select({ capturedAt: providerCost.capturedAt })
+    .from(providerCost)
+    .orderBy(desc(providerCost.capturedAt))
+    .limit(1);
+  if (latest && Date.now() - latest.capturedAt < ONE_DAY_MS) return;
+  const synced = await syncProviderCosts(env, 35);
+  const alerts = await checkProviderSpendAlerts(env);
+  console.warn(
+    JSON.stringify({
+      level: "INFO",
+      source: "guardian.providers",
+      synced,
+      firedAlerts: alerts.filter((a) => a.fired).map((a) => a.provider),
+    }),
+  );
 }
 
 async function maybeRefreshModelCatalog(env: Env) {
