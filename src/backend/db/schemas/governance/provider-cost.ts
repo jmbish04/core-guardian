@@ -3,9 +3,9 @@
  * (Anthropic, OpenAI, Cursor) plus Gemini's Cloud Billing budget ceiling.
  *
  * Everything else in Guardian monitors Cloudflare spend. This table is the
- * off-Cloudflare complement: the hourly cron pulls each provider's own billing
- * API (see {@link file://src/backend/guardian/providers/sync.ts}) and persists
- * one row per provider per UTC day so the panel can chart external AI spend
+ * off-Cloudflare complement: a daily-gated step on the hourly cron pulls each
+ * provider's own billing API (see {@link file://src/backend/guardian/providers/sync.ts})
+ * and persists one row per provider per UTC day so the panel can chart external AI spend
  * alongside the CF numbers and the alert layer can fire on a threshold breach.
  *
  * `metric` distinguishes the two shapes we can actually get:

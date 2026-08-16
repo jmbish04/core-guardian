@@ -52,7 +52,9 @@ export type ProviderSyncSummary = Record<Provider, { rows: number; error?: strin
  * into `provider_cost`. Idempotent (deterministic PK), safe to run daily.
  */
 export async function syncProviderCosts(env: Env, days = 35): Promise<ProviderSyncSummary> {
-  const to = ymd(Date.now());
+  // `to` is tomorrow (UTC) so the exclusive `ending_at` window bounds the END of
+  // today — otherwise the current day's spend is dropped and MTD lags 24h.
+  const to = ymd(Date.now() + DAY_MS);
   const from = ymd(Date.now() - days * DAY_MS);
   const now = Date.now();
   const db = getDb(env);

@@ -56,7 +56,6 @@ import {
   aiModelPricing,
   billableUsage,
   dailyCost,
-  providerCost,
   scrapeRuns,
 } from "./backend/db/schema";
 import { handleInboundEmail } from "./backend/email/inbound";
@@ -289,15 +288,22 @@ async function maybeSyncBillableUsage(env: Env) {
   console.warn(JSON.stringify({ level: "INFO", source: "guardian.billableUsage", rows }));
 }
 
+const PROVIDER_SYNC_KEY = "provider-cost:last-sync";
+
 async function maybeSyncProviderCosts(env: Env) {
-  const [latest] = await getDb(env)
-    .select({ capturedAt: providerCost.capturedAt })
-    .from(providerCost)
-    .orderBy(desc(providerCost.capturedAt))
-    .limit(1);
-  if (latest && Date.now() - latest.capturedAt < ONE_DAY_MS) return;
+  // Debounce on a KV timestamp, NOT the latest provider_cost row: a provider
+  // with $0 spend (or no key) writes no rows, so a D1-latest gate would leave
+  // the table empty forever and re-hit the provider APIs every cron tick.
+  try {
+    const raw = await env.SESSIONS.get(PROVIDER_SYNC_KEY);
+    const at = raw ? Number(raw) : NaN;
+    if (Number.isFinite(at) && Date.now() - at < ONE_DAY_MS) return;
+  } catch {
+    /* fall through to a sync */
+  }
   const synced = await syncProviderCosts(env, 35);
   const alerts = await checkProviderSpendAlerts(env);
+  await env.SESSIONS.put(PROVIDER_SYNC_KEY, String(Date.now())).catch(() => {});
   console.warn(
     JSON.stringify({
       level: "INFO",
