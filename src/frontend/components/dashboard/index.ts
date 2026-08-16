@@ -9,6 +9,7 @@ export { AdminDashboard } from "./AdminDashboard";
 export { ActionItems } from "./ActionItems";
 export { AiRouterConsole } from "./AiRouterConsole";
 export { AiRouterUsage } from "./AiRouterUsage";
+export { AiRouterRecommendations } from "./AiRouterRecommendations";
 export { AllowancesPanel } from "./AllowancesPanel";
 export { BudgetMeter } from "./BudgetMeter";
 export { SpendHeadline } from "./SpendHeadline";
