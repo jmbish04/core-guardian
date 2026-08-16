@@ -41,6 +41,7 @@ import { guardianProjectsRouter } from "./routes/guardian-projects";
 import { offensePublicRouter, offenseRouter } from "./routes/offense";
 import { healthRouter } from "./routes/health";
 import { inboxRouter } from "./routes/inbox";
+import { integrationRouter } from "./routes/integration";
 import { mcpRouter } from "./routes/mcp";
 import { notificationsRouter } from "./routes/notifications";
 import { oauthRouter, wellKnownRouter } from "./routes/oauth";
@@ -132,6 +133,7 @@ app.route("/api/health", healthRouter);
 app.route("/api/config", configRouter);
 app.route("/api/admin", adminRouter);
 app.route("/api/docs", docsRouter);
+app.route("/api/integration", integrationRouter);
 
 // Feature APIs (open — see auth note above)
 app.route("/api/projects", projectsRouter);
