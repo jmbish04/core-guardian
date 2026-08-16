@@ -211,14 +211,16 @@ export async function getRecommendations(
     classifyPrompts = false,
     minSavingsUsd = 0.01,
     observed: injectedObserved,
+    catalog: injectedCatalog,
   }: {
     days?: number;
     classifyPrompts?: boolean;
     minSavingsUsd?: number;
     observed?: ObservedModel[];
+    catalog?: CatalogModel[];
   } = {},
 ): Promise<RecommendationReport> {
-  const catalog = await getModelCatalog(env);
+  const catalog = injectedCatalog ?? (await getModelCatalog(env));
   const observed = injectedObserved ?? (await observedUsage(env, days));
   const scale = 30 / days; // observed-window → monthly
 

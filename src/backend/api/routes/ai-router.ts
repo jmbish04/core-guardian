@@ -331,7 +331,7 @@ aiRouterRouter.openapi(createRoute({
   const where = project
     ? and(ne(aiRouterRecommendations.status, "dismissed"), eq(aiRouterRecommendations.project, project))
     : ne(aiRouterRecommendations.status, "dismissed");
-  const rows = await getDb(c.env).select().from(aiRouterRecommendations).where(where).orderBy(desc(aiRouterRecommendations.at));
+  const rows = await getDb(c.env).select().from(aiRouterRecommendations).where(where).orderBy(desc(aiRouterRecommendations.at)).limit(500);
   return c.json({ recommendations: rows }, 200);
 });
 

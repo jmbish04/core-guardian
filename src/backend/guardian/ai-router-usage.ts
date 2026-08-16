@@ -7,6 +7,7 @@ import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
 import { getDb } from "@/backend/db";
 import { aiRouterRecommendations, aiRouterRequests } from "@/backend/db/schema";
 import { getRecommendations, type ObservedModel } from "@/backend/guardian/model-recommendations";
+import { getModelCatalog } from "@/backend/guardian/model-catalog";
 
 export interface ProjectUsage {
   project: string; requests: number; tokensIn: number; tokensOut: number;
@@ -96,25 +97,54 @@ export async function observedForProject(
  *
  * @returns count of recommendation rows written
  */
+const UPSERT_CHUNK_SIZE = 50;
+
 export async function syncRouterRecommendations(env: Env, days = 30): Promise<number> {
   const end = Date.now();
   const start = end - days * 86_400_000;
-  const projects = await usageByProject(env, start, end);
-  const db = getDb(env);
-  let written = 0;
 
-  for (const p of projects) {
-    const observed = await observedForProject(env, p.project, start, end);
-    const report = await getRecommendations(env, { observed, days, minSavingsUsd: 1 });
-    for (const rec of report.recommendations) {
-      const id = `${p.project}:${rec.currentProvider}:${rec.currentModel}`;
+  // Single grouped query over ai_router_requests — NOT per-project — to stay
+  // request-safe under a large project count.
+  const rows = await getDb(env)
+    .select({
+      project: aiRouterRequests.project,
+      provider: aiRouterRequests.provider,
+      model: aiRouterRequests.model,
+      requests: sql<number>`count(*)`,
+      tokensIn: sql<number>`sum(${aiRouterRequests.tokensIn})`,
+      tokensOut: sql<number>`sum(${aiRouterRequests.tokensOut})`,
+      costUsd: sql<number>`sum(${aiRouterRequests.costUsd})`,
+    })
+    .from(aiRouterRequests)
+    .where(and(gte(aiRouterRequests.at, start), lte(aiRouterRequests.at, end)))
+    .groupBy(aiRouterRequests.project, aiRouterRequests.provider, aiRouterRequests.model);
+
+  const catalog = await getModelCatalog(env);
+
+  const byProject = new Map<string, ObservedModel[]>();
+  for (const r of rows) {
+    const list = byProject.get(r.project) ?? [];
+    list.push({
+      provider: r.provider,
+      model: r.model,
+      requests: n(r.requests),
+      tokensIn: n(r.tokensIn),
+      tokensOut: n(r.tokensOut),
+      costUsd: n(r.costUsd),
+    });
+    byProject.set(r.project, list);
+  }
+
+  const recRows: (typeof aiRouterRecommendations.$inferInsert)[] = [];
+  for (const [project, observed] of byProject) {
+    try {
+      const report = await getRecommendations(env, { observed, catalog, days, minSavingsUsd: 1 });
       const at = Date.now();
-      await db
-        .insert(aiRouterRecommendations)
-        .values({
-          id,
+      for (const rec of report.recommendations) {
+        recRows.push({
+          id: `${project}:${rec.currentProvider}:${rec.currentModel}`,
           at,
-          project: p.project,
+          project,
           provider: rec.currentProvider,
           model: rec.currentModel,
           suggestedProvider: rec.suggestedProvider,
@@ -123,20 +153,32 @@ export async function syncRouterRecommendations(env: Env, days = 30): Promise<nu
           estMonthlySavingsUsd: rec.monthlySavingsUsd,
           source: "local",
           status: "open",
-        })
-        .onConflictDoUpdate({
-          target: aiRouterRecommendations.id,
-          set: {
-            at,
-            suggestedProvider: rec.suggestedProvider,
-            suggestedModel: rec.suggestedModel,
-            rationale: rec.rationale,
-            estMonthlySavingsUsd: rec.monthlySavingsUsd,
-            status: "open",
-          },
         });
-      written++;
+      }
+    } catch (e) {
+      console.error(`syncRouterRecommendations: project "${project}" failed`, e);
     }
   }
-  return written;
+
+  const db = getDb(env);
+  for (let i = 0; i < recRows.length; i += UPSERT_CHUNK_SIZE) {
+    const chunk = recRows.slice(i, i + UPSERT_CHUNK_SIZE);
+    await db
+      .insert(aiRouterRecommendations)
+      .values(chunk)
+      .onConflictDoUpdate({
+        target: aiRouterRecommendations.id,
+        set: {
+          at: sql`excluded.at`,
+          suggestedProvider: sql`excluded.suggested_provider`,
+          suggestedModel: sql`excluded.suggested_model`,
+          rationale: sql`excluded.rationale`,
+          estMonthlySavingsUsd: sql`excluded.est_monthly_savings_usd`,
+          // status intentionally omitted — a user-dismissed recommendation must
+          // not be reset to "open" on refresh.
+        },
+      });
+  }
+
+  return recRows.length;
 }
