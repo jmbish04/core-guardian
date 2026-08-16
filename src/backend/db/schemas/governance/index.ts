@@ -14,5 +14,6 @@ export * from "./drive-folders";
 export * from "./offense";
 export * from "./projects";
 export * from "./pricing";
+export * from "./provider-cost";
 export * from "./usage-snapshots";
 export * from "./webhook-events";

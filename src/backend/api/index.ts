@@ -46,6 +46,7 @@ import { mcpRouter } from "./routes/mcp";
 import { notificationsRouter } from "./routes/notifications";
 import { oauthRouter, wellKnownRouter } from "./routes/oauth";
 import { projectsRouter } from "./routes/projects";
+import { providersRouter } from "./routes/providers";
 import { rulesRouter } from "./routes/rules";
 import { seedRouter } from "./routes/seed";
 import { settingsRouter } from "./routes/settings";
@@ -165,6 +166,7 @@ app.route("/api/guardian/offense", offenseRouter);
 // the generic /api/projects task-container router.
 app.route("/api/guardian/projects", guardianProjectsRouter);
 app.route("/api/guardian/billing", billingInsightsRouter);
+app.route("/api/guardian/providers", providersRouter);
 app.route("/api/r2", r2Router);
 app.route("/api/vectorize", vectorizeRouter);
 app.route("/api/storage", storageRouter);
