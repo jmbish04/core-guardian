@@ -48,19 +48,26 @@ def _drop_none(d: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in d.items() if v is not None}
 
 
+def _parse_json(raw: Optional[bytes]) -> Any:
+    # Catch ValueError (covers json.JSONDecodeError AND the UnicodeDecodeError a
+    # binary/gzip error page would raise) so a bad body degrades to None, never
+    # escaping past the caller's GuardianError handling.
+    try:
+        return json.loads(raw) if raw else None
+    except ValueError:
+        return None
+
+
 def _urllib_http(
-    method: str, url: str, headers: Dict[str, str], body: Optional[bytes], stream: bool
+    method: str, url: str, headers: Dict[str, str], body: Optional[bytes], stream: bool, timeout: Optional[float] = 30.0
 ) -> Tuple[int, Any]:
     req = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
-        resp = urllib.request.urlopen(req)  # noqa: S310 (fixed base URL, not user-controlled scheme)
+        # Streaming reads happen after urlopen returns, so the connect timeout
+        # still applies but a long stream isn't cut off by it.
+        resp = urllib.request.urlopen(req, timeout=timeout)  # noqa: S310 (fixed base URL, not user-controlled scheme)
     except urllib.error.HTTPError as e:
-        raw = e.read()
-        try:
-            parsed: Any = json.loads(raw) if raw else None
-        except json.JSONDecodeError:
-            parsed = None
-        raise GuardianError(e.code, parsed)
+        raise GuardianError(e.code, _parse_json(e.read()))
     if stream:
         def chunks() -> Iterator[bytes]:
             while True:
@@ -69,11 +76,7 @@ def _urllib_http(
                     break
                 yield chunk
         return resp.status, chunks()
-    raw = resp.read()
-    try:
-        return resp.status, (json.loads(raw) if raw else None)
-    except json.JSONDecodeError:
-        return resp.status, None
+    return resp.status, _parse_json(resp.read())
 
 
 class _AI:
@@ -159,6 +162,7 @@ class GuardianClient:
         ai_token: Optional[str] = None,
         api_key: Optional[str] = None,
         http: Optional[Http] = None,
+        timeout: Optional[float] = 30.0,
     ):
         if not project:
             raise ValueError("GuardianClient: project is required")
@@ -171,7 +175,9 @@ class GuardianClient:
         # Leading underscore keeps the tokens out of a casual vars()/repr dump.
         self._ai_token = ai_token
         self._api_key = api_key
-        self._http = http or _urllib_http
+        # Default transport carries the timeout; an injected http keeps the
+        # 5-arg signature (timeout is the transport's concern).
+        self._http = http or (lambda m, u, h, b, s: _urllib_http(m, u, h, b, s, timeout))
         self.ai = _AI(self)
         self.usage = _Usage(self)
 
@@ -183,8 +189,8 @@ class GuardianClient:
             raise ValueError("GuardianClient.from_env: GUARDIAN missing")
         try:
             cfg = json.loads(raw) if isinstance(raw, str) else dict(raw)
-        except json.JSONDecodeError:
-            raise ValueError("GuardianClient.from_env: GUARDIAN is not valid JSON")
+        except (ValueError, TypeError):
+            raise ValueError("GuardianClient.from_env: GUARDIAN is not valid JSON or a mapping")
         if not cfg.get("project"):
             raise ValueError("GuardianClient.from_env: GUARDIAN.project missing")
         return cls(
@@ -210,7 +216,9 @@ class GuardianClient:
             headers["content-type"] = "application/json"
             data = json.dumps(body).encode("utf-8")
         status, payload = self._http(method, self.base_url + path, headers, data, stream)
-        if not stream and status >= 400:
+        # Raise on error for streaming too (matches the TS client): a 400 for a
+        # non-openai stream or a 429 breaker must surface, not be iterated.
+        if status >= 400:
             raise GuardianError(status, payload)
         return status, payload
 

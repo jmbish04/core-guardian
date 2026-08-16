@@ -26,10 +26,9 @@ def make_client(status=200, body=None, priority="important"):
             "body": json.loads(data) if data else None,
             "stream": stream,
         })
-        if status >= 400:
-            # urllib transport raises GuardianError itself for HTTP errors;
-            # emulate that so non-stream error handling is exercised end-to-end.
-            raise GuardianError(status, body)
+        # A NON-raising transport (like an httpx adapter): always return
+        # (status, body). This forces GuardianClient's own status>=400 branch to
+        # raise, so the error path is genuinely exercised.
         return status, body
 
     c = GuardianClient(
@@ -106,6 +105,28 @@ def test_error_raises_guardian_error_with_breaker_flag():
         assert e.circuit_broken_message == "cooling"
 
 
+def test_stream_also_raises_on_error_status():
+    # A streaming call to a 400/429 must raise, not hand back the error body to
+    # be iterated (parity with the TS client).
+    c, _ = make_client(status=400, body={"error": "stream needs openai"})
+    try:
+        list(c.ai.stream(provider="anthropic", model="m", input={}))
+        assert False, "expected GuardianError on stream error"
+    except GuardianError as e:
+        assert e.status == 400
+
+
+def test_missing_token_raises_before_any_request():
+    # No AI token → the call must fail closed, before leaving the process.
+    c = GuardianClient(project="w", base_url="https://g.example.com", api_key="API",
+                       http=lambda *a: (_ for _ in ()).throw(AssertionError("must not be called")))
+    try:
+        c.ai.run(provider="p", model="m", input={})
+        assert False, "expected RuntimeError for missing AI token"
+    except RuntimeError as e:
+        assert "missing token" in str(e)
+
+
 def test_from_env_parses_string_and_dict_and_validates():
     env_str = {"GUARDIAN": json.dumps({"project": "p1"}), "GUARDIAN_AI_TOKEN": "AI", "GUARDIAN_API_KEY": "API"}
     assert isinstance(GuardianClient.from_env(env_str), GuardianClient)
@@ -130,9 +151,10 @@ def test_version_matches_clients_version_file():
 
 
 def test_tokens_stored_under_private_names_only():
-    # Tokens live under leading-underscore attrs so a public-attr dump
-    # (the common "serialize the config" path) never carries them. Mirrors
-    # the TS client's toJSON() secret-exclusion intent.
+    # Pins the naming contract: tokens live ONLY under leading-underscore attrs,
+    # so a public-attr dump (the common "serialize the config" path) omits them.
+    # This is not a full secrecy guarantee — vars(c) and c.ai._c._ai_token still
+    # reach the values; Python has no toJSON hook to intercept json.dumps.
     c, _ = make_client(body={})
     public = {k: v for k, v in vars(c).items() if not k.startswith("_")}
     assert "AI" not in public.values()

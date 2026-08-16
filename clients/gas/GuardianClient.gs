@@ -8,6 +8,8 @@
  * https://github.com/jmbish04/core-guardian/blob/main/clients/gas/GuardianClient.gs
  */
 
+// Manual sync point: GAS can't read clients/VERSION at runtime. Keep this equal
+// to clients/VERSION — clients/gas/version-sync.test.mjs fails CI if it drifts.
 var GUARDIAN_CLIENT_VERSION = '1.0.0';
 var GUARDIAN_DEFAULT_BASE_URL = 'https://core-guardian.hacolby.workers.dev';
 var GUARDIAN_PRIORITY_TO_IMPORTANCE = {
@@ -174,6 +176,21 @@ class GuardianClient {
       null
     );
   }
+
+  /**
+   * JSON.stringify hook — excludes the two tokens so the common GAS debug
+   * idiom (Logger.log(JSON.stringify(g)) / console.log(g)) can't spill secrets
+   * into Cloud Logging. Mirrors the TS client's toJSON().
+   */
+  toJSON() {
+    return {
+      project: this.project,
+      repo: this.repo,
+      priority: this.priority,
+      budgetUsd: this.budgetUsd,
+      baseUrl: this.baseUrl,
+    };
+  }
 }
 
 /**
@@ -252,6 +269,43 @@ function guardianClientSelfTest_() {
     streamThrew = true;
   }
   assert(streamThrew, 'stream should throw');
+
+  // budget() and projectStatus() both route the API key over GET — these are
+  // where an accidental swap to the AI token would 401 every deploy.
+  calls.length = 0;
+  var reader = new GuardianClient({ project: 'my-worker', apiKey: 'API', fetchImpl: stub(200, '{"cap":100}') });
+  reader.budget();
+  assert(calls[0].url === 'https://core-guardian.hacolby.workers.dev/api/ai/budget', 'budget url');
+  assert(calls[0].method === 'GET' && calls[0].headers.Authorization === 'Bearer API', 'budget GET+auth');
+  calls.length = 0;
+  reader.projectStatus();
+  assert(calls[0].url.indexOf('/api/guardian/projects/my-worker') !== -1, 'projectStatus url');
+  assert(calls[0].method === 'GET' && calls[0].headers.Authorization === 'Bearer API', 'projectStatus GET+auth');
+
+  // toJSON excludes both tokens.
+  var dumped = JSON.stringify(reader);
+  assert(dumped.indexOf('API') === -1 && dumped.indexOf('_apiKey') === -1, 'toJSON hides apiKey');
+  var withAi = new GuardianClient({ project: 'w', aiToken: 'SECRETAI', apiKey: 'SECRETAPI' });
+  var dumped2 = JSON.stringify(withAi);
+  assert(dumped2.indexOf('SECRETAI') === -1 && dumped2.indexOf('SECRETAPI') === -1, 'toJSON hides both tokens');
+
+  // fromScriptProperties: happy path + the three failure branches.
+  function fakeProps(map) {
+    return { getProperty: function (k) { return Object.prototype.hasOwnProperty.call(map, k) ? map[k] : null; } };
+  }
+  var fromProps = GuardianClient.fromScriptProperties(
+    fakeProps({ GUARDIAN: JSON.stringify({ project: 'p2', baseUrl: 'https://x' }), GUARDIAN_AI_TOKEN: 'AI', GUARDIAN_API_KEY: 'API' })
+  );
+  assert(fromProps.project === 'p2' && fromProps.baseUrl === 'https://x', 'fromScriptProperties parses config');
+  [{}, { GUARDIAN: '{bad json' }, { GUARDIAN: JSON.stringify({ repo: 'x' }) }].forEach(function (bad, i) {
+    var threwCfg = false;
+    try {
+      GuardianClient.fromScriptProperties(fakeProps(bad));
+    } catch (e) {
+      threwCfg = true;
+    }
+    assert(threwCfg, 'fromScriptProperties should throw on bad config #' + i);
+  });
 
   assert(GuardianClient.VERSION === '1.0.0', 'version');
   Logger.log('GuardianClient self-check passed');
