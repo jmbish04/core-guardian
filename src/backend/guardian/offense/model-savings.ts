@@ -27,7 +27,6 @@ import { getSecret, getSecretStoreBinding } from "@/backend/utils/secrets";
 
 import { getDailyCostReport } from "../daily-cost";
 import {
-  capabilityScore,
   getModelCatalog,
   isChatModel,
   matchCatalogModel,
@@ -214,7 +213,10 @@ export async function getModelSavings(env: Env, days = 30): Promise<ModelSavings
     if (!isChatModel(o.model)) continue;
 
     const match = matchCatalogModel(catalog, o.model);
-    const score = match?.score ?? capabilityScore(o.model);
+    // No catalog match ⇒ the incumbent's capability score is unreliable, so we
+    // recommend NOTHING (a cheaper candidate could be a silent downgrade). The
+    // row still appears, just with no alternatives.
+    const score = match?.score ?? 0;
     // Current rate: prefer the catalog list rate (apples-to-apples with the
     // candidates); else derive the real paid rate from spend/tokens; else we
     // cannot compare (honest null — no alternatives).
@@ -224,7 +226,7 @@ export async function getModelSavings(env: Env, days = 30): Promise<ModelSavings
       catRate ?? (totalTok > 0 ? o.spendUsd / (totalTok / 1_000_000) : null);
 
     const alternatives =
-      currentRate === null
+      match === null || currentRate === null
         ? []
         : rankAlternatives(
             catalog,
@@ -315,6 +317,14 @@ export async function dispatchModelSwitch(
     return { ...base, ok: false, error: `Cannot resolve a GitHub owner/repo from "${args.repo}".` };
   }
   const { owner, repo } = parsed;
+
+  // Anti-injection: fromModel/toModel trace back to ai_router_requests.model
+  // (user-populated) and are interpolated into the Jules prompt. Restrict to a
+  // safe model-id charset so no newline/quote/instruction can be smuggled in.
+  const MODEL_ID = /^[\w./@:-]{1,120}$/;
+  if (!MODEL_ID.test(args.fromModel) || !MODEL_ID.test(args.toModel)) {
+    return { ...base, ok: false, error: "Invalid model id — refusing to build a Jules prompt." };
+  }
 
   const apiKey =
     (await getSecretStoreBinding(env, "JULES_API_KEY")) ?? getSecret(env, "JULES_API_KEY");
