@@ -20,9 +20,10 @@
  */
 
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
+import { and, eq, isNotNull, inArray } from "drizzle-orm";
 
 import { getDb } from "@/backend/db";
-import { billingEvents } from "@/backend/db/schema";
+import { aiRouterRequests, billingEvents, guardianProjects } from "@/backend/db/schema";
 import {
   deleteCircuit,
   getCircuit,
@@ -33,6 +34,11 @@ import type { Circuit } from "@/backend/guardian/ai-router/types";
 import { getDailyCostReport } from "@/backend/guardian/daily-cost";
 import { getAccountantReport } from "@/backend/guardian/offense/accountant";
 import { getInsights } from "@/backend/guardian/offense/insights";
+import {
+  dispatchModelSwitch,
+  getModelSavings,
+  type ModelSwitchDispatch,
+} from "@/backend/guardian/offense/model-savings";
 import {
   DEFAULT_INFRA_SPIKE_USD,
   getMtdTotal,
@@ -430,5 +436,186 @@ billingInsightsRouter.openapi(
   async (c) => {
     const { days } = c.req.valid("query");
     return c.json(await getAccountantReport(c.env, days ?? 30), 200);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/guardian/billing/ai-recommendations
+// ---------------------------------------------------------------------------
+
+const savingsAlternativeSchema = z.object({
+  model: z.string(),
+  provider: z.string(),
+  ratePerM: z.number(),
+  estimatedSavingsUsd: z.number(),
+  savingsPct: z.number(),
+});
+
+const modelSavingsResponseSchema = z.object({
+  days: z.number(),
+  totalPotentialSavingsUsd: z.number(),
+  recommendations: z.array(
+    z.object({
+      project: z.string().nullable(),
+      currentModel: z.string(),
+      currentProvider: z.string(),
+      currentSpendUsd: z.number(),
+      alternatives: z.array(savingsAlternativeSchema),
+      topSavingsUsd: z.number().nullable(),
+    }),
+  ),
+});
+
+billingInsightsRouter.openapi(
+  createRoute({
+    method: "get",
+    path: "/ai-recommendations",
+    operationId: "guardianBillingAiRecommendations",
+    summary: "Per (project, model) cheaper-but-capable model swaps + the dollar savings",
+    description:
+      "Powers the AI-recommendations page. For each (project, model) with real spend in the window (from `ai_router_requests`, plus direct Workers-AI models from the daily-cost neuron split as `project=null` rows), returns the top-3 cheaper alternatives from the pricing catalog that are AT LEAST as capable (capability score ≥ the incumbent — a swap only lowers price, never capability), each with its blended $/1M rate, `estimatedSavingsUsd = currentSpend × (1 − altRate/currentRate)`, and `savingsPct`. `topSavingsUsd` is null where no cheaper capable alternative exists (honest). Ranked by best per-row saving desc. Zero AI — deterministic catalog comparison + arithmetic.",
+    request: {
+      query: z.object({ days: z.coerce.number().int().positive().max(90).optional() }),
+    },
+    responses: {
+      200: {
+        description: "Ranked per (project, model) savings recommendations",
+        content: { "application/json": { schema: modelSavingsResponseSchema } },
+      },
+      401: unauthorized,
+    },
+  }),
+  async (c) => {
+    const { days } = c.req.valid("query");
+    return c.json(await getModelSavings(c.env, days ?? 30), 200);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/guardian/billing/ai-recommendations/switch
+// ---------------------------------------------------------------------------
+
+const switchDispatchSchema = z.object({
+  repo: z.string(),
+  project: z.string().nullable(),
+  ok: z.boolean(),
+  dispatchId: z.string().nullable(),
+  julesSessionId: z.string().nullable(),
+  error: z.string().optional(),
+});
+
+billingInsightsRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/ai-recommendations/switch",
+    operationId: "guardianBillingSwitchModel",
+    summary: "Dispatch Jules to switch a project (or all projects) off one model onto another",
+    description:
+      "The one-click action behind a savings recommendation. Dispatches a Jules session to open a PR that swaps `fromModel` → `toModel` in the target repo(s) (or adopts core-guardian's AI Router). `scope: \"project\"` switches the single named project; `scope: \"global\"` switches every project that has used `fromModel`. The project's GitHub repo must be resolvable from the `guardian_projects.repo` column — a project with no connected repo returns 400. Each dispatch registers a `jules_sessions` row (visible on /jules); the action is audited to `billing_events`.",
+    request: {
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              project: z.string().min(1),
+              fromModel: z.string().min(1),
+              toModel: z.string().min(1),
+              scope: z.enum(["project", "global"]),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "Jules switch-model session(s) dispatched + audited",
+        content: {
+          "application/json": {
+            schema: z.object({
+              scope: z.enum(["project", "global"]),
+              fromModel: z.string(),
+              toModel: z.string(),
+              dispatches: z.array(switchDispatchSchema),
+              eventId: z.string(),
+              timestamp: z.number(),
+            }),
+          },
+        },
+      },
+      400: {
+        description: "No resolvable GitHub repo for the target project(s)",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+      401: unauthorized,
+    },
+  }),
+  async (c) => {
+    const { project, fromModel, toModel, scope } = c.req.valid("json");
+    const db = getDb(c.env);
+
+    // Resolve the {project, repo} targets. project scope = the one named project;
+    // global scope = every project that has used fromModel and has a repo.
+    let targets: { project: string; repo: string }[];
+    if (scope === "project") {
+      const [row] = await db
+        .select({ name: guardianProjects.name, repo: guardianProjects.repo })
+        .from(guardianProjects)
+        .where(eq(guardianProjects.name, project))
+        .limit(1);
+      if (!row?.repo) {
+        return c.json(
+          { error: `No connected GitHub repo for project "${project}" (guardian_projects.repo is null). Connect a repo before switching its model.` },
+          400,
+        );
+      }
+      targets = [{ project: row.name, repo: row.repo }];
+    } else {
+      const users = await db
+        .selectDistinct({ project: aiRouterRequests.project })
+        .from(aiRouterRequests)
+        .where(eq(aiRouterRequests.model, fromModel));
+      const names = users.map((u) => u.project);
+      const rows = names.length
+        ? await db
+            .select({ name: guardianProjects.name, repo: guardianProjects.repo })
+            .from(guardianProjects)
+            .where(and(inArray(guardianProjects.name, names), isNotNull(guardianProjects.repo)))
+        : [];
+      if (!rows.length) {
+        return c.json(
+          { error: `No projects with a connected GitHub repo are using "${fromModel}" — nothing to switch.` },
+          400,
+        );
+      }
+      targets = rows.map((r) => ({ project: r.name, repo: r.repo as string }));
+    }
+
+    // Dedupe by repo — one PR per repo covers every project sharing it.
+    const byRepo = new Map<string, { project: string; repo: string }>();
+    for (const t of targets) if (!byRepo.has(t.repo)) byRepo.set(t.repo, t);
+
+    const dispatches: ModelSwitchDispatch[] = [];
+    for (const t of byRepo.values()) {
+      dispatches.push(
+        await dispatchModelSwitch(c.env, {
+          repo: t.repo,
+          project: t.project,
+          fromModel,
+          toModel,
+        }),
+      );
+    }
+
+    const eventId = crypto.randomUUID();
+    const timestamp = Date.now();
+    const ok = dispatches.filter((d) => d.ok).length;
+    await db.insert(billingEvents).values({
+      id: eventId,
+      service: "offense",
+      actionTaken: `model-switch ${scope} ${fromModel} → ${toModel}: ${ok}/${dispatches.length} Jules session(s) dispatched across ${byRepo.size} repo(s).`,
+      timestamp,
+    });
+
+    return c.json({ scope, fromModel, toModel, dispatches, eventId, timestamp }, 200);
   },
 );
