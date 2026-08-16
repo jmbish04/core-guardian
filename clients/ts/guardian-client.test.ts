@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { inspect } from "node:util";
 import { GuardianClient, GuardianError } from "./guardian-client.ts";
 
 /** A fetch stub that records the last call and returns a canned Response. */
@@ -100,6 +101,23 @@ test("tokens never leak into a serialized client instance", () => {
   const serialized = JSON.stringify(g);
   assert.ok(!serialized.includes("SECRET_AI_TOKEN"));
   assert.ok(!serialized.includes("SECRET_API_KEY"));
+});
+
+test("tokens never leak via util.inspect / console.log or a bare key scan", () => {
+  const g = new GuardianClient({ ...cfg, aiToken: "SECRET_AI_TOKEN", apiKey: "SECRET_API_KEY", fetch: stubFetch(200, {}).fn });
+  // util.inspect ignores toJSON — this only stays clean because the token
+  // properties are non-enumerable.
+  const inspected = inspect(g, { depth: 5 });
+  assert.ok(!inspected.includes("SECRET_AI_TOKEN"));
+  assert.ok(!inspected.includes("SECRET_API_KEY"));
+  assert.ok(!Object.keys(g).includes("aiToken"));
+  assert.ok(!Object.keys(g).includes("apiKey"));
+  // ...but the client can still read them: the request carries the token.
+  const { fn, calls } = stubFetch(200, { request_uuid: "u", status: 200, provider: "p", model: "m", mode: "gateway", gateway: null, tokens_in: 0, tokens_out: 0, cost_usd: 0, body: {} });
+  const g2 = new GuardianClient({ ...cfg, aiToken: "AI", apiKey: "API", fetch: fn });
+  return g2.ai.run({ provider: "p", model: "m", input: {} }).then(() => {
+    assert.equal((calls[0].init.headers as Record<string, string>).authorization, "Bearer AI");
+  });
 });
 
 test("VERSION file matches the version the client reports", () => {
