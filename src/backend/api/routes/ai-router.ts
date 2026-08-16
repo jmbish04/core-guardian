@@ -4,10 +4,10 @@
  * guardianAuth-gated.
  */
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import { desc } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 import { guardianAuth } from "@/backend/api/routes/guardian";
 import { getDb } from "@/backend/db";
-import { aiRouterRequests, billingEvents } from "@/backend/db/schema";
+import { aiRouterRecommendations, aiRouterRequests, billingEvents } from "@/backend/db/schema";
 import {
   breakGlass, deleteCircuit, evaluateBreakers, getKillSwitch, incrementSpend, listCircuits, setCircuit, setKillSwitch,
 } from "@/backend/guardian/ai-router/circuits";
@@ -15,7 +15,7 @@ import { captureResult, storePrompt } from "@/backend/guardian/ai-router/capture
 import { forward } from "@/backend/guardian/ai-router/router";
 import { forwardStream } from "@/backend/guardian/ai-router/router-stream";
 import { canPrice, priceSplit } from "@/backend/guardian/ai-router/pricing";
-import { usageByProject, usageByModelForProject } from "@/backend/guardian/ai-router-usage";
+import { syncRouterRecommendations, usageByProject, usageByModelForProject } from "@/backend/guardian/ai-router-usage";
 import { getSecretStoreBinding } from "@/backend/utils/secrets";
 import type { RouterRequest } from "@/backend/guardian/ai-router/types";
 
@@ -312,4 +312,47 @@ aiRouterRouter.openapi(createRoute({
   const e = end ?? Date.now();
   const s = start ?? e - 30 * 86_400_000;
   return c.json({ models: await usageByModelForProject(c.env, project, s, e) }, 200);
+});
+
+// ---------------------------------------------------------------------------
+// Recommendations routes — cheaper-model suggestions (Task 4). guardianAuth-gated.
+// ---------------------------------------------------------------------------
+
+aiRouterRouter.use("/recommendations", guardianAuth);
+aiRouterRouter.use("/recommendations/*", guardianAuth);
+
+aiRouterRouter.openapi(createRoute({
+  method: "get", path: "/recommendations", operationId: "aiRouterListRecommendations",
+  summary: "List open router recommendations (newest first), optionally filtered by project",
+  request: { query: z.object({ project: z.string().optional() }) },
+  responses: { 200: { description: "Recommendations", content: { "application/json": { schema: z.object({ recommendations: z.array(z.any()) }) } } } },
+}), async (c) => {
+  const { project } = c.req.valid("query");
+  const where = project
+    ? and(ne(aiRouterRecommendations.status, "dismissed"), eq(aiRouterRecommendations.project, project))
+    : ne(aiRouterRecommendations.status, "dismissed");
+  const rows = await getDb(c.env).select().from(aiRouterRecommendations).where(where).orderBy(desc(aiRouterRecommendations.at));
+  return c.json({ recommendations: rows }, 200);
+});
+
+aiRouterRouter.openapi(createRoute({
+  method: "post", path: "/recommendations/refresh", operationId: "aiRouterRefreshRecommendations",
+  summary: "Recompute router recommendations now (manual stand-in for the deferred weekly cron)",
+  responses: { 200: { description: "Refreshed", content: { "application/json": { schema: z.object({ written: z.number() }) } } } },
+}), async (c) => {
+  const written = await syncRouterRecommendations(c.env);
+  await audit(c.env, `Refreshed router recommendations: ${written} written`);
+  return c.json({ written }, 200);
+});
+
+aiRouterRouter.openapi(createRoute({
+  method: "post", path: "/recommendations/{id}/dismiss", operationId: "aiRouterDismissRecommendation",
+  summary: "Dismiss a router recommendation",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: { description: "Dismissed", content: { "application/json": { schema: z.object({ ok: z.boolean() }) } } } },
+}), async (c) => {
+  const { id } = c.req.valid("param");
+  await getDb(c.env).update(aiRouterRecommendations).set({ status: "dismissed" }).where(eq(aiRouterRecommendations.id, id));
+  await audit(c.env, `Dismissed recommendation ${id}`);
+  return c.json({ ok: true }, 200);
 });
