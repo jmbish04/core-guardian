@@ -44,6 +44,35 @@ const r = await g.ai.run({ provider: "openai", model: "gpt-4o-mini", input: { me
 
 For a template that re-pulls automatically on install/deploy, see [`template/`](./template).
 
-## Python / Google Apps Script
+## Python
 
-Phase 2 — `python/guardian_client.py` and `gas/GuardianClient.gs`.
+Zero external dependencies (stdlib `urllib`). Config comes from environment variables — the `GUARDIAN` var holds the same JSON object, and the two tokens are their own env vars.
+
+```bash
+curl -fsSL --create-dirs -o guardian_client.py \
+  https://raw.githubusercontent.com/jmbish04/core-guardian/main/clients/python/guardian_client.py
+```
+
+```python
+import os
+from guardian_client import GuardianClient
+
+g = GuardianClient.from_env(os.environ)  # reads GUARDIAN (JSON), GUARDIAN_AI_TOKEN, GUARDIAN_API_KEY
+r = g.ai.run(provider="openai", model="gpt-4o-mini",
+             input={"messages": [{"role": "user", "content": "hi"}]})
+g.usage.register(provider="openai", model="gpt-4o-mini", tokens_in=12, tokens_out=8)
+```
+
+Surface parity note: the project-record fetch is `g.project_status()` (Python can't have both a `project` attribute and a `project()` method); everything else matches the TS names. Self-check: `python3 clients/python/test_guardian_client.py`.
+
+## Google Apps Script
+
+V8 runtime, uses `UrlFetchApp`. Config comes from Script Properties: `GUARDIAN` (JSON string), `GUARDIAN_AI_TOKEN`, `GUARDIAN_API_KEY`. Copy `gas/GuardianClient.gs` into your Apps Script project (or `clasp push` it).
+
+```js
+const g = GuardianClient.fromScriptProperties();
+const r = g.ai.run({ provider: "openai", model: "gpt-4o-mini",
+                     input: { messages: [{ role: "user", content: "hi" }] } });
+```
+
+Streaming is not supported (`UrlFetchApp` is buffered) — `ai.stream` throws. The project-record fetch is `g.projectStatus()`. Run `guardianClientSelfTest_()` from the Apps Script editor to verify (no network needed).
