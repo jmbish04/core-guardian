@@ -164,6 +164,14 @@ export function AiRouterRecommendations() {
       ),
     },
     {
+      key: "status",
+      header: "Status",
+      sortValue: (r) => r.status,
+      render: (r) => (
+        <Badge variant={r.status === "dismissed" ? "secondary" : "default"}>{r.status}</Badge>
+      ),
+    },
+    {
       key: "actions",
       header: "",
       align: "right",
