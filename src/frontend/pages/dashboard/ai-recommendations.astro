@@ -1,0 +1,27 @@
+---
+/**
+ * `/dashboard/ai-recommendations` — AI model-savings recommendations.
+ *
+ * Thin Astro shell over the `<AiRecommendationsView>` React island. Surfaces
+ * "switch project X off the expensive model onto a cheaper-but-capable one,
+ * save $Y" and lets the owner act in one click (dispatch Jules to change the
+ * code + open a PR they review + merge).
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { AiRecommendationsView } from "@/components/dashboard";
+---
+
+<BaseLayout
+  title="AI Recommendations"
+  description="Cheaper-but-at-least-as-capable AI model swaps ranked by the dollars they'd save, priced against your observed spend — with one-click Jules dispatch to change the code and open a PR you review."
+>
+  <main class="container mx-auto flex max-w-5xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/guardian"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Core Guardian
+    </a>
+    <AiRecommendationsView client:load />
+  </main>
+</BaseLayout>
