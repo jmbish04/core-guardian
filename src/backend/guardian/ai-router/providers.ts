@@ -6,6 +6,10 @@ export const PROVIDER_KEY_BINDING: Record<string, string> = {
   openai: "OPENAI_API_KEY",
   anthropic: "ANTHROPIC_API_KEY",
   google: "GEMINI_API_KEY",
+  // Workers AI via the gateway compat endpoint authenticates with a Cloudflare
+  // API token (Bearer), the same token router.ts reads as cfApiToken. Without
+  // this mapping /run could never serve a workers-ai request.
+  "workers-ai": "CLOUDFLARE_API_TOKEN",
 };
 
 /**

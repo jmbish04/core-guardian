@@ -1,19 +1,19 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { Badge } from "~/components/reui/badge"
-import type { DataGridFeatures } from "~/components/reui/data-grid/data-grid"
+import { Badge } from "@/components/reui/badge"
+import type { DataGridFeatures } from "@/components/reui/data-grid/data-grid"
 import type { Column } from "@tanstack/react-table"
 
-import { cn } from "~/lib/utils"
-import { Button } from "~/components/ui/button"
-import { Input } from "~/components/ui/input"
+import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
-} from "~/components/ui/popover"
-import { Separator } from "~/components/ui/separator"
+} from "@/components/ui/popover"
+import { Separator } from "@/components/ui/separator"
 import { CirclePlusIcon, CheckIcon } from "lucide-react"
 
 interface DataGridColumnFilterProps<TData extends object, TValue> {

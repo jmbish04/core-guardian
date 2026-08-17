@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import type { PointerEvent, ReactNode } from "react"
-import { useDataGrid } from "~/components/reui/data-grid/data-grid"
+import { useDataGrid } from "@/components/reui/data-grid/data-grid"
 import { ScrollArea as ScrollAreaPrimitive } from "@base-ui/react/scroll-area"
 
-import { cn } from "~/lib/utils"
+import { cn } from "@/lib/utils"
 
 const MIN_THUMB_SIZE = 24
 const FALLBACK_SCROLLBAR_SIZE = 12

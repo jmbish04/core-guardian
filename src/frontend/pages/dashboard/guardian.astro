@@ -7,20 +7,20 @@
  * inline status feedback.
  */
 import BaseLayout from "@/layouts/BaseLayout.astro";
-import { ActionItems, AllowancesPanel, AlertsBoard, BillableUsage, BudgetMeter, CostTraceIsland, DailyCost, GuardianPanel, IncidentsPanel, ModelAdvisor, RiskTargetsPanel, SpendHeadline, SpendOverview } from "@/components/dashboard";
+import { ActionItems, AllowancesPanel, AlertsBoard, BillableUsage, BudgetMeter, CostTraceIsland, DailyCost, GuardianPanel, IncidentsPanel, ModelAdvisor, RiskTargetsPanel, SpendByProject, SpendHeadline, SpendLanes, SpendOverview } from "@/components/dashboard";
 ---
 
 <BaseLayout
   title="Core Guardian"
   description="Emergency governance cockpit: halt infrastructure spend surges by evicting R2 buckets via lifecycle expiration and dropping runaway Vectorize indexes."
 >
-  <main class="container mx-auto flex max-w-7xl flex-col gap-8 px-4 py-12">
-    <header class="flex flex-col gap-2">
-      <div class="flex items-center gap-3">
-        <span class="text-4xl">🛡️</span>
-        <h1 class="text-3xl font-semibold tracking-tight">Core Guardian</h1>
+  <main class="container mx-auto flex max-w-7xl flex-col gap-5 px-4 py-8">
+    <header class="flex flex-col gap-1">
+      <div class="flex items-center gap-2.5">
+        <span class="text-2xl">🛡️</span>
+        <h1 class="text-2xl font-semibold tracking-tight">Core Guardian</h1>
       </div>
-      <p class="max-w-3xl text-base text-muted-foreground">
+      <p class="max-w-3xl text-sm text-muted-foreground">
         Emergency controls for infrastructure spend surges. Every action here is
         destructive, executes against the live Cloudflare account, and is
         recorded in the <code class="font-mono">billing_events</code> audit trail.
@@ -31,6 +31,8 @@ import { ActionItems, AllowancesPanel, AlertsBoard, BillableUsage, BudgetMeter, 
 
     <SpendHeadline client:load />
 
+    <SpendLanes client:load />
+
     <AlertsBoard client:load />
 
     <div id="incidents">
@@ -38,6 +40,8 @@ import { ActionItems, AllowancesPanel, AlertsBoard, BillableUsage, BudgetMeter, 
     </div>
 
     <SpendOverview client:load />
+
+    <SpendByProject client:visible />
 
     <RiskTargetsPanel client:visible />
 

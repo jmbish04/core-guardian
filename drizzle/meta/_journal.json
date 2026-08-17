@@ -204,6 +204,13 @@
       "when": 1786944345790,
       "tag": "0028_greedy_colleen_wing",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "6",
+      "when": 1786992169926,
+      "tag": "0029_daily_spiral",
+      "breakpoints": true
     }
   ]
 }

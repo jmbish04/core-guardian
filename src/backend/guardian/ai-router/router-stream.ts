@@ -25,10 +25,12 @@ export async function forwardStream(env: Env, req: RouterRequest, _now: number):
   const gateway = mode.startsWith("gateway") ? (mode === "gateway-custom" ? req.aiGatewayId ?? null : "ai-bridge") : null;
   if (gateway && !gwToken) throw new Error("Missing CLOUDFLARE_AI_GATEWAY_TOKEN for gateway mode.");
 
-  // Ask providers to include usage in the stream where supported.
+  // Ask providers to include usage in the stream where supported. `model` comes
+  // from req.model (top-level), not req.input — chat/completions needs it in the
+  // body; an input-provided model wins.
   const input = req.provider === "openai"
-    ? { ...(req.input as object), stream: true, stream_options: { include_usage: true } }
-    : { ...(req.input as object), stream: true };
+    ? { model: req.model, ...(req.input as object), stream: true, stream_options: { include_usage: true } }
+    : { model: req.model, ...(req.input as object), stream: true };
 
   // Build URL/headers same as forward() (share via a helper in a refactor; inline for v1).
   let url: string; const headers: Record<string, string> = { "Content-Type": "application/json" };

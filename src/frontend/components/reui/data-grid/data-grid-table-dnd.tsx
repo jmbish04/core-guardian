@@ -10,11 +10,11 @@ import {
   useState,
 } from "react"
 import type { CSSProperties, ReactNode } from "react"
-import { useDataGrid } from "~/components/reui/data-grid/data-grid"
+import { useDataGrid } from "@/components/reui/data-grid/data-grid"
 import type {
   DataGridFeatures,
   DataGridTableInstance,
-} from "~/components/reui/data-grid/data-grid"
+} from "@/components/reui/data-grid/data-grid"
 import {
   DataGridTableBase,
   DataGridTableBody,
@@ -33,7 +33,7 @@ import {
   DataGridTableHeadRowCellResize,
   DataGridTableRowSpacer,
   DataGridTableViewport,
-} from "~/components/reui/data-grid/data-grid-table"
+} from "@/components/reui/data-grid/data-grid-table"
 import {
   closestCenter,
   DndContext,
@@ -61,7 +61,7 @@ import type {
   Table,
 } from "@tanstack/react-table"
 
-import { Button } from "~/components/ui/button"
+import { Button } from "@/components/ui/button"
 import { GripVerticalIcon } from "lucide-react"
 
 function DataGridTableDndHeader<TData extends object>({

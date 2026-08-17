@@ -381,6 +381,42 @@ const attributionSchema = z.object({
   byProject: z.array(z.object({ project: z.string(), usd: z.number(), calls: z.number() })),
 });
 
+// Per-resource drivers (additive; both null on lines that don't carry them).
+const doDriversSchema = z.object({
+  totalWallTime: z.number(),
+  totalRequests: z.number(),
+  scripts: z.array(
+    z.object({
+      scriptName: z.string(),
+      wallTime: z.number(),
+      requests: z.number(),
+      wallTimeShare: z.number(),
+      wallTimePerRequest: z.number(),
+      longLivedSmell: z.boolean(),
+    }),
+  ),
+});
+
+const gatewayGapSchema = z.object({
+  billedUsd: z.number(),
+  gatewayCostUsd: z.number(),
+  attributableUsd: z.number(),
+  unattributableUsd: z.number(),
+  unattributablePct: z.number(),
+  models: z.array(
+    z.object({
+      model: z.string(),
+      provider: z.string(),
+      gatewayCostUsd: z.number(),
+      share: z.number(),
+      apportionedUsd: z.number(),
+      tokensIn: z.number(),
+      tokensOut: z.number(),
+      calls: z.number(),
+    }),
+  ),
+});
+
 const accountantSkuSchema = z.object({
   sku: z.string(),
   family: z.string(),
@@ -392,6 +428,8 @@ const accountantSkuSchema = z.object({
   category: categoryEnum,
   projectedMonthEnd: z.number(),
   attribution: attributionSchema.nullable(),
+  doDrivers: doDriversSchema.nullable(),
+  gatewayGap: gatewayGapSchema.nullable(),
 });
 
 const accountantResponseSchema = z.object({

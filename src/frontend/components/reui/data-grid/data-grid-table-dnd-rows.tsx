@@ -10,11 +10,11 @@ import {
   useState,
 } from "react"
 import type { CSSProperties, ReactNode } from "react"
-import { useDataGrid } from "~/components/reui/data-grid/data-grid"
+import { useDataGrid } from "@/components/reui/data-grid/data-grid"
 import type {
   DataGridFeatures,
   DataGridTableInstance,
-} from "~/components/reui/data-grid/data-grid"
+} from "@/components/reui/data-grid/data-grid"
 import {
   DataGridTableBase,
   DataGridTableBody,
@@ -33,7 +33,7 @@ import {
   DataGridTableHeadRowCellResize,
   DataGridTableRowSpacer,
   DataGridTableViewport,
-} from "~/components/reui/data-grid/data-grid-table"
+} from "@/components/reui/data-grid/data-grid-table"
 import {
   closestCenter,
   DndContext,
@@ -65,8 +65,8 @@ import { flexRender } from "@tanstack/react-table"
 import type { Cell, HeaderGroup, Row, Table } from "@tanstack/react-table"
 import { createPortal } from "react-dom"
 
-import { cn } from "~/lib/utils"
-import { Button } from "~/components/ui/button"
+import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
 import { GripHorizontalIcon } from "lucide-react"
 
 // Context to share sortable listeners from row to handle

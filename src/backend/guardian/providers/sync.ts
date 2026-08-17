@@ -22,7 +22,6 @@ import { providerCost, PROVIDERS, type NewProviderCostRow, type Provider } from 
 import { monthPrefix, readConfigNumber, sumMonth } from "@/backend/guardian/offense/nuclear";
 
 import { fetchAnthropicCost } from "./anthropic";
-import { fetchCursorCost } from "./cursor";
 import { fetchGeminiBudgets } from "./gemini";
 import { fetchOpenAiCost } from "./openai";
 import { dayStartMs, type ProviderDailyCost } from "./types";
@@ -33,7 +32,6 @@ const DAY_MS = 86_400_000;
 const CLIENTS: Record<Provider, (env: Env, from: string, to: string) => Promise<ProviderDailyCost[]>> = {
   anthropic: fetchAnthropicCost,
   openai: fetchOpenAiCost,
-  cursor: fetchCursorCost,
   // Gemini ignores the window (budgets are point-in-time config).
   gemini: (env) => fetchGeminiBudgets(env),
 };

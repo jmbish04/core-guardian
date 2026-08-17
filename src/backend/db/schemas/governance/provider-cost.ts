@@ -1,6 +1,6 @@
 /**
  * @fileoverview `provider_cost` — daily billed cost from EXTERNAL AI providers
- * (Anthropic, OpenAI, Cursor) plus Gemini's Cloud Billing budget ceiling.
+ * (Anthropic, OpenAI) plus Gemini's Cloud Billing budget ceiling.
  *
  * Everything else in Guardian monitors Cloudflare spend. This table is the
  * off-Cloudflare complement: a daily-gated step on the hourly cron pulls each
@@ -10,7 +10,7 @@
  *
  * `metric` distinguishes the two shapes we can actually get:
  *  - `"spent"` — real charged USD for the day (Anthropic cost report, OpenAI
- *    costs API, Cursor team spend). `costUsd` is the dollars charged.
+ *    costs API). `costUsd` is the dollars charged.
  *  - `"budget"` — Gemini/GCP has no per-key spend API without BigQuery export;
  *    the Cloud Billing **Budgets** API only returns the configured ceiling. So a
  *    Gemini row carries the budget amount in `costUsd` with `metric = "budget"`,
@@ -30,23 +30,24 @@ import { createInsertSchema, createSelectSchema } from "drizzle-zod";
 // ---------------------------------------------------------------------------
 
 export const PROVIDER_COST_TABLE_DESCRIPTION =
-  "Daily billed cost per external AI provider (Anthropic/OpenAI/Cursor), plus the Gemini Cloud Billing budget ceiling. Pulled hourly from each provider's own billing API; retained permanently for trend.";
+  "Daily billed cost per external AI provider (Anthropic/OpenAI), plus the Gemini Cloud Billing budget ceiling. Pulled hourly from each provider's own billing API; retained permanently for trend.";
 
 export const PROVIDER_COST_COLUMN_DESCRIPTIONS: Record<string, string> = {
   id: "Deterministic key: day:provider:dimension.",
   day: "UTC date bucket (YYYY-MM-DD).",
   day_start: "Unix ms at the start of `day` (for range queries).",
-  provider: "External provider: anthropic | openai | gemini | cursor.",
+  provider: "External provider: anthropic | openai | gemini.",
   dimension: 'Per-model / per-budget sub-line, or "" for the daily headline.',
   metric: '"spent" (real charged USD) or "budget" (configured ceiling, Gemini only).',
   cost_usd: "USD charged (spent) or budget ceiling (budget); NULL when the provider gave no dollar figure.",
   currency: "Reported currency for cost_usd.",
-  source: "Which API produced the row (e.g. anthropic-cost-report, openai-costs, cursor-spend, gcp-budget).",
+  source: "Which API produced the row (e.g. anthropic-cost-report, openai-costs, gcp-budget).",
   captured_at: "Unix ms this row was fetched/updated.",
 };
 
-/** The four providers we can onboard a billing key for. */
-export const PROVIDERS = ["anthropic", "openai", "gemini", "cursor"] as const;
+/** The providers we can onboard a billing key for. (Cursor omitted — its usage
+ * API is Team/Business-only, unavailable on an individual plan.) */
+export const PROVIDERS = ["anthropic", "openai", "gemini"] as const;
 export type Provider = (typeof PROVIDERS)[number];
 
 export const providerCost = sqliteTable(

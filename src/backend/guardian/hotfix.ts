@@ -59,7 +59,7 @@ function fromB64(s: string): string {
 /** Ask Workers AI to produce the patched file. Returns the full new content. */
 async function proposePatch(env: Env, path: string, original: string, instruction: string): Promise<string> {
   // Fallback avoids gpt-oss-120b (the ~$588/90d cost driver) when MODEL_DRAFT is unset.
-  const model = (env as any).MODEL_DRAFT || "@cf/meta/llama-3.1-8b-instruct";
+  const model = (env as any).MODEL_DRAFT || "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
   const prompt = `You are patching the file "${path}". Apply this instruction: "${instruction}".
 Return ONLY the complete new file content, no markdown fences, no commentary.
 

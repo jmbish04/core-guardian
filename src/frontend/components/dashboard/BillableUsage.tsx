@@ -23,6 +23,8 @@ import { Loader2Icon, SearchIcon, TrendingDownIcon, TrendingUpIcon } from "lucid
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CartesianGrid, Line, LineChart, XAxis } from "recharts";
 
+import { lookupBillable } from "@/shared/billable-catalog";
+
 import {
   DataGrid,
   DataGridContainer,
@@ -185,9 +187,26 @@ const BILL_COLUMNS: ColumnDef<DataGridFeatures, BillRow>[] = [
           {r.kind === "service" ? (
             <div className="min-w-0">
               <div className="truncate font-medium">{r.service.service}</div>
-              {r.service.family && (
-                <div className="font-mono text-[10px] text-muted-foreground">{r.service.family}</div>
-              )}
+              {(() => {
+                const cat = lookupBillable(r.service.service);
+                if (cat) {
+                  return (
+                    <div
+                      className="mt-0.5 max-w-md text-[11px] leading-4 text-muted-foreground"
+                      title={`Reduce it: ${cat.lever}`}
+                    >
+                      <span className="text-foreground/70">Caused by:</span> {cat.action}
+                    </div>
+                  );
+                }
+                return (
+                  r.service.family && (
+                    <div className="font-mono text-[10px] text-muted-foreground">
+                      {r.service.family}
+                    </div>
+                  )
+                );
+              })()}
             </div>
           ) : (
             <span className="font-mono text-xs text-muted-foreground">{dayTick(r.point.day)}</span>

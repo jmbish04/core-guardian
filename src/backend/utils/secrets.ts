@@ -98,11 +98,6 @@ export async function getOpenAiAdminKey(env: Env): Promise<string | undefined> {
   );
 }
 
-/** Fetch the Cursor Teams admin API key (team spend endpoint). Optional. */
-export async function getCursorApiKey(env: Env): Promise<string | undefined> {
-  return (await getSecretStoreBinding(env, "CURSOR_API_KEY")) ?? getSecret(env, "CURSOR_API_KEY");
-}
-
 /** Fetch the Cloudflare account id. */
 export async function getCloudflareAccountId(env: Env): Promise<string | undefined> {
   return (

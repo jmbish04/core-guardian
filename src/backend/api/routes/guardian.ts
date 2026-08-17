@@ -73,6 +73,7 @@ import { proposeHotfix } from "@/backend/guardian/hotfix";
 import { getWorkersPlan, setWorkersPlan } from "@/backend/guardian/plan";
 import { scrapeAllPricing, scrapeOneProduct } from "@/backend/guardian/pricing-scrape";
 import { archiveR2Bucket } from "@/backend/guardian/r2-archive";
+import { buildSpendRollup, latestSpendRollup, reviewDelta } from "@/backend/guardian/spend-rollup";
 import { listUsageRegistrations, registerDirectUsage } from "@/backend/guardian/register-usage";
 import {
   getBindingIndex,
@@ -1401,6 +1402,73 @@ guardianRouter.openapi(
       { builtAt: index.builtAt, workerCount: index.workerCount, resources, workers },
       200,
     );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/guardian/spend-rollup  — the cached reconciled ledger (frontend read)
+// ---------------------------------------------------------------------------
+
+guardianRouter.openapi(
+  createRoute({
+    method: "get",
+    path: "/spend-rollup",
+    operationId: "guardianSpendRollup",
+    summary: "Cached reconciled spend: billed-by-family (actual) + per-project allocation + lanes",
+    description:
+      "Reads the newest `spend_rollup` row — the cron-materialized reconciliation of the Cloudflare billing ACTUAL (`billable_usage`, ground truth) to per-project spend. `billed` mirrors the Cloudflare bill by service_family; `projects` is that actual allocated across projects by estimated share (sums to the bill); `pools` holds unattributed/shared. The frontend renders this in one cheap read — no compute on page load. `?rebuild=1` forces a fresh build (the cron is primary). NO AI.",
+    request: { query: z.object({ rebuild: z.enum(["0", "1"]).optional() }) },
+    responses: {
+      200: {
+        description: "The reconciled rollup payload (empty-shaped when none built yet)",
+        content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => {
+    const rollup =
+      c.req.valid("query").rebuild === "1"
+        ? await buildSpendRollup(c.env)
+        : // Read cache; build once if empty (fresh deploy, before the first cron).
+          ((await latestSpendRollup(c.env)) ?? (await buildSpendRollup(c.env)));
+    // Attach the "since last review" delta (read-only — window-keyed baseline).
+    rollup.reviewDelta = await reviewDelta(c.env, rollup.totalActualUsd, rollup.window.start);
+    return c.json(rollup, 200);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/guardian/spend-rollup/rebuild  — on-demand refresh
+// ---------------------------------------------------------------------------
+
+guardianRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/spend-rollup/rebuild",
+    operationId: "guardianSpendRollupRebuild",
+    summary: "On-demand spend refresh: re-reconcile from current data + reset the review delta",
+    description:
+      "Manual refresh — rebuilds the reconciled rollup from the freshest data on hand (billed actual is synced daily by the cron; this re-runs the allocation so new AI/infra usage lands) and RESETS the 'since last review' baseline. A cheap, idempotent D1 + arithmetic rebuild — no lock needed (concurrent clicks just re-run the same cheap build). NO AI.",
+    responses: {
+      200: {
+        description: "The freshly rebuilt rollup",
+        content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => {
+    const fresh = await buildSpendRollup(c.env);
+    // Refresh = "I've reviewed" → reset the delta baseline (clean zero).
+    fresh.reviewDelta = await reviewDelta(c.env, fresh.totalActualUsd, fresh.window.start, true);
+    return c.json(fresh, 200);
   },
 );
 

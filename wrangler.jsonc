@@ -162,10 +162,11 @@
     "AI_GATEWAY_ID": "default-gateway",
     // Cost guard: gpt-oss-120b (120B) was the ~$588/90d Workers-AI driver. The
     // 70B-fp8-fast model is a fraction of the neuron cost and keeps structured
-    // (json_schema) extraction quality; drafts run on the cheapest 8B.
+    // (json_schema) extraction quality. (llama-3.1-8b was deprecated by CF
+    // 2026-05-30 → 410, so draft also uses 70B-fp8-fast.)
     "MODEL_CHAT": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     "MODEL_EXTRACT": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-    "MODEL_DRAFT": "@cf/meta/llama-3.1-8b-instruct",
+    "MODEL_DRAFT": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     "MODEL_TRANSCRIBE": "@cf/openai/whisper-large-v3-turbo",
     "DEFAULT_MODEL_EMBEDDING": "@cf/baai/bge-large-en-v1.5",
     // Optional verified destination for message.forward() in the email handler.
@@ -311,16 +312,6 @@
       "store_id": "8c42fa70938644e0a8a109744467375f",
       "secret_name": "GCP_BILLING_ACCOUNT_ID",
     },
-    // CURSOR_API_KEY: re-enable once the secret exists in the store — a binding to
-    // a non-existent Secrets Store secret fails `wrangler deploy` (code 10182).
-    // The provider sync already skips Cursor when the key is absent. Create it +
-    // uncomment together:
-    //   wrangler secrets-store secret create 8c42fa70938644e0a8a109744467375f --name CURSOR_API_KEY --scopes workers --remote
-    // {
-    //   "binding": "CURSOR_API_KEY",
-    //   "store_id": "8c42fa70938644e0a8a109744467375f",
-    //   "secret_name": "CURSOR_API_KEY",
-    // },
   ],
   "r2_buckets": [
     {

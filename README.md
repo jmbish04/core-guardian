@@ -53,6 +53,24 @@ If a GitHub Actions run or Cloudflare PR deployment fails because the lockfile i
 
 Do not add `package-lock.json` back to the repository.
 
+## Guardian Client SDK
+
+Vendorable clients for talking to core-guardian live in [`clients/`](clients/) — one standalone, dependency-free file per language (TypeScript/Workers, Python, Google Apps Script). Identity is declared once in the consumer's `wrangler.jsonc` `vars.GUARDIAN`; the two tokens (`GUARDIAN_AI_TOKEN`, `GUARDIAN_API_KEY`) are separate secret bindings, never in `vars`. Per-language setup lives in [`clients/README.md`](clients/README.md).
+
+Pull the latest (tracks `main`) or pin the `v1.0.0` release:
+
+```bash
+# latest
+curl -fsSL --create-dirs -o src/lib/guardian/guardian-client.ts \
+  https://raw.githubusercontent.com/jmbish04/core-guardian/main/clients/ts/guardian-client.ts
+
+# pinned to a release
+curl -fsSL --create-dirs -o src/lib/guardian/guardian-client.ts \
+  https://raw.githubusercontent.com/jmbish04/core-guardian/v1.0.0/clients/ts/guardian-client.ts
+```
+
+New workers can auto-vendor the client on install/deploy — see [`clients/template/`](clients/template/) (set `GUARDIAN_CLIENT_REF=v1.0.0` to pin). Live, version-stamped setup instructions for any language are served at `GET /api/integration/instructions?lang=ts|python|gas&mode=curl|submodule|degit` and via the `guardian_integration_instructions` MCP tool. The client self-checks run with `corepack pnpm test`.
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE).

@@ -17,17 +17,17 @@ import type {
   Ref,
   RefObject,
 } from "react"
-import { useDataGrid } from "~/components/reui/data-grid/data-grid"
+import { useDataGrid } from "@/components/reui/data-grid/data-grid"
 import type {
   DataGridFeatures,
   DataGridTableInstance,
-} from "~/components/reui/data-grid/data-grid"
+} from "@/components/reui/data-grid/data-grid"
 import { flexRender, Subscribe } from "@tanstack/react-table"
 import type { Cell, Column, Header, Row, Table } from "@tanstack/react-table"
 
-import { cn } from "~/lib/utils"
-import { Checkbox } from "~/components/ui/checkbox"
-import { Spinner } from "~/components/ui/spinner"
+import { cn } from "@/lib/utils"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Spinner } from "@/components/ui/spinner"
 
 // Static spacing lookups; called once per cell, so they stay plain string
 // picks instead of runtime variant machinery.

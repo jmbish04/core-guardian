@@ -39,7 +39,7 @@ const MODEL_MAP: Record<string, ModelDescriptor<any, any>> = {
 export const modelRegistry = {
   chat: llama_3_3_70b,
   extract: llama_3_3_70b,
-  draft: llama_3_1_8b,
+  draft: llama_3_3_70b,
   embed: bge_large_en_v1_5,
   stt: whisper,
   tts: aura_1,
@@ -55,7 +55,7 @@ export function getModelRegistry(env: Env) {
     ...modelRegistry,
     chat: resolveModel(env.MODEL_CHAT, llama_3_3_70b),
     extract: resolveModel(env.MODEL_EXTRACT, llama_3_3_70b),
-    draft: resolveModel(env.MODEL_DRAFT, llama_3_1_8b),
+    draft: resolveModel(env.MODEL_DRAFT, llama_3_3_70b),
     embed: withModelId(modelRegistry.embed, env.DEFAULT_MODEL_EMBEDDING),
   } as const;
 }
