@@ -62,6 +62,11 @@ zone-scoped at most — **never per resource or per worker.** So:
 
 New tables (Drizzle; `pnpm db:generate`):
 
+- **`zones`** — the account's zones, one row each. Columns: `id` (relational),
+  `cf_zone_id`, `name`, `billable` (bool). Account has 3 zones; only
+  `hacolby.app` is billable. `billable_usage.zone_id` becomes an FK to this
+  table, so zone-scoped charges roll up to a named, billable-flagged zone rather
+  than an opaque id.
 - **`cf_resources`** — the resource registry, one row per billable resource with
   its own relational id. Columns: `id` (relational), `product` (r2/d1/kv/
   vectorize/images/durable_objects/workers_ai/…), `resource_type`,
@@ -117,13 +122,19 @@ rollup read.
 
 A **Refresh** button on the overview:
 
-1. Enqueues a rebuild via the existing `WorkflowsAgent` (durable execution).
+1. Enqueues a rebuild onto a real **Cloudflare Queue** (`SPEND_REBUILD`), which
+   gives coalescing, backpressure, and retry. The queue consumer drives the
+   rebuild via the existing `WorkflowsAgent` (durable execution).
 2. The workflow runs the same 4 cron steps above as tracked steps.
 3. Progress streams to the frontend over the `WorkflowsAgent` **WebSocket** —
    live status ("syncing billable usage… snapshotting… reconciling… done").
 4. **Coalesced/debounced**: a rebuild already in flight returns the existing run
    rather than starting a second. WebSocket is open only while the app is open —
    no standing cost.
+
+**Dogfood:** the queue is itself a billable product, so it's registered as a
+`cf_resources` row and watched like everything else — the guardian tracks its
+own queue spend (negligible: ~$0.40/M ops, a refresh is a handful).
 
 ## Over-time deltas
 
@@ -149,15 +160,21 @@ The point is to *act*. Surface, per project/resource:
 
 ## Rollout (batches → one PR each, AGY-reviewed, deployed)
 
-- **B1** — `cf_resources` + `resource_usage_snapshots` + `resource_bindings`
-  tables; cron persists them. (No UI change; data starts accumulating.)
+- **B1** — `zones` + `cf_resources` + `resource_usage_snapshots` +
+  `resource_bindings` tables (+ `billable_usage.zone_id` FK); cron persists them;
+  **historic backfill** of `billable_usage` (pull the max window the Billable
+  Usage API retains, one-time on first run). No UI change; data starts
+  accumulating.
 - **B2** — `spend_rollup` reconciliation (product actual → allocation → lanes);
   read endpoint; frontend reads cache. **Kills the freeze.**
 - **B3** — lanes in the UI (Billed/Projected/Dispute pairing across overview +
   SpendByProject).
-- **B4** — Refresh button → WorkflowsAgent workflow → WebSocket status.
-- **B5** — login deltas (`review_checkpoints`) + budgets/stop-the-bleeding
-  actions.
+- **B4** — Refresh button → `SPEND_REBUILD` Cloudflare Queue → WorkflowsAgent
+  workflow → WebSocket status. Queue registered as a watched `cf_resources` row.
+- **B5** — login deltas (`review_checkpoints`) + budgets with **both lanes**:
+  **advisory** (alert at threshold) **and enforcement** (budget trip →
+  auto-break, reusing `offense/auto-break` + AI-Router circuits) +
+  stop-the-bleeding actions (R2 evict, Vectorize drop, cron kill, D1 trim).
 
 ## Testing
 
@@ -167,13 +184,20 @@ The point is to *act*. Surface, per project/resource:
   existing `poolSpend` test style.
 - Rollup endpoint returns a well-formed empty ledger when nothing is billed yet.
 
-## Out of scope / open questions
+## Resolved decisions
 
-- **Zone-scoped billing rows** (`ZoneId`) — fold into product totals for now;
-  per-zone view later.
-- **Historic backfill** — `billable_usage` syncs a 35-day window; snapshots start
-  accumulating at B1, so deltas are shallow until history builds.
-- **Budget enforcement vs advisory** — B5 starts advisory (alert at threshold);
-  auto-enforcement (circuit trip) is a follow-on decision.
-- **CF Queues binding** — B4 starts on `WorkflowsAgent` alone; add a real Queue
-  only if coalescing/backpressure needs it.
+- **Zones** — dedicated `zones` table; `billable_usage.zone_id` FK. Only
+  `hacolby.app` flagged billable (of 3 account zones). (B1)
+- **Historic backfill** — pull the max window the Billable Usage API retains on
+  first B1 run, so deltas have depth immediately. (B1)
+- **Enforcement** — B5 ships both advisory *and* enforcement (budget trip →
+  auto-break via existing circuits).
+- **CF Queue** — added (`SPEND_REBUILD`); low cost, real backpressure/coalescing;
+  registered as a watched resource so it monitors its own spend. (B4)
+
+## Out of scope
+
+- Per-zone spend *view/breakdown* beyond the billable/non-billable roll-up (the
+  table supports it; the UI comes later if wanted).
+- Auto-enforcement *aggressiveness tuning* (thresholds, cool-downs) — starts
+  conservative, tuned from real data.
