@@ -10,7 +10,7 @@
   // hourly aggregation buckets; hourly crons also get the 15-minute CPU limit
   // rather than the 30-second request limit.
   "triggers": {
-    "crons": ["0 * * * *"],
+    "crons": ["0 * * * *", "0 8 * * 1"],
   },
   "observability": {
     "enabled": true,

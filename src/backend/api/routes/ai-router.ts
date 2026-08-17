@@ -7,7 +7,8 @@ import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { and, desc, eq, ne } from "drizzle-orm";
 import { guardianAuth } from "@/backend/api/routes/guardian";
 import { getDb } from "@/backend/db";
-import { aiRouterRecommendations, aiRouterRequests, billingEvents } from "@/backend/db/schema";
+import { aiRouterRecommendations, aiRouterRequests, billingEvents, guardianProjects } from "@/backend/db/schema";
+import { dispatchRightSizing } from "@/backend/guardian/offense/jules-dispatch";
 import {
   breakGlass, deleteCircuit, evaluateBreakers, getKillSwitch, incrementSpend, listCircuits, setCircuit, setKillSwitch,
 } from "@/backend/guardian/ai-router/circuits";
@@ -412,4 +413,45 @@ aiRouterRouter.openapi(createRoute({
   await getDb(c.env).update(aiRouterRecommendations).set({ status: "dismissed" }).where(eq(aiRouterRecommendations.id, id));
   await audit(c.env, `Dismissed recommendation ${id}`);
   return c.json({ ok: true }, 200);
+});
+
+aiRouterRouter.openapi(createRoute({
+  method: "post", path: "/recommendations/{id}/dispatch-jules", operationId: "aiRouterDispatchJules",
+  summary: "Dispatch a router recommendation to Jules for a right-sizing PR",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: { description: "Dispatched", content: { "application/json": { schema: z.object({
+      ok: z.boolean(), julesSessionId: z.string().nullable(), dispatchId: z.string().nullable() }) } } },
+    404: { description: "Recommendation not found", content: { "application/json": { schema: z.object({ error: z.string() }) } } },
+    409: { description: "No repo mapping for project", content: { "application/json": { schema: z.object({ error: z.string() }) } } },
+    502: { description: "Jules dispatch failed", content: { "application/json": { schema: z.object({ error: z.string() }) } } },
+  },
+}), async (c) => {
+  const { id } = c.req.valid("param");
+  const db = getDb(c.env);
+
+  const [rec] = await db.select().from(aiRouterRecommendations).where(eq(aiRouterRecommendations.id, id)).limit(1);
+  if (!rec) return c.json({ error: "Recommendation not found." }, 404);
+
+  if (rec.status !== "open") {
+    return c.json({ error: "Recommendation is not open (already dispatched or resolved)." }, 409);
+  }
+  if (!rec.suggestedModel) {
+    return c.json({ error: "Recommendation has no suggested model to switch to." }, 409);
+  }
+
+  const [proj] = await db.select({ repo: guardianProjects.repo }).from(guardianProjects).where(eq(guardianProjects.name, rec.project)).limit(1);
+  if (!proj?.repo) return c.json({ error: "No repo mapping for project; advisory only." }, 409);
+
+  const result = await dispatchRightSizing(c.env, {
+    repo: proj.repo, project: rec.project, currentModel: rec.model,
+    suggestedModel: rec.suggestedModel ?? "", rationale: rec.rationale,
+  });
+  if (!result.ok) return c.json({ error: result.error ?? "Jules dispatch failed." }, 502);
+
+  await db.update(aiRouterRecommendations)
+    .set({ status: "dispatched", julesSessionId: result.julesSessionId })
+    .where(eq(aiRouterRecommendations.id, id));
+  await audit(c.env, `Dispatched right-sizing to Jules for ${rec.project}/${rec.model} (session ${result.julesSessionId})`);
+  return c.json({ ok: true, julesSessionId: result.julesSessionId, dispatchId: result.dispatchId }, 200);
 });
