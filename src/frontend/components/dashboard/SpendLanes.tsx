@@ -105,21 +105,25 @@ export function SpendLanes() {
   }
   if (!data) return null;
 
+  // Default the B3 fields — a rollup cached before this release lacks them until
+  // the next cron rebuild; never render $NaN.
+  const totalActualUsd = data.totalActualUsd ?? 0;
+  const totalProjectedUsd = data.totalProjectedUsd ?? 0;
   // Positive dispute (billed above our estimate) is the only actionable direction.
-  const gap = data.disputeUsd;
+  const gap = data.disputeUsd ?? 0;
   const overBilled = gap > 1;
 
   return (
     <Card className="grid grid-cols-1 gap-0 p-0 sm:grid-cols-3 sm:divide-x sm:divide-border/60">
       <Lane
         label="Billed this cycle"
-        value={usd(data.totalActualUsd)}
+        value={usd(totalActualUsd)}
         hint="Actual charges from Cloudflare's Billable Usage API — ties 1:1 to your Cloudflare bill."
         footer="Ground truth"
       />
       <Lane
         label="Projected"
-        value={usd(data.totalProjectedUsd)}
+        value={usd(totalProjectedUsd)}
         tone="muted"
         hint="Run-rate: this cycle's billed spend extrapolated to the cycle end. A forecast, not money spent."
         footer="At current run-rate"
