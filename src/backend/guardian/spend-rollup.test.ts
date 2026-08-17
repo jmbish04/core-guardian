@@ -6,7 +6,23 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { UNATTRIBUTED, allocateActual } from "./spend-rollup";
+import { UNATTRIBUTED, allocateActual, likeForLikeDispute } from "./spend-rollup";
+
+test("dispute is like-for-like: a billed-but-unpriceable category (DO) is excluded", () => {
+  const actual = new Map([
+    ["ai", 500],
+    ["do", 104], // billed but no estimate → must NOT show as a $104 dispute
+  ]);
+  const estimate = new Map([["ai", 480]]); // only AI is priceable
+  const { estimateUsd, disputeUsd } = likeForLikeDispute(actual, estimate);
+  assert.equal(estimateUsd, 480);
+  assert.equal(disputeUsd, 20); // 500 − 480, DO ignored (not +124)
+});
+
+test("dispute is negative when billed under our (upper-bound) estimate", () => {
+  const { disputeUsd } = likeForLikeDispute(new Map([["ai", 400]]), new Map([["ai", 500]]));
+  assert.equal(disputeUsd, -100);
+});
 
 test("allocateActual splits by weight and sums back to the actual", () => {
   const out = allocateActual(100, [
