@@ -209,6 +209,14 @@
   ],
   "secrets_store_secrets": [
     {
+      // ReUI Pro registry license — consumed by the shadcn CLI at build/install
+      // time (components.json Bearer). Bound so non-local deploys don't rely on
+      // a local .env.local.
+      "binding": "REUI_LICENSE_KEY",
+      "store_id": "8c42fa70938644e0a8a109744467375f",
+      "secret_name": "REUI_LICENSE_KEY",
+    },
+    {
       "binding": "GITHUB_TOKEN",
       "store_id": "8c42fa70938644e0a8a109744467375f",
       "secret_name": "GH_TOKEN",
