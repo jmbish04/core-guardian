@@ -311,16 +311,11 @@
       "store_id": "8c42fa70938644e0a8a109744467375f",
       "secret_name": "GCP_BILLING_ACCOUNT_ID",
     },
-    // CURSOR_API_KEY: re-enable once the secret exists in the store — a binding to
-    // a non-existent Secrets Store secret fails `wrangler deploy` (code 10182).
-    // The provider sync already skips Cursor when the key is absent. Create it +
-    // uncomment together:
-    //   wrangler secrets-store secret create 8c42fa70938644e0a8a109744467375f --name CURSOR_API_KEY --scopes workers --remote
-    // {
-    //   "binding": "CURSOR_API_KEY",
-    //   "store_id": "8c42fa70938644e0a8a109744467375f",
-    //   "secret_name": "CURSOR_API_KEY",
-    // },
+    {
+      "binding": "CURSOR_API_KEY",
+      "store_id": "8c42fa70938644e0a8a109744467375f",
+      "secret_name": "CURSOR_API_KEY",
+    },
   ],
   "r2_buckets": [
     {
