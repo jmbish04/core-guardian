@@ -169,13 +169,22 @@ async function runGuardianEvaluation(env: Env) {
   // Hourly: sync zones + snapshot per-resource usage + the worker→resource
   // binding map (the spend-attribution data foundation). Non-fatal.
   try {
-    await syncZones(env);
+    const zones = await syncZones(env);
     const snap = await snapshotResources(env);
     console.warn(JSON.stringify({ level: "INFO", source: "guardian.snapshotResources", ...snap }));
+    // Diagnostic snapshot readable via `wrangler kv key get guardian:snapshot-debug`.
+    await env.SESSIONS.put(
+      "guardian:snapshot-debug",
+      JSON.stringify({ at: Date.now(), ok: true, zones, ...snap }),
+    );
   } catch (err) {
     console.error(
       JSON.stringify({ level: "ERROR", source: "guardian.snapshotResources", error: String(err) }),
     );
+    await env.SESSIONS.put(
+      "guardian:snapshot-debug",
+      JSON.stringify({ at: Date.now(), ok: false, error: String(err) }),
+    ).catch(() => {});
   }
   // Hourly: reconcile the billing actual to per-project spend and cache it, so
   // the frontend reads one row instead of computing on load. Runs after the
