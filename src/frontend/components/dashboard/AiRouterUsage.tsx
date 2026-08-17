@@ -1,30 +1,38 @@
 /**
- * @fileoverview AI Router usage-by-project — cost-by-project bar chart, a
- * cost-descending project rollup table, and a per-project model drill.
+ * @fileoverview AI Router usage-by-project — cost-by-project bar chart plus a
+ * cost-descending project rollup on the ReUI DataGrid (TanStack Table v9).
  *
  * Answers "why is AI spend high — which project?" `ai_router_requests` is the
  * only table carrying a `project` dimension, so this view is router-only —
- * correct for attribution, not a total-spend figure. Mounted above
- * `<AiRouterConsole>` on `/dashboard/ai-router` as its own island (that one is
- * already large).
+ * correct for attribution, not a total-spend figure. Each project row expands
+ * inline to its provider/model breakdown, lazy-loaded from
+ * `/ai-router/usage/{project}` the first time it opens (the old drill dialog).
+ * Mounted above `<AiRouterConsole>` on `/dashboard/ai-router` as its own island.
  */
 
 "use client";
 
-import { Loader2Icon, RefreshCwIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type ColumnDef,
+  type ExpandedState,
+  useTable,
+} from "@tanstack/react-table";
+import { Loader2Icon, RefreshCwIcon, SearchIcon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, XAxis, YAxis } from "recharts";
 
-import { ResourceTable, type Column } from "@/components/storage";
+import {
+  DataGrid,
+  DataGridContainer,
+  dataGridFeatures,
+  type DataGridFeatures,
+} from "@/components/reui/data-grid/data-grid";
+import { DataGridColumnHeader } from "@/components/reui/data-grid/data-grid-column-header";
+import { DataGridScrollArea } from "@/components/reui/data-grid/data-grid-scroll-area";
+import { DataGridTable } from "@/components/reui/data-grid/data-grid-table";
 import { Button } from "@/components/ui/button";
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -34,6 +42,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ApiError, apiGet } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 import { InlineError } from "./shared";
 
@@ -58,6 +67,24 @@ interface ModelUsage {
   costUsd: number;
 }
 
+/** Lazily-fetched model breakdown for one project. */
+type DrillEntry =
+  | { state: "loading" }
+  | { state: "error"; message: string }
+  | { state: "loaded"; models: ModelUsage[] };
+
+/** Discriminated tree row: a project parent, a model child, or a status child. */
+type UsageRow =
+  | { kind: "project"; id: string; project: ProjectUsage; subRows: UsageRow[] }
+  | { kind: "model"; id: string; project: string; model: ModelUsage }
+  | {
+      kind: "status";
+      id: string;
+      project: string;
+      status: "loading" | "error" | "empty";
+      message?: string;
+    };
+
 const PANEL = "rounded-xl border border-border/60 bg-background/40 p-6";
 
 const DAY_OPTIONS = [7, 30, 90] as const;
@@ -77,20 +104,28 @@ const CHART_CONFIG = {
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
 
+function describeError(err: unknown, fallback: string): string {
+  if (err instanceof ApiError && err.status === 401) return "Sign in to view usage.";
+  if (err instanceof ApiError) return err.message;
+  return fallback;
+}
+
 export function AiRouterUsage() {
   const [days, setDays] = useState(30);
   const [projects, setProjects] = useState<ProjectUsage[]>([]);
   const [loading, setLoading] = useState(true);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
 
-  const [drillProject, setDrillProject] = useState<string | null>(null);
-  const [models, setModels] = useState<ModelUsage[]>([]);
-  const [drillLoading, setDrillLoading] = useState(false);
-  const [drillError, setDrillError] = useState<string | null>(null);
+  // Per-project model breakdown, lazy-loaded on first expand.
+  const [drill, setDrill] = useState<Record<string, DrillEntry>>({});
+  const [expanded, setExpanded] = useState<ExpandedState>({});
 
   const reqSeq = useRef(0);
-  const drillSeq = useRef(0);
+  // Bumped whenever the visible range changes; a stale drill fetch checks it
+  // before committing so a slow response can't paint the wrong window.
+  const epoch = useRef(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -105,15 +140,7 @@ export function AiRouterUsage() {
         setReady(true);
       }
     } catch (err) {
-      if (seq === reqSeq.current) {
-        setError(
-          err instanceof ApiError && err.status === 401
-            ? "Sign in to view usage."
-            : err instanceof ApiError
-              ? err.message
-              : "Failed to load AI Router usage.",
-        );
-      }
+      if (seq === reqSeq.current) setError(describeError(err, "Failed to load AI Router usage."));
     } finally {
       if (seq === reqSeq.current) setLoading(false);
     }
@@ -123,18 +150,20 @@ export function AiRouterUsage() {
     void load();
   }, [load]);
 
-  // Close the drill dialog on range change so it can't show a stale range.
+  // A range change invalidates every cached breakdown; collapse and drop them
+  // so an expanded row can't show a stale range (old behavior closed the dialog).
   useEffect(() => {
-    setDrillProject(null);
+    epoch.current += 1;
+    setDrill({});
+    setExpanded({});
   }, [days]);
 
-  const openDrill = useCallback(
+  const ensureDrill = useCallback(
     async (project: string) => {
-      setDrillProject(project);
-      setDrillLoading(true);
-      setDrillError(null);
-      setModels([]);
-      const seq = ++drillSeq.current;
+      // Already loading or loaded — nothing to do (errors are retried by re-expand).
+      if (drill[project] && drill[project].state !== "error") return;
+      const token = epoch.current;
+      setDrill((prev) => ({ ...prev, [project]: { state: "loading" } }));
       try {
         const end = Math.floor(Date.now() / 60_000) * 60_000;
         const start = end - days * 86_400_000;
@@ -142,23 +171,246 @@ export function AiRouterUsage() {
           "/ai-router/usage/" + encodeURIComponent(project),
           { start, end },
         );
-        if (seq === drillSeq.current) setModels(res.models);
-      } catch (err) {
-        if (seq === drillSeq.current) {
-          setDrillError(
-            err instanceof ApiError && err.status === 401
-              ? "Sign in to view usage."
-              : err instanceof ApiError
-                ? err.message
-                : "Failed to load model breakdown.",
-          );
+        if (token === epoch.current) {
+          setDrill((prev) => ({ ...prev, [project]: { state: "loaded", models: res.models } }));
         }
-      } finally {
-        if (seq === drillSeq.current) setDrillLoading(false);
+      } catch (err) {
+        if (token === epoch.current) {
+          setDrill((prev) => ({
+            ...prev,
+            [project]: { state: "error", message: describeError(err, "Failed to load model breakdown.") },
+          }));
+        }
       }
     },
-    [days],
+    [days, drill],
   );
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return projects;
+    return projects.filter((p) => p.project.toLowerCase().includes(q));
+  }, [projects, query]);
+
+  const rows = useMemo<UsageRow[]>(
+    () =>
+      filtered.map((p) => {
+        const entry = drill[p.project];
+        let subRows: UsageRow[];
+        if (!entry || entry.state === "loading") {
+          subRows = [{ kind: "status", id: `${p.project}::loading`, project: p.project, status: "loading" }];
+        } else if (entry.state === "error") {
+          subRows = [
+            {
+              kind: "status",
+              id: `${p.project}::error`,
+              project: p.project,
+              status: "error",
+              message: entry.message,
+            },
+          ];
+        } else if (entry.models.length === 0) {
+          subRows = [{ kind: "status", id: `${p.project}::empty`, project: p.project, status: "empty" }];
+        } else {
+          subRows = entry.models.map((m) => ({
+            kind: "model" as const,
+            id: `${p.project}::${m.provider}/${m.model}`,
+            project: p.project,
+            model: m,
+          }));
+        }
+        return { kind: "project", id: p.project, project: p, subRows };
+      }),
+    [filtered, drill],
+  );
+
+  // Fires on chevron toggle (via row.getToggleExpandedHandler); newly-expanded
+  // projects kick off their lazy breakdown fetch here.
+  const handleExpandedChange = useCallback(
+    (updater: ExpandedState | ((old: ExpandedState) => ExpandedState)) => {
+      const next = typeof updater === "function" ? updater(expanded) : updater;
+      if (next !== true && expanded !== true) {
+        for (const id of Object.keys(next)) {
+          if (next[id] && !expanded[id]) void ensureDrill(id);
+        }
+      }
+      setExpanded(next);
+    },
+    [expanded, ensureDrill],
+  );
+
+  const columns = useMemo<ColumnDef<DataGridFeatures, UsageRow>[]>(
+    () => [
+      {
+        id: "project",
+        accessorFn: (r) =>
+          r.kind === "project" ? r.project.project : r.kind === "model" ? `${r.model.provider}/${r.model.model}` : "",
+        header: ({ column }) => <DataGridColumnHeader column={column} title="Project" />,
+        cell: ({ row }) => {
+          const r = row.original;
+          if (r.kind === "project") {
+            return (
+              <div className="flex min-w-0 items-center gap-1.5">
+                <Button
+                  type="button"
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label={row.getIsExpanded() ? `Collapse ${r.project.project}` : `Expand ${r.project.project}`}
+                  aria-expanded={row.getIsExpanded()}
+                  className="size-6 shrink-0 p-0 text-muted-foreground shadow-none hover:text-foreground"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    row.getToggleExpandedHandler()();
+                  }}
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    className={cn(
+                      "size-3.5 shrink-0 transition-transform duration-150",
+                      row.getIsExpanded() && "rotate-90",
+                    )}
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden
+                  >
+                    <path d="m9 18 6-6-6-6" />
+                  </svg>
+                </Button>
+                <span className="truncate font-mono text-sm">{r.project.project}</span>
+              </div>
+            );
+          }
+          if (r.kind === "model") {
+            return (
+              <span className="block pl-8 font-mono text-xs">
+                <span className="text-muted-foreground">{r.model.provider}/</span>
+                {r.model.model}
+              </span>
+            );
+          }
+          // status row
+          if (r.status === "loading") {
+            return (
+              <span className="flex items-center gap-2 pl-8 text-xs text-muted-foreground">
+                <Loader2Icon className="size-3.5 animate-spin" />
+                Loading models…
+              </span>
+            );
+          }
+          if (r.status === "error") {
+            return (
+              <span className="block pl-8 text-xs text-destructive">
+                {r.message ?? "Failed to load model breakdown."}
+              </span>
+            );
+          }
+          return (
+            <span className="block pl-8 text-xs text-muted-foreground">
+              No requests for this project in this window.
+            </span>
+          );
+        },
+        enableHiding: false,
+        minSize: 260,
+        meta: { autoSize: true },
+      },
+      {
+        id: "requests",
+        accessorFn: (r) => (r.kind === "project" ? r.project.requests : r.kind === "model" ? r.model.requests : 0),
+        header: ({ column }) => <DataGridColumnHeader column={column} title="Requests" className="justify-end" />,
+        cell: ({ row }) => {
+          const r = row.original;
+          const val = r.kind === "project" ? r.project.requests : r.kind === "model" ? r.model.requests : null;
+          if (val === null) return null;
+          return <span className="block text-right font-mono text-xs tabular-nums">{val.toLocaleString()}</span>;
+        },
+        size: 110,
+      },
+      {
+        id: "tokens",
+        accessorFn: (r) =>
+          r.kind === "project"
+            ? r.project.tokensIn + r.project.tokensOut
+            : r.kind === "model"
+              ? r.model.tokensIn + r.model.tokensOut
+              : 0,
+        header: ({ column }) => <DataGridColumnHeader column={column} title="Tokens" className="justify-end" />,
+        cell: ({ row }) => {
+          const r = row.original;
+          const t = r.kind === "project" ? r.project : r.kind === "model" ? r.model : null;
+          if (!t) return null;
+          return (
+            <span className="block text-right font-mono text-xs tabular-nums">
+              {t.tokensIn.toLocaleString()}
+              <span className="text-muted-foreground"> / {t.tokensOut.toLocaleString()}</span>
+            </span>
+          );
+        },
+        size: 150,
+        enableSorting: false,
+      },
+      {
+        id: "cost",
+        accessorFn: (r) => (r.kind === "project" ? r.project.costUsd : r.kind === "model" ? r.model.costUsd : 0),
+        header: ({ column }) => <DataGridColumnHeader column={column} title="Cost" className="justify-end" />,
+        cell: ({ row }) => {
+          const r = row.original;
+          const c = r.kind === "project" ? r.project.costUsd : r.kind === "model" ? r.model.costUsd : null;
+          if (c === null) return null;
+          return <span className="block text-right font-mono text-xs tabular-nums">{usd(c)}</span>;
+        },
+        size: 100,
+      },
+      {
+        id: "errorRate",
+        header: "Error %",
+        enableSorting: false,
+        cell: ({ row }) => {
+          const r = row.original;
+          if (r.kind !== "project") return null;
+          const p = r.project;
+          return (
+            <span className="block text-right font-mono text-xs tabular-nums">
+              {p.requests > 0 ? `${((p.errors / p.requests) * 100).toFixed(1)}%` : "—"}
+            </span>
+          );
+        },
+        size: 90,
+      },
+      {
+        id: "breakers",
+        header: "Breakers",
+        enableSorting: false,
+        cell: ({ row }) => {
+          const r = row.original;
+          if (r.kind !== "project") return null;
+          return <span className="block text-right font-mono text-xs tabular-nums">{r.project.breakers}</span>;
+        },
+        size: 90,
+      },
+    ],
+    [],
+  );
+
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const table = useTable({
+    features: dataGridFeatures,
+    data: rows,
+    columns,
+    getRowId: (row) => row.id,
+    getSubRows: (row) => (row.kind === "project" ? row.subRows : undefined),
+    getRowCanExpand: (row) => row.original.kind === "project",
+    state: { expanded },
+    onExpandedChange: handleExpandedChange,
+    // Render every row — the data is already the full page. Without this the
+    // grid slices to pageSize 10 and expanded children vanish.
+    manualPagination: true,
+    initialState: { sorting: [{ id: "cost", desc: true }] },
+  });
 
   if (error && !ready) {
     return <InlineError message={error} onRetry={() => void load()} />;
@@ -173,120 +425,7 @@ export function AiRouterUsage() {
     );
   }
 
-  const top = projects.slice(0, 10);
-
-  const columns: Column<ProjectUsage>[] = [
-    {
-      key: "project",
-      header: "Project",
-      sortValue: (r) => r.project,
-      render: (r) => <span className="font-mono text-sm">{r.project}</span>,
-    },
-    {
-      key: "requests",
-      header: "Requests",
-      align: "right",
-      sortValue: (r) => r.requests,
-      render: (r) => (
-        <span className="font-mono text-xs tabular-nums">{r.requests.toLocaleString()}</span>
-      ),
-    },
-    {
-      key: "tokens",
-      header: "Tokens",
-      align: "right",
-      sortValue: (r) => r.tokensIn + r.tokensOut,
-      render: (r) => (
-        <span className="font-mono text-xs tabular-nums">
-          {r.tokensIn.toLocaleString()}
-          <span className="text-muted-foreground"> / {r.tokensOut.toLocaleString()}</span>
-        </span>
-      ),
-    },
-    {
-      key: "cost",
-      header: "Cost",
-      align: "right",
-      sortValue: (r) => r.costUsd,
-      render: (r) => <span className="font-mono text-xs tabular-nums">{usd(r.costUsd)}</span>,
-    },
-    {
-      key: "errorRate",
-      header: "Error %",
-      align: "right",
-      sortValue: (r) => (r.requests > 0 ? r.errors / r.requests : 0),
-      render: (r) => (
-        <span className="font-mono text-xs tabular-nums">
-          {r.requests > 0 ? `${((r.errors / r.requests) * 100).toFixed(1)}%` : "—"}
-        </span>
-      ),
-    },
-    {
-      key: "breakers",
-      header: "Breakers",
-      align: "right",
-      sortValue: (r) => r.breakers,
-      render: (r) => <span className="font-mono text-xs tabular-nums">{r.breakers}</span>,
-    },
-    {
-      key: "actions",
-      header: "",
-      align: "right",
-      render: (r) => (
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-xs"
-          onClick={() => void openDrill(r.project)}
-        >
-          Models
-        </Button>
-      ),
-    },
-  ];
-
-  const modelColumns: Column<ModelUsage>[] = [
-    {
-      key: "model",
-      header: "Provider / model",
-      sortValue: (r) => `${r.provider}/${r.model}`,
-      render: (r) => (
-        <span className="font-mono text-xs">
-          <span className="text-muted-foreground">{r.provider}/</span>
-          {r.model}
-        </span>
-      ),
-    },
-    {
-      key: "requests",
-      header: "Requests",
-      align: "right",
-      sortValue: (r) => r.requests,
-      render: (r) => (
-        <span className="font-mono text-xs tabular-nums">{r.requests.toLocaleString()}</span>
-      ),
-    },
-    {
-      key: "tokens",
-      header: "Tokens",
-      align: "right",
-      sortValue: (r) => r.tokensIn + r.tokensOut,
-      render: (r) => (
-        <span className="font-mono text-xs tabular-nums">
-          {r.tokensIn.toLocaleString()}
-          <span className="text-muted-foreground"> / {r.tokensOut.toLocaleString()}</span>
-        </span>
-      ),
-    },
-    {
-      key: "cost",
-      header: "Cost",
-      align: "right",
-      sortValue: (r) => r.costUsd,
-      render: (r) => <span className="font-mono text-xs tabular-nums">{usd(r.costUsd)}</span>,
-    },
-  ];
+  const top = filtered.slice(0, 10);
 
   return (
     <div className="flex flex-col gap-6">
@@ -298,6 +437,15 @@ export function AiRouterUsage() {
           <h2 className="mt-1 text-2xl font-semibold tracking-tight">Spend by project</h2>
         </div>
         <div className="flex items-center gap-3">
+          <div className="relative">
+            <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.currentTarget.value)}
+              placeholder="Search…"
+              className="h-8 w-40 pl-8 text-sm"
+            />
+          </div>
           <div className="flex items-center gap-2">
             <Label htmlFor="ai-router-usage-range" className="text-xs text-muted-foreground">
               Range
@@ -323,11 +471,7 @@ export function AiRouterUsage() {
             disabled={loading}
             className="gap-2"
           >
-            {loading ? (
-              <Loader2Icon className="size-4 animate-spin" />
-            ) : (
-              <RefreshCwIcon className="size-4" />
-            )}
+            {loading ? <Loader2Icon className="size-4 animate-spin" /> : <RefreshCwIcon className="size-4" />}
             Refresh
           </Button>
         </div>
@@ -376,58 +520,23 @@ export function AiRouterUsage() {
         )}
       </section>
 
-      {/* --- Project rollup table ------------------------------------------ */}
+      {/* --- Project rollup grid (expand a row for its model breakdown) ---- */}
       <section className="flex flex-col gap-3">
         <h3 className="text-base font-medium">Projects ({projects.length})</h3>
-        <ResourceTable
-          rows={projects}
-          columns={columns}
-          loading={loading}
-          rowKey={(r) => r.project}
-          searchText={(r) => r.project}
-          initialSortKey="cost"
-          empty="No AI Router requests recorded in this window."
-        />
+        <DataGrid
+          table={table}
+          recordCount={filtered.length}
+          isLoading={loading}
+          emptyMessage="No AI Router requests recorded in this window."
+          tableLayout={{ dense: true, headerBorder: true, rowBorder: true, columnsVisibility: false }}
+        >
+          <DataGridContainer>
+            <DataGridScrollArea>
+              <DataGridTable />
+            </DataGridScrollArea>
+          </DataGridContainer>
+        </DataGrid>
       </section>
-
-      {/* --- Model drill ----------------------------------------------------- */}
-      <Dialog
-        open={drillProject !== null}
-        onOpenChange={(open) => {
-          if (!open) setDrillProject(null);
-        }}
-      >
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Models · {drillProject}</DialogTitle>
-            <DialogDescription>
-              Provider/model breakdown for <span className="font-mono">{drillProject}</span> over the
-              last {days} days.
-            </DialogDescription>
-          </DialogHeader>
-
-          {drillError ? (
-            <InlineError
-              message={drillError}
-              onRetry={() => drillProject && void openDrill(drillProject)}
-            />
-          ) : drillLoading ? (
-            <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
-              <Loader2Icon className="size-4 animate-spin" />
-              Loading models…
-            </div>
-          ) : (
-            <ResourceTable
-              rows={models}
-              columns={modelColumns}
-              rowKey={(r) => `${r.provider}/${r.model}`}
-              searchText={(r) => `${r.provider} ${r.model}`}
-              initialSortKey="cost"
-              empty="No requests for this project in this window."
-            />
-          )}
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

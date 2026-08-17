@@ -6,21 +6,30 @@
  * that needs attention is always the first row, and unmetered probes sink to
  * the bottom rather than being hidden in a separate card — a governance panel
  * that silently drops a binding is worse than one that admits it cannot see it.
+ *
+ * Rewired onto the ReUI DataGrid (TanStack Table v9): sortable headers and
+ * client search over the same severity-first default order. Every binding stays
+ * on one screen (manualPagination — the data is already the page), so nothing
+ * is ever paged out of view. Clicking a metered row still re-charts the trend.
  */
 
 "use client";
 
-import { AlertTriangleIcon } from "lucide-react";
+import { type ColumnDef, useTable } from "@tanstack/react-table";
+import { AlertTriangleIcon, SearchIcon } from "lucide-react";
+import { useMemo, useState } from "react";
 
-import { Badge } from "@/components/ui/badge";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  DataGrid,
+  DataGridContainer,
+  dataGridFeatures,
+  type DataGridFeatures,
+} from "@/components/reui/data-grid/data-grid";
+import { DataGridColumnHeader } from "@/components/reui/data-grid/data-grid-column-header";
+import { DataGridScrollArea } from "@/components/reui/data-grid/data-grid-scroll-area";
+import { DataGridTable } from "@/components/reui/data-grid/data-grid-table";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { compactNumber, formatRatio, humanSize } from "@/lib/format";
 
 export type TableReading = {
@@ -46,7 +55,7 @@ function ratio(r: TableReading): number | null {
   return r.value / r.alertThreshold;
 }
 
-/** Severity rank — drives row order. Higher sorts first. */
+/** Severity rank — drives the default row order. Higher sorts first. */
 function severity(r: TableReading): number {
   if (r.surging) return 1000;
   if (r.status !== "ok") return -1;
@@ -100,6 +109,28 @@ function StatusBadge({ reading }: { reading: TableReading }) {
   );
 }
 
+function LoadCell({ reading }: { reading: TableReading }) {
+  const pct = ratio(reading);
+  if (pct == null) return <span className="text-xs text-muted-foreground">—</span>;
+  return (
+    <div className="flex items-center gap-2">
+      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-foreground/[0.08]">
+        <div
+          className={`h-full rounded-full ${
+            reading.surging ? "bg-rose-500" : pct >= 0.7 ? "bg-amber-500" : "bg-foreground/60"
+          }`}
+          style={{ width: `${Math.min(100, pct * 100)}%` }}
+        />
+      </div>
+      <span className="w-10 shrink-0 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+        {reading.alertThreshold
+          ? formatRatio(reading.value, reading.alertThreshold)
+          : `${Math.round(pct * 100)}%`}
+      </span>
+    </div>
+  );
+}
+
 export function UsageTable({
   readings,
   selectedId,
@@ -109,7 +140,121 @@ export function UsageTable({
   selectedId?: string;
   onSelect?: (id: string) => void;
 }) {
-  const rows = [...readings].sort((a, b) => severity(b) - severity(a));
+  const [query, setQuery] = useState("");
+
+  // Severity-first default order. TanStack preserves data order until a header
+  // is clicked, so this stays the resting sort while every column is sortable.
+  const sorted = useMemo(
+    () => [...readings].sort((a, b) => severity(b) - severity(a)),
+    [readings],
+  );
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return sorted;
+    return sorted.filter((r) =>
+      `${r.label} ${r.product} ${r.bindings.join(" ")} ${r.unit} ${r.status}`
+        .toLowerCase()
+        .includes(q),
+    );
+  }, [sorted, query]);
+
+  const columns = useMemo<ColumnDef<DataGridFeatures, TableReading>[]>(
+    () => [
+      {
+        accessorKey: "label",
+        header: ({ column }) => <DataGridColumnHeader column={column} title="Binding" />,
+        cell: ({ row }) => {
+          const reading = row.original;
+          return (
+            <div className="flex flex-col gap-0.5">
+              <span className="font-medium">{reading.label}</span>
+              <span className="truncate font-mono text-[11px] text-muted-foreground">
+                {reading.bindings.length === 0 ? "—" : reading.bindings.slice(0, 2).join(", ")}
+                {reading.bindings.length > 2 && (
+                  <span className="text-muted-foreground/60"> +{reading.bindings.length - 2}</span>
+                )}
+              </span>
+            </div>
+          );
+        },
+      },
+      {
+        accessorKey: "product",
+        header: ({ column }) => <DataGridColumnHeader column={column} title="Product" />,
+        cell: ({ row }) => <span className="text-muted-foreground">{row.original.product}</span>,
+      },
+      {
+        id: "usage",
+        accessorFn: (r) => (r.status === "ok" ? r.value : -1),
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} title="Usage" className="justify-end" />
+        ),
+        cell: ({ row }) => {
+          const reading = row.original;
+          return reading.status === "ok" ? (
+            <div className="flex flex-col gap-0.5 text-right">
+              <span className="font-medium tabular-nums">{fmt(reading.value, reading.unit)}</span>
+              <span className="text-[11px] text-muted-foreground">{reading.unit}</span>
+            </div>
+          ) : (
+            <span className="block text-right text-xs text-muted-foreground">
+              {reading.status === "not_metered"
+                ? "no analytics dataset"
+                : (reading.error ?? "probe failed")}
+            </span>
+          );
+        },
+      },
+      {
+        id: "threshold",
+        accessorFn: (r) => r.alertThreshold ?? -1,
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} title="Threshold" className="justify-end" />
+        ),
+        cell: ({ row }) => (
+          <span className="block text-right tabular-nums text-muted-foreground">
+            {row.original.alertThreshold
+              ? fmt(row.original.alertThreshold, row.original.unit)
+              : "—"}
+          </span>
+        ),
+      },
+      {
+        id: "load",
+        accessorFn: (r) => ratio(r) ?? -1,
+        header: ({ column }) => <DataGridColumnHeader column={column} title="Load" />,
+        cell: ({ row }) => <LoadCell reading={row.original} />,
+        size: 180,
+      },
+      {
+        id: "status",
+        accessorFn: (r) => severity(r),
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} title="Status" className="justify-end" />
+        ),
+        cell: ({ row }) => (
+          <div className="flex justify-end">
+            <StatusBadge reading={row.original} />
+          </div>
+        ),
+      },
+    ],
+    [],
+  );
+
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const table = useTable({
+    features: dataGridFeatures,
+    // manualPagination keeps every binding on one screen: the data is already
+    // the page, so the grid never slices to pageSize and drops a probe.
+    manualPagination: true,
+    data: filtered,
+    columns,
+    getRowId: (row) => row.id,
+    enableRowSelection: true,
+    state: { rowSelection: selectedId ? { [selectedId]: true } : {} },
+  });
 
   return (
     <div className="overflow-hidden rounded-xl border border-border/60 bg-background/40">
@@ -120,110 +265,38 @@ export function UsageTable({
             Ordered by severity. Click a row to chart it above.
           </p>
         </div>
-        <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
-          {readings.filter((r) => r.status === "ok").length}/{readings.length} metered
-        </span>
+        <div className="flex items-center gap-3">
+          <div className="relative">
+            <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.currentTarget.value)}
+              placeholder="Search bindings…"
+              className="h-8 w-44 pl-8 text-sm"
+            />
+          </div>
+          <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+            {readings.filter((r) => r.status === "ok").length}/{readings.length} metered
+          </span>
+        </div>
       </div>
 
-      <div className="overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="ps-5">Binding</TableHead>
-              <TableHead>Product</TableHead>
-              <TableHead className="text-right">Usage</TableHead>
-              <TableHead className="text-right">Threshold</TableHead>
-              <TableHead className="w-[160px]">Load</TableHead>
-              <TableHead className="pe-5 text-right">Status</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.map((reading) => {
-              const pct = ratio(reading);
-              const active = reading.id === selectedId;
-              const clickable = reading.status === "ok" && onSelect;
-              return (
-                <TableRow
-                  key={reading.id}
-                  data-state={active ? "selected" : undefined}
-                  onClick={clickable ? () => onSelect(reading.id) : undefined}
-                  className={clickable ? "cursor-pointer" : "opacity-60"}
-                >
-                  <TableCell className="ps-5">
-                    <div className="flex flex-col gap-0.5">
-                      <span className="font-medium">{reading.label}</span>
-                      <span className="truncate font-mono text-[11px] text-muted-foreground">
-                        {reading.bindings.length === 0
-                          ? "—"
-                          : reading.bindings.slice(0, 2).join(", ")}
-                        {reading.bindings.length > 2 && (
-                          <span className="text-muted-foreground/60">
-                            {" "}
-                            +{reading.bindings.length - 2}
-                          </span>
-                        )}
-                      </span>
-                    </div>
-                  </TableCell>
-
-                  <TableCell className="text-muted-foreground">{reading.product}</TableCell>
-
-                  <TableCell className="text-right">
-                    {reading.status === "ok" ? (
-                      <div className="flex flex-col gap-0.5">
-                        <span className="font-medium tabular-nums">
-                          {fmt(reading.value, reading.unit)}
-                        </span>
-                        <span className="text-[11px] text-muted-foreground">{reading.unit}</span>
-                      </div>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">
-                        {reading.status === "not_metered"
-                          ? "no analytics dataset"
-                          : (reading.error ?? "probe failed")}
-                      </span>
-                    )}
-                  </TableCell>
-
-                  <TableCell className="text-right tabular-nums text-muted-foreground">
-                    {reading.alertThreshold ? fmt(reading.alertThreshold, reading.unit) : "—"}
-                  </TableCell>
-
-                  <TableCell>
-                    {pct == null ? (
-                      <span className="text-xs text-muted-foreground">—</span>
-                    ) : (
-                      <div className="flex items-center gap-2">
-                        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-foreground/[0.08]">
-                          <div
-                            className={`h-full rounded-full ${
-                              reading.surging
-                                ? "bg-rose-500"
-                                : pct >= 0.7
-                                  ? "bg-amber-500"
-                                  : "bg-foreground/60"
-                            }`}
-                            style={{ width: `${Math.min(100, pct * 100)}%` }}
-                          />
-                        </div>
-                        <span className="w-10 shrink-0 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
-                          {reading.alertThreshold
-                            ? formatRatio(reading.value, reading.alertThreshold)
-                            : `${Math.round(pct * 100)}%`}
-                        </span>
-                      </div>
-                    )}
-                  </TableCell>
-
-                  <TableCell className="pe-5 text-right">
-                    <StatusBadge reading={reading} />
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
-      </div>
+      <DataGrid
+        table={table}
+        recordCount={filtered.length}
+        emptyMessage="No bindings match this search."
+        onRowClick={(reading) => {
+          // Only metered probes have a trend to chart; unmetered rows are inert.
+          if (reading.status === "ok") onSelect?.(reading.id);
+        }}
+        tableLayout={{ dense: true, headerBorder: true, rowBorder: true, columnsVisibility: false }}
+      >
+        <DataGridContainer>
+          <DataGridScrollArea>
+            <DataGridTable />
+          </DataGridScrollArea>
+        </DataGridContainer>
+      </DataGrid>
     </div>
   );
 }

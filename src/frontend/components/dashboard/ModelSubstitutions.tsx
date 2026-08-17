@@ -1,19 +1,21 @@
 /**
- * @fileoverview Model substitution rules — AI Router dashboard panel.
+ * @fileoverview Model substitution rules — AI Router dashboard panel. Rewired
+ * onto the ReUI DataGrid (TanStack Table v9): sortable headers, client search,
+ * pagination, with the Enabled column as an inline Switch.
  *
  * Reads/writes `GET|POST|DELETE /api/guardian/ai-router/substitutions`. Each
  * rule swaps the model the router uses for a project (fromModel → toModel) with
- * no code change in the caller. Rows rank enabled-first then newest; disabled
- * rows render dimmed. The Enabled switch is optimistic with revert-on-error;
- * delete is guarded by an AlertDialog confirm; the Add form surfaces the
- * backend's 400 validation message inline (`:` in a field, whitespace-only, or
- * a dynamic-sentinel fromModel) without closing.
+ * no code change in the caller. Rows load enabled-first then newest; disabled
+ * rows render dimmed. The Enabled switch is optimistic with revert-on-error
+ * (`POST .../{id}/toggle`); delete is guarded by an AlertDialog confirm; the Add
+ * form surfaces the backend's 400 validation message inline without closing.
  */
 
 "use client";
 
-import { Loader2Icon, PlusIcon, Trash2Icon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ColumnDef, useTable } from "@tanstack/react-table";
+import { Loader2Icon, PlusIcon, SearchIcon, Trash2Icon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   AlertDialog,
@@ -26,6 +28,16 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import {
+  DataGrid,
+  DataGridContainer,
+  dataGridFeatures,
+  type DataGridFeatures,
+} from "@/components/reui/data-grid/data-grid";
+import { DataGridColumnHeader } from "@/components/reui/data-grid/data-grid-column-header";
+import { DataGridPagination } from "@/components/reui/data-grid/data-grid-pagination";
+import { DataGridScrollArea } from "@/components/reui/data-grid/data-grid-scroll-area";
+import { DataGridTable } from "@/components/reui/data-grid/data-grid-table";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -38,12 +50,11 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ApiError, apiGet, apiSend } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
-import { EmptyState, InlineError } from "./shared";
+import { InlineError } from "./shared";
 
 type Rule = {
   id: string;
@@ -100,9 +111,7 @@ function AddRuleDialog({ onSaved }: { onSaved: () => void }) {
       setOpen(false);
       onSaved();
     } catch (err) {
-      setError(
-        err instanceof ApiError ? err.message : "Failed to save the substitution rule.",
-      );
+      setError(err instanceof ApiError ? err.message : "Failed to save the substitution rule.");
     } finally {
       setSubmitting(false);
     }
@@ -243,6 +252,7 @@ export function ModelSubstitutions() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mutError, setMutError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
 
   // Request-id guard: a mutation-triggered refetch must not be overwritten by a
   // slower in-flight load.
@@ -275,17 +285,14 @@ export function ModelSubstitutions() {
     void load();
   }, [load]);
 
-  async function toggle(rule: Rule) {
+  const toggle = useCallback(async (rule: Rule) => {
     setMutError(null);
     // Optimistic flip in place — no reorder (see load()).
     setRules((prev) =>
       prev ? prev.map((r) => (r.id === rule.id ? { ...r, enabled: !r.enabled } : r)) : prev,
     );
     try {
-      const res = await apiSend<{ id: string; enabled: boolean }>(
-        "POST",
-        `${BASE}/${rule.id}/toggle`,
-      );
+      const res = await apiSend<{ id: string; enabled: boolean }>("POST", `${BASE}/${rule.id}/toggle`);
       // Trust the server's value over the optimistic guess (concurrent toggles).
       // ponytail: admin panel — narrow D1 read-after-write window; a stray refetch
       // mid-toggle self-heals on next load.
@@ -297,7 +304,106 @@ export function ModelSubstitutions() {
       // Resync from the server rather than reverting via a stale closure.
       void load();
     }
-  }
+  }, [load]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const list = rules ?? [];
+    if (!q) return list;
+    return list.filter((r) =>
+      `${r.project} ${r.fromModel} ${r.toModel} ${r.note ?? ""}`.toLowerCase().includes(q),
+    );
+  }, [rules, query]);
+
+  const columns = useMemo<ColumnDef<DataGridFeatures, Rule>[]>(
+    () => [
+      {
+        accessorKey: "project",
+        header: ({ column }) => <DataGridColumnHeader column={column} title="Project" />,
+        cell: ({ row }) => (
+          <span className={cn("font-medium", !row.original.enabled && "opacity-50")}>
+            {row.original.project}
+          </span>
+        ),
+      },
+      {
+        id: "rule",
+        accessorFn: (r) => `${r.fromModel} ${r.toModel}`,
+        header: "Rule",
+        enableSorting: false,
+        cell: ({ row }) => (
+          <span className={cn("font-mono text-xs", !row.original.enabled && "opacity-50")}>
+            {row.original.fromModel}{" "}
+            <span className="text-muted-foreground" aria-label="becomes">
+              →
+            </span>{" "}
+            {row.original.toModel}
+          </span>
+        ),
+      },
+      {
+        accessorKey: "note",
+        header: "Note",
+        enableSorting: false,
+        cell: ({ row }) => (
+          <span
+            className={cn(
+              "block max-w-[16rem] truncate text-muted-foreground",
+              !row.original.enabled && "opacity-50",
+            )}
+            title={row.original.note ?? undefined}
+          >
+            {row.original.note ?? "—"}
+          </span>
+        ),
+      },
+      {
+        accessorKey: "createdAt",
+        header: ({ column }) => <DataGridColumnHeader column={column} title="Created" />,
+        cell: ({ row }) => (
+          <span className="font-mono text-xs tabular-nums text-muted-foreground">
+            {new Date(row.original.createdAt).toLocaleDateString()}
+          </span>
+        ),
+      },
+      {
+        accessorKey: "enabled",
+        header: ({ column }) => (
+          <DataGridColumnHeader column={column} title="Enabled" className="justify-center" />
+        ),
+        cell: ({ row }) => (
+          <div className="flex justify-center">
+            <Switch
+              checked={row.original.enabled}
+              onCheckedChange={() => void toggle(row.original)}
+              aria-label={`Toggle ${row.original.project} substitution`}
+            />
+          </div>
+        ),
+        size: 96,
+      },
+      {
+        id: "actions",
+        header: "",
+        enableSorting: false,
+        cell: ({ row }) => (
+          <div className="flex justify-end">
+            <DeleteRuleButton rule={row.original} onDeleted={() => void load()} />
+          </div>
+        ),
+        size: 56,
+      },
+    ],
+    [toggle, load],
+  );
+
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const table = useTable({
+    features: dataGridFeatures,
+    data: filtered,
+    columns,
+    getRowId: (row) => row.id,
+  });
 
   return (
     <section className="flex flex-col gap-4 rounded-xl border border-border/60 bg-background/40 p-6">
@@ -308,61 +414,42 @@ export function ModelSubstitutions() {
             Swap the model at the router for a project — no code change in the caller.
           </p>
         </div>
-        <AddRuleDialog onSaved={() => void load()} />
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.currentTarget.value)}
+              placeholder="Search…"
+              className="h-8 w-40 pl-8 text-sm"
+            />
+          </div>
+          <AddRuleDialog onSaved={() => void load()} />
+        </div>
       </header>
 
       {mutError ? <p className="text-xs text-destructive">{mutError}</p> : null}
 
       {error ? (
         <InlineError message={error} onRetry={() => void load()} />
-      ) : loading && !rules ? (
-        <div className="flex flex-col gap-2">
-          {[0, 1, 2].map((i) => (
-            <Skeleton key={i} className="h-11 w-full rounded-md" />
-          ))}
-        </div>
-      ) : !rules || rules.length === 0 ? (
-        <EmptyState label="No substitution rules" />
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Project</TableHead>
-              <TableHead>Rule</TableHead>
-              <TableHead>Note</TableHead>
-              <TableHead className="text-center">Enabled</TableHead>
-              <TableHead className="w-10" />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rules.map((rule) => (
-              <TableRow key={rule.id} className={rule.enabled ? undefined : "opacity-50"}>
-                <TableCell className="font-medium">{rule.project}</TableCell>
-                <TableCell className="font-mono text-xs">
-                  {rule.fromModel}{" "}
-                  <span className="text-muted-foreground" aria-label="becomes">
-                    →
-                  </span>{" "}
-                  {rule.toModel}
-                </TableCell>
-                <TableCell className="max-w-[16rem] truncate text-muted-foreground">
-                  {rule.note ?? "—"}
-                </TableCell>
-                <TableCell className="text-center">
-                  <Switch
-                    checked={rule.enabled}
-                    onCheckedChange={() => void toggle(rule)}
-                    aria-label={`Toggle ${rule.project} substitution`}
-                  />
-                </TableCell>
-                <TableCell>
-                  <DeleteRuleButton rule={rule} onDeleted={() => void load()} />
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+        <DataGrid
+          table={table}
+          recordCount={filtered.length}
+          isLoading={loading && !rules}
+          emptyMessage="No substitution rules"
+          tableLayout={{ dense: true, headerBorder: true, rowBorder: true, columnsVisibility: false }}
+        >
+          <DataGridContainer>
+            <DataGridScrollArea>
+              <DataGridTable />
+            </DataGridScrollArea>
+          </DataGridContainer>
+          <DataGridPagination />
+        </DataGrid>
       )}
     </section>
   );
 }
+
+export default ModelSubstitutions;

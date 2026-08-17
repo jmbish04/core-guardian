@@ -18,24 +18,31 @@
 
 "use client";
 
-import { Loader2Icon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
+import { type ColumnDef, type ExpandedState, useTable } from "@tanstack/react-table";
+import { Loader2Icon, SearchIcon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CartesianGrid, Line, LineChart, XAxis } from "recharts";
 
+import {
+  DataGrid,
+  DataGridContainer,
+  dataGridFeatures,
+  type DataGridFeatures,
+} from "@/components/reui/data-grid/data-grid";
+import { DataGridScrollArea } from "@/components/reui/data-grid/data-grid-scroll-area";
+import {
+  DataGridTable,
+  DataGridTableFootRow,
+  DataGridTableFootRowCell,
+  DataGridTableRowExpand,
+} from "@/components/reui/data-grid/data-grid-table";
 import {
   ChartContainer,
   ChartTooltip,
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { Input } from "@/components/ui/input";
 import { ApiError, apiGet } from "@/lib/api";
 
 // --- Response types (mirror BillableUsageReport) ----------------------------
@@ -65,6 +72,13 @@ type Report = {
   reconcile: ReconcileDay[];
   windowAccuracy: number | null;
 };
+
+// --- Grid row shapes (product parent → per-day child) -----------------------
+
+type DayPoint = { day: string; quantity: number; costUsd: number };
+type ServiceRow = { kind: "service"; id: string; service: ServiceSeries; subRows: BillRow[] };
+type DayRow = { kind: "day"; id: string; unit: string; point: DayPoint };
+type BillRow = ServiceRow | DayRow;
 
 // --- Formatting (matches the DailyCost sibling so the two panels read alike) -
 
@@ -153,11 +167,102 @@ function accuracyTone(a: number): string {
   return "text-rose-600 dark:text-rose-400";
 }
 
+/** Right-aligned column header label (these columns are read-only, not sorted). */
+function RightHeader({ children }: { children: React.ReactNode }) {
+  return <span className="block text-right">{children}</span>;
+}
+
+const BILL_COLUMNS: ColumnDef<DataGridFeatures, BillRow>[] = [
+  {
+    id: "product",
+    header: "Product",
+    enableSorting: false,
+    cell: ({ row }) => {
+      const r = row.original;
+      return (
+        <div className="flex items-center gap-1">
+          <DataGridTableRowExpand row={row} />
+          {r.kind === "service" ? (
+            <div className="min-w-0">
+              <div className="truncate font-medium">{r.service.service}</div>
+              {r.service.family && (
+                <div className="font-mono text-[10px] text-muted-foreground">{r.service.family}</div>
+              )}
+            </div>
+          ) : (
+            <span className="font-mono text-xs text-muted-foreground">{dayTick(r.point.day)}</span>
+          )}
+        </div>
+      );
+    },
+  },
+  {
+    id: "latest",
+    header: () => <RightHeader>Latest / day</RightHeader>,
+    enableSorting: false,
+    cell: ({ row }) => {
+      const r = row.original;
+      const cost = r.kind === "service" ? (r.service.points.at(-1)?.costUsd ?? 0) : r.point.costUsd;
+      return <span className="block text-right font-mono text-xs tabular-nums">{usd(cost)}</span>;
+    },
+  },
+  {
+    id: "delta",
+    header: () => <RightHeader>Δ vs prior</RightHeader>,
+    enableSorting: false,
+    cell: ({ row }) => {
+      const r = row.original;
+      if (r.kind === "service") {
+        return (
+          <div className="flex justify-end">
+            <DeltaChip delta={r.service.deltaUsd} />
+          </div>
+        );
+      }
+      return (
+        <span className="block text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+          {r.point.quantity.toLocaleString("en-US")} {r.unit}
+        </span>
+      );
+    },
+  },
+  {
+    id: "trend",
+    header: "Trend",
+    enableSorting: false,
+    size: 112,
+    cell: ({ row }) =>
+      row.original.kind === "service" ? (
+        <Sparkline values={row.original.service.points.map((p) => p.costUsd)} />
+      ) : null,
+  },
+  {
+    id: "total",
+    header: () => <RightHeader>Billed</RightHeader>,
+    enableSorting: false,
+    cell: ({ row }) => {
+      const r = row.original;
+      if (r.kind !== "service") return null;
+      return (
+        <span className="block text-right font-mono text-xs tabular-nums">
+          {r.service.totalUsd > 0 ? (
+            usd(r.service.totalUsd)
+          ) : (
+            <span className="text-muted-foreground/50">$0</span>
+          )}
+        </span>
+      );
+    },
+  },
+];
+
 export function BillableUsage() {
   const [days, setDays] = useState(30);
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [expanded, setExpanded] = useState<ExpandedState>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -195,6 +300,41 @@ export function BillableUsage() {
 
   const latestActual = report?.totalByDay.at(-1)?.costUsd ?? 0;
   const acc = report?.windowAccuracy ?? null;
+
+  // Product rows carry their per-day points as expandable children, largest
+  // billed first (the backend already orders services that way).
+  const rows = useMemo<BillRow[]>(() => {
+    if (!report) return [];
+    const q = query.trim().toLowerCase();
+    return report.services
+      .filter((s) => !q || `${s.service} ${s.family}`.toLowerCase().includes(q))
+      .map((s) => ({
+        kind: "service" as const,
+        id: s.service,
+        service: s,
+        subRows: s.points.map((point) => ({
+          kind: "day" as const,
+          id: `${s.service}:${point.day}`,
+          unit: s.unit,
+          point,
+        })),
+      }));
+  }, [report, query]);
+
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const table = useTable({
+    features: dataGridFeatures,
+    // Every product on one screen; expansion adds the day rows in place.
+    manualPagination: true,
+    data: rows,
+    columns: BILL_COLUMNS,
+    getRowId: (row) => row.id,
+    getSubRows: (row) => (row.kind === "service" ? row.subRows : undefined),
+    getRowCanExpand: (row) =>
+      row.original.kind === "service" && row.original.subRows.length > 0,
+    state: { expanded },
+    onExpandedChange: setExpanded,
+  });
 
   return (
     <section className="flex flex-col gap-4">
@@ -329,52 +469,57 @@ export function BillableUsage() {
             </div>
           </div>
 
-          {/* --- Per-product billed table ----------------------------------- */}
+          {/* --- Per-product billed table (expand a row for its daily points) - */}
           <div className="overflow-hidden rounded-xl border border-border/60 bg-background/40">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="ps-4">Product</TableHead>
-                  <TableHead className="text-right">Latest / day</TableHead>
-                  <TableHead className="text-right">Δ vs prior</TableHead>
-                  <TableHead className="w-28">Trend</TableHead>
-                  <TableHead className="pe-4 text-right">{days}d billed</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {report.services.map((s) => {
-                  const last = s.points.at(-1);
-                  return (
-                    <TableRow key={s.service}>
-                      <TableCell className="ps-4">
-                        <div className="font-medium">{s.service}</div>
-                        {s.family && (
-                          <div className="font-mono text-[10px] text-muted-foreground">
-                            {s.family}
-                          </div>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {usd(last?.costUsd ?? 0)}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <DeltaChip delta={s.deltaUsd} />
-                      </TableCell>
-                      <TableCell>
-                        <Sparkline values={s.points.map((p) => p.costUsd)} />
-                      </TableCell>
-                      <TableCell className="pe-4 text-right tabular-nums">
-                        {s.totalUsd > 0 ? (
-                          usd(s.totalUsd)
-                        ) : (
-                          <span className="text-muted-foreground/50">$0</span>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
+            <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-border/60 px-4 py-3">
+              <h3 className="text-sm font-semibold">
+                Per-product · {days}d billed
+                <span className="ms-2 font-normal text-muted-foreground">
+                  expand a product for its daily points
+                </span>
+              </h3>
+              <div className="relative">
+                <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={query}
+                  onChange={(e) => setQuery(e.currentTarget.value)}
+                  placeholder="Search products…"
+                  className="h-8 w-44 pl-8 text-sm"
+                />
+              </div>
+            </div>
+
+            <DataGrid
+              table={table}
+              recordCount={rows.length}
+              emptyMessage="No products match this search."
+              tableLayout={{ dense: true, headerBorder: true, rowBorder: true, columnsVisibility: false }}
+              tableClassNames={{
+                footer: "border-t border-border/60",
+              }}
+            >
+              <DataGridContainer>
+                <DataGridScrollArea>
+                  <DataGridTable
+                    footerContent={
+                      <DataGridTableFootRow>
+                        <DataGridTableFootRowCell>Total billed</DataGridTableFootRowCell>
+                        <DataGridTableFootRowCell className="text-right font-mono text-xs tabular-nums">
+                          {usd(latestActual)}
+                        </DataGridTableFootRowCell>
+                        <DataGridTableFootRowCell className="text-right">
+                          <DeltaChip delta={report.totalDeltaUsd} />
+                        </DataGridTableFootRowCell>
+                        <DataGridTableFootRowCell />
+                        <DataGridTableFootRowCell className="text-right font-mono text-xs tabular-nums">
+                          {usd(report.totalActualUsd)}
+                        </DataGridTableFootRowCell>
+                      </DataGridTableFootRow>
+                    }
+                  />
+                </DataGridScrollArea>
+              </DataGridContainer>
+            </DataGrid>
           </div>
         </>
       )}
