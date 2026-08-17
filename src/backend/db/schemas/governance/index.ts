@@ -11,6 +11,7 @@ export * from "./billing-events";
 export * from "./cron-runs";
 export * from "./daily-cost";
 export * from "./drive-folders";
+export * from "./model-substitutions";
 export * from "./offense";
 export * from "./projects";
 export * from "./pricing";
