@@ -177,6 +177,16 @@ export const BILLABLE_CATALOG: BillableCatalogEntry[] = [
     action: "Vectors held × their dimensionality over time.",
     lever: "Prune stale vectors; the Guardian Vectorize-drop control clears an index.",
   },
+  // --- Observability / Logpush (before Workers, so "Logpush Enabled Workers
+  //     Requests" isn't shadowed by the generic workers-requests matcher) -----
+  {
+    match: /observability|logpush|logs/i,
+    category: "observability",
+    metric: "Observability / Logpush",
+    unit: "requests / logs",
+    action: "Log volume pushed/retained; per-request observability events.",
+    lever: "Sample logs; narrow Logpush filters.",
+  },
   // --- Workers compute ---------------------------------------------------
   {
     match: /workers standard requests|workers.*requests/i,
@@ -228,14 +238,7 @@ export const BILLABLE_CATALOG: BillableCatalogEntry[] = [
     lever: "Scale to zero when idle; right-size the container.",
   },
   {
-    match: /image/i,
-    category: "images",
-    metric: "Images",
-    unit: "images",
-    action: "Each transform / stored image / delivery.",
-    lever: "Cache variants; limit transform permutations.",
-  },
-  {
+    // Before Images: "Stream Bundle Basic Images Delivered" must not match /image/.
     match: /stream/i,
     category: "stream",
     metric: "Stream",
@@ -244,12 +247,12 @@ export const BILLABLE_CATALOG: BillableCatalogEntry[] = [
     lever: "Delete unused assets.",
   },
   {
-    match: /observability|logpush|logs/i,
-    category: "observability",
-    metric: "Observability / Logpush",
-    unit: "requests / logs",
-    action: "Log volume pushed/retained; per-request observability events.",
-    lever: "Sample logs; narrow Logpush filters.",
+    match: /image/i,
+    category: "images",
+    metric: "Images",
+    unit: "images",
+    action: "Each transform / stored image / delivery.",
+    lever: "Cache variants; limit transform permutations.",
   },
   {
     match: /dynamic workers/i,

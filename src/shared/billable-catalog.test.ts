@@ -44,6 +44,17 @@ test("R2 Class B is matched before the generic R2 storage catch-all (order)", ()
   assert.equal(lookupBillable("R2 Storage Class B Operations")!.metric, "R2 Class B operations");
 });
 
+test("Stream image line is not shadowed by the generic Images matcher (order)", () => {
+  assert.equal(lookupBillable("Stream Bundle Basic Images Delivered")!.category, "stream");
+});
+
+test("Logpush workers-requests line is not shadowed by the workers-requests matcher (order)", () => {
+  assert.equal(
+    lookupBillable("Logpush Enabled Workers Requests (First 10M included)")!.category,
+    "observability",
+  );
+});
+
 test("unknown SKU returns null (never guesses)", () => {
   assert.equal(lookupBillable("Some Future Cloudflare SKU"), null);
 });
