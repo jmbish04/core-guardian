@@ -76,6 +76,8 @@ import { syncRouterRecommendations } from "./backend/guardian/ai-router-usage";
 import { pollJulesSessions } from "./backend/guardian/projects/poll-jules";
 import { syncWorkerProjects } from "./backend/guardian/projects/sync-workers";
 import { scrapeAllPricing } from "./backend/guardian/pricing-scrape";
+import { insertLogBatch, type LogMessage } from "./backend/guardian/log-sink";
+import { LogTrimWorkflow, dispatchTrimTargets } from "./backend/guardian/log-trim-workflow";
 
 // Re-export Durable Object classes (Pattern B: the @astrojs/cloudflare adapter
 // re-exports these alongside the default handler so Cloudflare resolves every
@@ -94,6 +96,10 @@ export {
   ThinkingAgent,
   SkillsAgent,
 };
+
+// Re-export the Workflow entrypoint so Cloudflare resolves the TRIM_WORKFLOW
+// binding (class_name LogTrimWorkflow in wrangler.jsonc).
+export { LogTrimWorkflow };
 
 /**
  * Runs the Guardian hourly usage evaluation, swallowing failures.
@@ -272,6 +278,17 @@ async function runGuardianEvaluation(env: Env) {
   // maybeRunRightSizing self-gates and self-catches, so this never breaks the
   // hourly path.
   await maybeRunRightSizing(env);
+  // Hourly: seed default trim targets + fire a LogTrimWorkflow for any log/
+  // webhook table over threshold (export→verify→truncate). Self-gated per target
+  // (10-min anti-stack + threshold check). Non-fatal.
+  try {
+    const dispatched = await dispatchTrimTargets(env);
+    if (dispatched > 0) {
+      console.warn(JSON.stringify({ level: "INFO", source: "guardian.trim.dispatch", dispatched }));
+    }
+  } catch (err) {
+    console.error(JSON.stringify({ level: "ERROR", source: "guardian.trim.dispatch", error: String(err) }));
+  }
 }
 
 const THIRTY_DAYS_MS = 30 * 24 * 3_600_000;
@@ -535,6 +552,15 @@ const handler = {
   // Core Guardian hourly usage evaluation (cron `0 * * * *`).
   async scheduled(_event: ScheduledController, env: Env, _ctx: ExecutionContext) {
     await runGuardianEvaluation(env);
+  },
+
+  // Log-ingest queue consumer (core-guardian-log-ingest). Batch-inserts all
+  // drained messages into LOGS_DB in one D1 batch. On success ack the batch; on
+  // failure let it throw so the whole batch is retried (D1 batch() is atomic, so
+  // there is never a partial insert to reconcile).
+  async queue(batch: MessageBatch<LogMessage>, env: Env, _ctx: ExecutionContext) {
+    await insertLogBatch(env, batch.messages.map((m) => m.body));
+    batch.ackAll();
   },
 } as unknown as ExportedHandler<Env>;
 

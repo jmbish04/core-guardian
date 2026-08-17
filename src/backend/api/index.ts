@@ -43,6 +43,7 @@ import { offensePublicRouter, offenseRouter } from "./routes/offense";
 import { healthRouter } from "./routes/health";
 import { inboxRouter } from "./routes/inbox";
 import { integrationRouter } from "./routes/integration";
+import { logsRouter } from "./routes/logs";
 import { mcpRouter } from "./routes/mcp";
 import { notificationsRouter } from "./routes/notifications";
 import { oauthRouter, wellKnownRouter } from "./routes/oauth";
@@ -136,6 +137,9 @@ app.route("/api/config", configRouter);
 app.route("/api/admin", adminRouter);
 app.route("/api/docs", docsRouter);
 app.route("/api/integration", integrationRouter);
+// Log ingestion (ingress-token auth, NOT guardianAuth). Top-level so automated
+// callers post without a session; the queue consumer batch-inserts to LOGS_DB.
+app.route("/api/logs", logsRouter);
 
 // Feature APIs (open — see auth note above)
 app.route("/api/projects", projectsRouter);
