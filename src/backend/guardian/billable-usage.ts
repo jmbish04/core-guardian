@@ -167,8 +167,11 @@ export async function syncBillableUsageWindow(
   const now = Date.now();
   const rows = raw.map((r) => toRow(r, now)).filter((r): r is NewBillableUsageRow => r !== null);
   const db = getDb(env);
-  for (const r of rows) {
-    await db
+  // Batch the upserts — a 35-day window is ~1.6k rows; one sequential round-trip
+  // per row hits the subrequest ceiling. Each statement carries its own params
+  // (well under D1's 100-bound limit); 50 statements/batch keeps round-trips low.
+  const stmt = (r: NewBillableUsageRow) =>
+    db
       .insert(billableUsage)
       .values(r)
       .onConflictDoUpdate({
@@ -182,6 +185,10 @@ export async function syncBillableUsageWindow(
           capturedAt: now,
         },
       });
+  const CHUNK = 50;
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const batch = rows.slice(i, i + CHUNK).map(stmt);
+    if (batch.length) await db.batch(batch as [(typeof batch)[number], ...(typeof batch)[number][]]);
   }
   return rows.length;
 }

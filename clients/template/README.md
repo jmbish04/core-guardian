@@ -11,9 +11,15 @@ Copy [`pull-guardian.mjs`](./pull-guardian.mjs) to `scripts/pull-guardian.mjs`.
 ```jsonc
 "scripts": {
   "postinstall": "node scripts/pull-guardian.mjs",
-  "predeploy": "node scripts/pull-guardian.mjs"
+  "deploy": "node scripts/pull-guardian.mjs && <your existing deploy command>"
 }
 ```
+
+> **Why not a `predeploy` hook?** `postinstall` is a real npm lifecycle event that
+> pnpm runs. `predeploy` is NOT — pnpm skips pre/post hooks for *arbitrary* script
+> names unless `enable-pre-post-scripts=true` is set in `.npmrc`, so a `predeploy`
+> hook silently never runs and you ship a stale vendored client. Prepend the pull
+> directly to the `deploy` (and `deploy:preview`) script chain instead.
 
 Pin a release instead of `main` when you want stability:
 
