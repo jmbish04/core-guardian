@@ -35,6 +35,8 @@ import { EmptyState, InlineError } from "@/components/dashboard/shared";
 import {
   JulesStatusBadge,
   LoadingRow,
+  PAGE_SIZE,
+  Pager,
   useResource,
   type JulesSession,
   type JulesStatus,
@@ -76,14 +78,18 @@ function LinkOut({
 
 export function JulesSessions() {
   const [status, setStatus] = useState<JulesStatus | "all">("all");
+  const [page, setPage] = useState(0);
 
-  const fetcher = useCallback(
-    () =>
-      apiGet<{ sessions: JulesSession[] }>(
-        `/guardian/projects/jules/sessions${status === "all" ? "" : `?status=${status}`}`,
-      ).then((r) => r.sessions),
-    [status],
-  );
+  const fetcher = useCallback(() => {
+    const params = new URLSearchParams({
+      limit: String(PAGE_SIZE),
+      offset: String(page * PAGE_SIZE),
+    });
+    if (status !== "all") params.set("status", status);
+    return apiGet<{ sessions: JulesSession[]; hasMore: boolean }>(
+      `/guardian/projects/jules/sessions?${params}`,
+    );
+  }, [status, page]);
   const { data, loading, error, reload } = useResource(fetcher);
 
   return (
@@ -93,7 +99,13 @@ export function JulesSessions() {
           <label className="text-xs text-muted-foreground" htmlFor="jules-status">
             Status
           </label>
-          <Select value={status} onValueChange={(v) => setStatus(v as JulesStatus | "all")}>
+          <Select
+            value={status}
+            onValueChange={(v) => {
+              setStatus(v as JulesStatus | "all");
+              setPage(0);
+            }}
+          >
             <SelectTrigger id="jules-status" className="w-44">
               <SelectValue />
             </SelectTrigger>
@@ -115,7 +127,7 @@ export function JulesSessions() {
         <LoadingRow label="Loading Jules sessions…" />
       ) : error ? (
         <InlineError message={error} onRetry={reload} />
-      ) : !data || data.length === 0 ? (
+      ) : !data || data.sessions.length === 0 ? (
         <EmptyState label="No Jules sessions match this filter." />
       ) : (
         <div className="overflow-x-auto rounded-md ring-1 ring-border/40">
@@ -131,7 +143,7 @@ export function JulesSessions() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {data.map((s) => (
+              {data.sessions.map((s) => (
                 <TableRow key={s.id}>
                   <TableCell>
                     <JulesStatusBadge status={s.status} />
@@ -163,6 +175,10 @@ export function JulesSessions() {
           </Table>
         </div>
       )}
+
+      {data ? (
+        <Pager page={page} hasMore={data.hasMore} onPage={setPage} disabled={loading} />
+      ) : null}
     </section>
   );
 }

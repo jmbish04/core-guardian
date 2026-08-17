@@ -61,6 +61,9 @@ import {
 import { handleInboundEmail } from "./backend/email/inbound";
 import { snapshotGatewayCosts } from "./backend/guardian/ai-gateway-costs";
 import { syncBillableUsage } from "./backend/guardian/billable-usage";
+import { backfillBillableUsage } from "./backend/guardian/backfill-billable-usage";
+import { snapshotResources, syncZones } from "./backend/guardian/snapshot-resources";
+import { buildSpendRollup } from "./backend/guardian/spend-rollup";
 import { CATALOG_CACHE_KEY, refreshModelCatalog } from "./backend/guardian/model-catalog";
 import { syncRecommendationAlerts } from "./backend/guardian/model-recommendations";
 import { scrapeAllModelPricing } from "./backend/guardian/ai-model-pricing";
@@ -68,6 +71,8 @@ import { evaluateUsage } from "./backend/guardian/collect";
 import { backfillDailyCost, snapshotDailyCost } from "./backend/guardian/daily-cost";
 import { checkSustainedSpend } from "./backend/guardian/offense/auto-break";
 import { checkInfraSpikes, checkNuclearBudget } from "./backend/guardian/offense/nuclear";
+import { checkProviderSpendAlerts, syncProviderCosts } from "./backend/guardian/providers/sync";
+import { syncRouterRecommendations } from "./backend/guardian/ai-router-usage";
 import { pollJulesSessions } from "./backend/guardian/projects/poll-jules";
 import { syncWorkerProjects } from "./backend/guardian/projects/sync-workers";
 import { scrapeAllPricing } from "./backend/guardian/pricing-scrape";
@@ -152,6 +157,55 @@ async function runGuardianEvaluation(env: Env) {
       JSON.stringify({ level: "ERROR", source: "guardian.billableUsage", error: String(err) }),
     );
   }
+  // One-time: backfill the fuller billable-usage history so "since last login"
+  // deltas have depth on a fresh install. KV-guarded to run exactly once.
+  try {
+    await maybeBackfillBillableUsage(env);
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.backfill", error: String(err) }),
+    );
+  }
+  // Hourly: sync zones + snapshot per-resource usage + the worker→resource
+  // binding map (the spend-attribution data foundation). Non-fatal.
+  try {
+    await syncZones(env);
+    const snap = await snapshotResources(env);
+    console.warn(JSON.stringify({ level: "INFO", source: "guardian.snapshotResources", ...snap }));
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.snapshotResources", error: String(err) }),
+    );
+  }
+  // Hourly: reconcile the billing actual to per-project spend and cache it, so
+  // the frontend reads one row instead of computing on load. Runs after the
+  // snapshot + billable sync above so it reconciles the freshest data. Non-fatal.
+  try {
+    const roll = await buildSpendRollup(env);
+    console.warn(
+      JSON.stringify({
+        level: "INFO",
+        source: "guardian.spendRollup",
+        totalActualUsd: roll.totalActualUsd,
+        projects: roll.projects.length,
+      }),
+    );
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.spendRollup", error: String(err) }),
+    );
+  }
+  // Daily: pull external AI provider billing (Anthropic/OpenAI/Cursor cost APIs
+  // + Gemini Cloud Billing budget) into provider_cost, then run the per-provider
+  // budget threshold alerts. Gated on 1 day; each provider is skipped when its
+  // key/config is absent (non-fatal).
+  try {
+    await maybeSyncProviderCosts(env);
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.providers", error: String(err) }),
+    );
+  }
   // Daily: refresh the merged model-pricing candidate catalog (OpenRouter + AI
   // Pricing Guru + scraped) that the cost advisor recommends against.
   try {
@@ -205,6 +259,10 @@ async function runGuardianEvaluation(env: Env) {
       JSON.stringify({ level: "ERROR", source: "guardian.projects.pollJules", error: String(err) }),
     );
   }
+  // Weekly (Monday UTC-08): sync AI Router right-sizing recommendations.
+  // maybeRunRightSizing self-gates and self-catches, so this never breaks the
+  // hourly path.
+  await maybeRunRightSizing(env);
 }
 
 const THIRTY_DAYS_MS = 30 * 24 * 3_600_000;
@@ -274,6 +332,44 @@ async function maybeSyncBillableUsage(env: Env) {
   if (latest && Date.now() - latest.capturedAt < ONE_DAY_MS) return;
   const rows = await syncBillableUsage(env, 35);
   console.warn(JSON.stringify({ level: "INFO", source: "guardian.billableUsage", rows }));
+}
+
+const BILLABLE_BACKFILL_KEY = "guardian:billable-backfill-done";
+
+async function maybeBackfillBillableUsage(env: Env) {
+  const done = await env.SESSIONS.get(BILLABLE_BACKFILL_KEY);
+  if (done) return;
+  const bf = await backfillBillableUsage(env);
+  // Only mark done when every window succeeded — otherwise retry next cron so
+  // rate-limited/half-fetched history isn't permanently skipped.
+  if (bf.failures === 0) await env.SESSIONS.put(BILLABLE_BACKFILL_KEY, String(Date.now()));
+  console.warn(JSON.stringify({ level: "INFO", source: "guardian.backfill", ...bf }));
+}
+
+const PROVIDER_SYNC_KEY = "provider-cost:last-sync";
+
+async function maybeSyncProviderCosts(env: Env) {
+  // Debounce on a KV timestamp, NOT the latest provider_cost row: a provider
+  // with $0 spend (or no key) writes no rows, so a D1-latest gate would leave
+  // the table empty forever and re-hit the provider APIs every cron tick.
+  try {
+    const raw = await env.SESSIONS.get(PROVIDER_SYNC_KEY);
+    const at = raw ? Number(raw) : NaN;
+    if (Number.isFinite(at) && Date.now() - at < ONE_DAY_MS) return;
+  } catch {
+    /* fall through to a sync */
+  }
+  const synced = await syncProviderCosts(env, 35);
+  const alerts = await checkProviderSpendAlerts(env);
+  await env.SESSIONS.put(PROVIDER_SYNC_KEY, String(Date.now())).catch(() => {});
+  console.warn(
+    JSON.stringify({
+      level: "INFO",
+      source: "guardian.providers",
+      synced,
+      firedAlerts: alerts.filter((a) => a.fired).map((a) => a.provider),
+    }),
+  );
 }
 
 async function maybeRefreshModelCatalog(env: Env) {
@@ -353,6 +449,23 @@ async function pollJules(env: Env) {
   const summary = await pollJulesSessions(env);
   if (summary.updated > 0) {
     console.warn(JSON.stringify({ level: "INFO", source: "guardian.projects.pollJules", ...summary }));
+  }
+}
+
+/**
+ * Weekly gate (Monday UTC-08) for the AI Router right-sizing recommendation
+ * sync. Runs once per week via the dedicated `0 8 * * 1` cron trigger; the
+ * hourly `0 * * * *` cron also fires this function, so the day+hour check
+ * keeps it a no-op the other 167 hours.
+ */
+async function maybeRunRightSizing(env: Env): Promise<void> {
+  const d = new Date();
+  if (d.getUTCDay() !== 1 || d.getUTCHours() !== 8) return; // Monday 08:00 UTC
+  try {
+    const n = await syncRouterRecommendations(env);
+    console.log(`ai-router: weekly right-sizing recommendations synced (${n} rows)`);
+  } catch (e) {
+    console.error("ai-router: weekly right-sizing sync failed", e);
   }
 }
 

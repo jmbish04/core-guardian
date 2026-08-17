@@ -12,6 +12,7 @@ export { NotificationPrefsMatrix } from "./NotificationPrefsMatrix";
 export { WebhooksTable } from "./WebhooksTable";
 export { ActivityTimeline } from "./ActivityTimeline";
 export { AdvancedPanel } from "./AdvancedPanel";
+export { BillingSettings } from "./BillingSettings";
 export { SendTestNotification } from "./SendTestNotification";
 
 export {

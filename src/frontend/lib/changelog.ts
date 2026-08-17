@@ -59,6 +59,25 @@ export const STATUS_LABEL: Record<ChangeStatus, string> = {
 export const CHANGELOG: ChangeEntry[] = [
   // ---- Shipped ----------------------------------------------------------
   {
+    id: "0330-external-provider-billing",
+    title: "External provider billing — monitor Anthropic / OpenAI / Cursor / Gemini spend",
+    status: "shipped",
+    size: "L",
+    date: "2026-08-14",
+    phase: "P8",
+    summary:
+      "Off-Cloudflare complement to the CF spend panels: pulls each external AI provider's own billing API on the daily cron into provider_cost, surfaces per-provider MTD + trend, and fires a once-per-month budget alert. Billing keys onboarded as Secrets Store bindings (distinct from the inference keys).",
+    scope: [
+      "provider_cost table (migration 0026): daily billed USD per provider (metric='spent') + Gemini budget ceiling (metric='budget'), deterministic PK day:provider:dimension for idempotent sync",
+      "providers/{anthropic,openai,cursor,gemini}.ts: defensive billing clients — Anthropic org cost_report (sk-ant-admin), OpenAI /organization/costs (sk-admin), Cursor teams daily-usage (Basic), Gemini via Cloud Billing Budgets REST (reuses the Drive service-account JWT, cloud-billing scope). Missing key/config → provider skipped, never fabricated",
+      "secrets.ts: ANTHROPIC_ADMIN_KEY / OPENAI_ADMIN_KEY / CURSOR_API_KEY accessors + wrangler secrets_store bindings",
+      "providers/sync.ts: per-provider try/catch sync + getProviderCostReport (per-provider MTD/trend) + checkProviderSpendAlerts (provider_budget_<p>_usd threshold → one NotificationsAgent warning/month, KV-deduped; no breaker — external providers can't be throttled)",
+      "GET /api/guardian/providers/report, GET/PUT /budgets, POST /sync",
+      "Daily cron hook (gated 1d, non-fatal) alongside the billable-usage sync",
+    ],
+    depends: ["0310-billable-usage-api"],
+  },
+  {
     id: "0320-model-advisor",
     title: "Model advisor — cheaper-but-capable model recommendations",
     status: "shipped",

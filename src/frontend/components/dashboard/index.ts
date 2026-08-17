@@ -5,10 +5,13 @@
  * is an internal implementation detail of the feature folder.
  */
 
+export { AccountantView } from "./AccountantView";
+export { AiRecommendationsView } from "./AiRecommendationsView";
 export { AdminDashboard } from "./AdminDashboard";
 export { ActionItems } from "./ActionItems";
 export { AiRouterConsole } from "./AiRouterConsole";
 export { AiRouterUsage } from "./AiRouterUsage";
+export { AiRouterRecommendations } from "./AiRouterRecommendations";
 export { AllowancesPanel } from "./AllowancesPanel";
 export { BudgetMeter } from "./BudgetMeter";
 export { SpendHeadline } from "./SpendHeadline";
@@ -16,9 +19,11 @@ export { CostTraceIsland } from "./CostTraceIsland";
 export { IncidentsPanel } from "./IncidentsPanel";
 export { RiskTargetsPanel } from "./RiskTargetsPanel";
 export { SpendOverview } from "./SpendOverview";
+export { SpendByProject } from "./SpendByProject";
 export { DailyCost } from "./DailyCost";
 export { BillableUsage } from "./BillableUsage";
 export { ModelAdvisor } from "./ModelAdvisor";
+export { ModelSubstitutions } from "./ModelSubstitutions";
 export { AlertsBoard } from "./AlertsBoard";
 export { BindingDetail } from "./BindingDetail";
 export { WorkerSpendMonitor } from "./WorkerSpendMonitor";

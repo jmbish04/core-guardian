@@ -31,7 +31,7 @@ export const JULES_DISPATCHES_COLUMN_DESCRIPTIONS: Record<string, string> = {
   nonce: "Per-dispatch capability token (UUID v4). Unique; presented by Jules to authenticate findings intake.",
   jules_session_id: "The Jules session/run this dispatch was handed to.",
   target_id: "The scan_targets row this dispatch audits, when known (else null).",
-  task_type: "What Jules was asked to do. P4 only mints 'spend_audit'.",
+  task_type: "What Jules was asked to do. 'spend_audit' or 'right_sizing'.",
   status: "pending | reported | failed | expired. Only 'pending' rows can satisfy a findings report.",
   dispatched_at: "Unix ms the dispatch (pending row) was created.",
   reported_at: "Unix ms Jules successfully reported findings, or null.",
@@ -49,7 +49,7 @@ export const julesDispatches = sqliteTable(
     nonce: text("nonce").notNull(),
     julesSessionId: text("jules_session_id").notNull(),
     targetId: text("target_id"),
-    taskType: text("task_type", { enum: ["spend_audit"] })
+    taskType: text("task_type", { enum: ["spend_audit", "right_sizing"] })
       .notNull()
       .default("spend_audit"),
     status: text("status", { enum: ["pending", "reported", "failed", "expired"] })

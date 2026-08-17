@@ -40,6 +40,8 @@ import {
   CriticalityBadge,
   KindBadge,
   LoadingRow,
+  PAGE_SIZE,
+  Pager,
   StatusBanner,
   useResource,
   type Kind,
@@ -107,14 +109,18 @@ export function ProjectsTable() {
   const [dir, setDir] = useState<"asc" | "desc">("desc");
   const [syncing, setSyncing] = useState(false);
   const [status, setStatus] = useState<Status>(null);
+  const [page, setPage] = useState(0);
 
-  const fetcher = useCallback(
-    () =>
-      apiGet<{ projects: Project[] }>(
-        `/guardian/projects${activeOnly ? "" : "?all=1"}`,
-      ).then((r) => r.projects),
-    [activeOnly],
-  );
+  const fetcher = useCallback(() => {
+    const params = new URLSearchParams({
+      limit: String(PAGE_SIZE),
+      offset: String(page * PAGE_SIZE),
+    });
+    if (!activeOnly) params.set("all", "1");
+    return apiGet<{ projects: Project[]; hasMore: boolean }>(
+      `/guardian/projects?${params}`,
+    );
+  }, [activeOnly, page]);
   const { data, loading, error, reload } = useResource(fetcher);
 
   function onSort(col: SortKey) {
@@ -149,7 +155,7 @@ export function ProjectsTable() {
     if (!data) return [];
     const min = parseFloat(minSpend);
     const q = search.trim().toLowerCase();
-    const filtered = data.filter((p) => {
+    const filtered = data.projects.filter((p) => {
       if (kind !== "all" && p.kind !== kind) return false;
       if (!Number.isNaN(min) && p.spendThisMonthUsd < min) return false;
       if (q && !p.name.toLowerCase().includes(q) && !(p.repo ?? "").toLowerCase().includes(q))
@@ -225,7 +231,14 @@ export function ProjectsTable() {
           htmlFor="proj-active"
           className="flex h-9 items-center gap-2 text-sm text-muted-foreground"
         >
-          <Switch id="proj-active" checked={activeOnly} onCheckedChange={setActiveOnly} />
+          <Switch
+            id="proj-active"
+            checked={activeOnly}
+            onCheckedChange={(v) => {
+              setActiveOnly(v);
+              setPage(0);
+            }}
+          />
           Active only
         </label>
         <Button
@@ -247,7 +260,7 @@ export function ProjectsTable() {
       ) : error ? (
         <InlineError message={error} onRetry={reload} />
       ) : rows.length === 0 ? (
-        <EmptyState label={data && data.length > 0 ? "No projects match these filters." : "No projects yet — run a sync to discover them."} />
+        <EmptyState label={data && data.projects.length > 0 ? "No projects match these filters." : "No projects yet — run a sync to discover them."} />
       ) : (
         <div className="overflow-x-auto rounded-md ring-1 ring-border/40">
           <Table>
@@ -323,6 +336,10 @@ export function ProjectsTable() {
           </Table>
         </div>
       )}
+
+      {data ? (
+        <Pager page={page} hasMore={data.hasMore} onPage={setPage} disabled={loading} />
+      ) : null}
     </section>
   );
 }

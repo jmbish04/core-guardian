@@ -1,0 +1,18 @@
+---
+/**
+ * @fileoverview /settings/billing — plan summary + included-allowance usage,
+ * backed by /api/guardian/allowances. A ReUI profile-8 adaptation; invoice /
+ * payment cards are omitted (no Cloudflare invoice API), with per-line detail
+ * linked out to the Accountant and Cost Basis pages.
+ */
+
+import SettingsLayout from "@/layouts/SettingsLayout.astro";
+import { BillingSettings } from "@/components/settings";
+---
+
+<SettingsLayout
+  title="Billing"
+  description="Your plan and how close each included allowance is running this period."
+>
+  <BillingSettings client:load />
+</SettingsLayout>
