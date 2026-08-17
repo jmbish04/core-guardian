@@ -40,6 +40,15 @@ import { syncWorkerProjects } from "@/backend/guardian/projects/sync-workers";
 
 const errorResponseSchema = z.object({ error: z.string() });
 
+/** Max rows a single list page may return — caps unbounded D1 scans. */
+const PAGE_MAX = 100;
+
+/** Shared limit/offset query params for the list endpoints. */
+const pageQuery = {
+  limit: z.coerce.number().int().min(1).max(PAGE_MAX).default(PAGE_MAX).optional(),
+  offset: z.coerce.number().int().min(0).default(0).optional(),
+};
+
 /** Wire shape of one guardian_projects row (+ derived monthly spend). */
 const projectSchema = z.object({
   name: z.string(),
@@ -108,15 +117,17 @@ guardianProjectsRouter.openapi(
     tags: ["Guardian Projects"],
     summary: "List projects (active by default; ?all=1 for all), newest last_seen first",
     description:
-      "Returns the unified project registry ordered by last_seen (newest first). Active-only by default; `all=1` includes deactivated (vanished) workers. Each row carries `spendThisMonthUsd` = sum of ai_router_requests.cost_usd for that project name this UTC month (0 if none).",
+      "Returns the unified project registry ordered by last_seen (newest first). Active-only by default; `all=1` includes deactivated (vanished) workers. Paginated via `limit` (1-100, default 100) and `offset`; `hasMore` signals a further page. Each row carries `spendThisMonthUsd` = sum of ai_router_requests.cost_usd for that project name this UTC month (0 if none).",
     request: {
-      query: z.object({ all: z.enum(["0", "1"]).default("0").optional() }),
+      query: z.object({ all: z.enum(["0", "1"]).default("0").optional(), ...pageQuery }),
     },
     responses: {
       200: {
         description: "Projects, newest last_seen first",
         content: {
-          "application/json": { schema: z.object({ projects: z.array(projectSchema) }) },
+          "application/json": {
+            schema: z.object({ projects: z.array(projectSchema), hasMore: z.boolean() }),
+          },
         },
       },
       401: {
@@ -126,22 +137,37 @@ guardianProjectsRouter.openapi(
     },
   }),
   async (c) => {
-    const all = c.req.valid("query").all === "1";
+    const q = c.req.valid("query");
+    const all = q.all === "1";
+    const limit = q.limit ?? PAGE_MAX;
+    const offset = q.offset ?? 0;
     const db = getDb(c.env);
 
+    // Fetch limit+1 to detect a further page without a COUNT query.
     const [rows, spend] = await Promise.all([
       all
-        ? db.select().from(guardianProjects).orderBy(desc(guardianProjects.lastSeen))
+        ? db
+            .select()
+            .from(guardianProjects)
+            .orderBy(desc(guardianProjects.lastSeen))
+            .limit(limit + 1)
+            .offset(offset)
         : db
             .select()
             .from(guardianProjects)
             .where(eq(guardianProjects.isActive, true))
-            .orderBy(desc(guardianProjects.lastSeen)),
+            .orderBy(desc(guardianProjects.lastSeen))
+            .limit(limit + 1)
+            .offset(offset),
       monthlySpendByProject(db),
     ]);
 
-    const projects = rows.map((r) => ({ ...r, spendThisMonthUsd: spend.get(r.name) ?? 0 }));
-    return c.json({ projects }, 200);
+    const hasMore = rows.length > limit;
+    const projects = (hasMore ? rows.slice(0, limit) : rows).map((r) => ({
+      ...r,
+      spendThisMonthUsd: spend.get(r.name) ?? 0,
+    }));
+    return c.json({ projects, hasMore }, 200);
   },
 );
 
@@ -157,20 +183,23 @@ guardianProjectsRouter.openapi(
     tags: ["Guardian Projects"],
     summary: "List Jules sessions, newest first",
     description:
-      "Returns jules_sessions ordered by created_at (newest first) for the /jules page. Optional `status` filter.",
+      "Returns jules_sessions ordered by created_at (newest first) for the /jules page. Optional `status` filter. Paginated via `limit` (1-100, default 100) and `offset`; `hasMore` signals a further page.",
     request: {
       query: z.object({
         status: z
           .enum(["pending", "running", "stuck", "submitted", "failed", "completed", "all"])
           .default("all")
           .optional(),
+        ...pageQuery,
       }),
     },
     responses: {
       200: {
         description: "Jules sessions, newest first",
         content: {
-          "application/json": { schema: z.object({ sessions: z.array(julesSessionSchema) }) },
+          "application/json": {
+            schema: z.object({ sessions: z.array(julesSessionSchema), hasMore: z.boolean() }),
+          },
         },
       },
       401: {
@@ -180,17 +209,29 @@ guardianProjectsRouter.openapi(
     },
   }),
   async (c) => {
-    const status = c.req.valid("query").status ?? "all";
+    const q = c.req.valid("query");
+    const status = q.status ?? "all";
+    const limit = q.limit ?? PAGE_MAX;
+    const offset = q.offset ?? 0;
     const db = getDb(c.env);
+    // Fetch limit+1 to detect a further page without a COUNT query.
     const rows =
       status === "all"
-        ? await db.select().from(julesSessions).orderBy(desc(julesSessions.createdAt))
+        ? await db
+            .select()
+            .from(julesSessions)
+            .orderBy(desc(julesSessions.createdAt))
+            .limit(limit + 1)
+            .offset(offset)
         : await db
             .select()
             .from(julesSessions)
             .where(eq(julesSessions.status, status))
-            .orderBy(desc(julesSessions.createdAt));
-    return c.json({ sessions: rows }, 200);
+            .orderBy(desc(julesSessions.createdAt))
+            .limit(limit + 1)
+            .offset(offset);
+    const hasMore = rows.length > limit;
+    return c.json({ sessions: hasMore ? rows.slice(0, limit) : rows, hasMore }, 200);
   },
 );
 

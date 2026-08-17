@@ -159,6 +159,55 @@ export function StatusBanner({ status, className }: { status: Status; className?
   );
 }
 
+// ---------------------------------------------------------------------------
+// Pager — offset/limit prev-next controls for the capped list endpoints.
+// ---------------------------------------------------------------------------
+
+/** Rows per page — mirrors the backend PAGE_MAX cap on the list endpoints. */
+export const PAGE_SIZE = 100;
+
+/** Prev / next controls. `hasMore` comes from the API; `page` is 0-based. */
+export function Pager({
+  page,
+  hasMore,
+  onPage,
+  disabled,
+}: {
+  page: number;
+  hasMore: boolean;
+  onPage: (p: number) => void;
+  disabled?: boolean;
+}) {
+  if (page === 0 && !hasMore) return null;
+  return (
+    <div className="flex items-center justify-end gap-2 text-sm text-muted-foreground">
+      <span>Page {page + 1}</span>
+      <button
+        type="button"
+        onClick={() => onPage(page - 1)}
+        disabled={disabled || page === 0}
+        className={cn(
+          "rounded-md px-2 py-1 ring-1 ring-inset ring-border/40 hover:text-foreground",
+          "disabled:pointer-events-none disabled:opacity-40",
+        )}
+      >
+        Previous
+      </button>
+      <button
+        type="button"
+        onClick={() => onPage(page + 1)}
+        disabled={disabled || !hasMore}
+        className={cn(
+          "rounded-md px-2 py-1 ring-1 ring-inset ring-border/40 hover:text-foreground",
+          "disabled:pointer-events-none disabled:opacity-40",
+        )}
+      >
+        Next
+      </button>
+    </div>
+  );
+}
+
 /** Centred spinner row for the LOADING state. */
 export function LoadingRow({ label }: { label: string }) {
   return (
