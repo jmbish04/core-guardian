@@ -58,7 +58,14 @@ export async function forward(env: Env, req: RouterRequest, _now: number): Promi
     headers["x-goog-api-key"] = providerKey;
   }
 
-  const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(req.input) });
+  // chat/completions-style endpoints require `model` in the body; the caller
+  // passes it as req.model (top-level), not inside req.input. Gemini-native
+  // carries the model in the URL instead. An input-provided model wins.
+  const payload =
+    mode === "gemini-native"
+      ? req.input
+      : { model: req.model, ...(req.input as Record<string, unknown>) };
+  const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload) });
   const body = await res.json().catch(() => ({}));
   const usage = extractUsage(req.provider, body);
   return { status: res.status, body, usage, gateway };

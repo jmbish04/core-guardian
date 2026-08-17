@@ -29,7 +29,7 @@ import { and, eq, inArray, lt } from "drizzle-orm";
 
 import { getDb } from "@/backend/db";
 import { aiRouterRequests, guardianProjects } from "@/backend/db/schema";
-import { cfApi } from "@/backend/guardian/resources";
+import { cfApi, listWorkerScriptIds } from "@/backend/guardian/resources";
 
 /** Summary returned by {@link syncWorkerProjects} and surfaced on `POST /sync`. */
 export interface SyncSummary {
@@ -86,41 +86,6 @@ async function loadWorkerRepoMap(env: Env): Promise<Map<string, string>> {
 }
 
 /**
- * List EVERY Worker script id, following pagination. `/workers/scripts` returns
- * ~50 per page, so an unpaginated read misses page 2+ workers — which would then
- * be wrongly deactivated. Returns `complete=false` if any page errors, so the
- * caller can skip the deactivation sweep rather than act on a partial list.
- *
- * Robust to either API behaviour: it stops on a short page (true pagination) OR
- * when a page adds no new ids (an API that ignores paging and returns everything
- * on page 1) — the Set makes repeated pages a no-op instead of an infinite loop.
- */
-async function listAllWorkerNames(env: Env): Promise<{ names: string[]; complete: boolean }> {
-  const seen = new Set<string>();
-  const perPage = 50;
-  for (let page = 1; page <= 200; page++) {
-    let batch: { id: string }[];
-    try {
-      const { result } = await cfApi<{ id: string }[]>(
-        env,
-        `/workers/scripts?per_page=${perPage}&page=${page}`,
-      );
-      batch = result ?? [];
-    } catch (err) {
-      console.warn(
-        JSON.stringify({ level: "WARN", source: "guardian.projects.listWorkers", page, error: String(err) }),
-      );
-      return { names: [...seen], complete: false };
-    }
-    const before = seen.size;
-    for (const s of batch) seen.add(s.id);
-    if (batch.length < perPage) break; // last page
-    if (seen.size === before) break; // no growth → API ignored paging / repeat
-  }
-  return { names: [...seen], complete: true };
-}
-
-/**
  * Reconcile `guardian_projects` with the live account.
  *
  * @param env - Worker env carrying the Secrets Store CF credentials + `DB`.
@@ -133,8 +98,8 @@ export async function syncWorkerProjects(env: Env): Promise<SyncSummary> {
   const runStart = Date.now();
   const now = runStart;
 
-  const [{ names: workerNames, complete }, repoMap] = await Promise.all([
-    listAllWorkerNames(env),
+  const [{ ids: workerNames, complete }, repoMap] = await Promise.all([
+    listWorkerScriptIds(env),
     loadWorkerRepoMap(env),
   ]);
 

@@ -73,6 +73,7 @@ import { proposeHotfix } from "@/backend/guardian/hotfix";
 import { getWorkersPlan, setWorkersPlan } from "@/backend/guardian/plan";
 import { scrapeAllPricing, scrapeOneProduct } from "@/backend/guardian/pricing-scrape";
 import { archiveR2Bucket } from "@/backend/guardian/r2-archive";
+import { buildSpendRollup, latestSpendRollup } from "@/backend/guardian/spend-rollup";
 import { listUsageRegistrations, registerDirectUsage } from "@/backend/guardian/register-usage";
 import {
   getBindingIndex,
@@ -1401,6 +1402,41 @@ guardianRouter.openapi(
       { builtAt: index.builtAt, workerCount: index.workerCount, resources, workers },
       200,
     );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/guardian/spend-rollup  — the cached reconciled ledger (frontend read)
+// ---------------------------------------------------------------------------
+
+guardianRouter.openapi(
+  createRoute({
+    method: "get",
+    path: "/spend-rollup",
+    operationId: "guardianSpendRollup",
+    summary: "Cached reconciled spend: billed-by-family (actual) + per-project allocation + lanes",
+    description:
+      "Reads the newest `spend_rollup` row — the cron-materialized reconciliation of the Cloudflare billing ACTUAL (`billable_usage`, ground truth) to per-project spend. `billed` mirrors the Cloudflare bill by service_family; `projects` is that actual allocated across projects by estimated share (sums to the bill); `pools` holds unattributed/shared. The frontend renders this in one cheap read — no compute on page load. `?rebuild=1` forces a fresh build (the cron is primary). NO AI.",
+    request: { query: z.object({ rebuild: z.enum(["0", "1"]).optional() }) },
+    responses: {
+      200: {
+        description: "The reconciled rollup payload (empty-shaped when none built yet)",
+        content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => {
+    if (c.req.valid("query").rebuild === "1") {
+      return c.json(await buildSpendRollup(c.env), 200);
+    }
+    // Read the cache; if empty (fresh deploy, before the first cron), build once
+    // so the card is never blank. Subsequent reads hit the cache — no per-load compute.
+    const rollup = (await latestSpendRollup(c.env)) ?? (await buildSpendRollup(c.env));
+    return c.json(rollup, 200);
   },
 );
 

@@ -16,6 +16,7 @@
 import {
   ActivityIcon,
   BellIcon,
+  CreditCardIcon,
   type LucideIcon,
   SettingsIcon,
   SlidersHorizontalIcon,
@@ -58,6 +59,12 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     label: "Webhooks",
     description: "Outbound event subscriptions",
     icon: WebhookIcon,
+  },
+  {
+    href: "/settings/billing",
+    label: "Billing",
+    description: "Plan & included-allowance usage",
+    icon: CreditCardIcon,
   },
   {
     href: "/settings/activity",

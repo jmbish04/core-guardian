@@ -40,6 +40,7 @@ export const BILLABLE_USAGE_COLUMN_DESCRIPTIONS: Record<string, string> = {
   currency: "Billing currency for contracted_cost.",
   zone_id: 'Zone the charge is attributed to, or "" for account-level.',
   zone_name: "Zone name, when zone-scoped.",
+  zone_fk: "Relational link to zones.id (null for account-level charges).",
   captured_at: "Unix ms this row was fetched/updated.",
 };
 
@@ -61,6 +62,9 @@ export const billableUsage = sqliteTable(
     currency: text("currency").notNull().default("USD"),
     zoneId: text("zone_id").notNull().default(""),
     zoneName: text("zone_name").notNull().default(""),
+    // Relational link to `zones.id` (null for account-level charges). The raw
+    // `zone_id` above is the API value; this is the resolved relation.
+    zoneFk: text("zone_fk"),
     capturedAt: integer("captured_at")
       .notNull()
       .$defaultFn(() => Date.now()),

@@ -37,8 +37,36 @@ import { guardianAuth } from "@/backend/api/routes/guardian";
 import { getCircuit } from "@/backend/guardian/ai-router/circuits";
 import { cfApi } from "@/backend/guardian/resources";
 import { syncWorkerProjects } from "@/backend/guardian/projects/sync-workers";
+import { attributeSpendByProject, hoursThisMonth } from "@/backend/guardian/spend-attribution";
 
 const errorResponseSchema = z.object({ error: z.string() });
+
+/** Cache key + TTL for the per-project usage ledger (11 GraphQL probes/build). */
+const USAGE_CACHE_KEY = "guardian:spend-attribution";
+const USAGE_CACHE_TTL_SECONDS = 900;
+
+const categoryBucketSchema = z.object({
+  compute: z.number(),
+  r2: z.number(),
+  d1: z.number(),
+  vectorize: z.number(),
+  ai: z.number(),
+});
+const projectSpendSchema = z.object({
+  name: z.string(),
+  kind: z.string(),
+  criticality: z.string().nullable(),
+  totalUsd: z.number(),
+  byCategory: categoryBucketSchema,
+});
+const usageResponseSchema = z.object({
+  windowHours: z.number(),
+  builtAt: z.number(),
+  categories: z.array(z.string()),
+  totalUsd: z.number(),
+  byCategory: categoryBucketSchema,
+  projects: z.array(projectSpendSchema),
+});
 
 /** Max rows a single list page may return — caps unbounded D1 scans. */
 const PAGE_MAX = 100;
@@ -247,6 +275,47 @@ guardianProjectsRouter.openapi(
 );
 
 // ---------------------------------------------------------------------------
+// GET /usage  — per-project spend ledger by category (static, before /{name})
+// ---------------------------------------------------------------------------
+
+guardianProjectsRouter.openapi(
+  createRoute({
+    method: "get",
+    path: "/usage",
+    operationId: "guardianProjectsUsage",
+    tags: ["Guardian Projects"],
+    summary: "Per-project spend this month, broken down by category",
+    description:
+      "Joins the Worker→resource binding graph to per-resource usage cost so spend is attributed to the project that owns each resource. Categories: compute (per-scriptName invocations), r2 / d1 / vectorize (single-binder resources), ai (ai_router). A resource bound to MANY workers pools into `__shared__`; one bound to no tracked worker into `__unattributed__` — never a fabricated split. KV (metered by action-type, not namespace) and Durable Objects (absent from the binding graph) are deliberately omitted. Materialized from the same hourly probe + binding-index fan-out; cached in KV for 15m (`?refresh=1` to rebuild). NO AI in the analysis.",
+    request: {
+      query: z.object({ refresh: z.enum(["0", "1"]).optional() }),
+    },
+    responses: {
+      200: {
+        description: "Per-project category spend ledger, projects sorted by total spend desc",
+        content: { "application/json": { schema: usageResponseSchema } },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => {
+    const refresh = c.req.valid("query").refresh === "1";
+    if (!refresh) {
+      const cached = await c.env.SESSIONS.get(USAGE_CACHE_KEY, "json");
+      if (cached) return c.json(cached as z.infer<typeof usageResponseSchema>, 200);
+    }
+    const result = await attributeSpendByProject(c.env, hoursThisMonth());
+    await c.env.SESSIONS.put(USAGE_CACHE_KEY, JSON.stringify(result), {
+      expirationTtl: USAGE_CACHE_TTL_SECONDS,
+    });
+    return c.json(result, 200);
+  },
+);
+
+// ---------------------------------------------------------------------------
 // POST /sync  — run the worker sync now (static path, before /{name})
 // ---------------------------------------------------------------------------
 
@@ -368,9 +437,9 @@ guardianProjectsRouter.openapi(
     path: "/{name}/config",
     operationId: "guardianProjectsUpdate",
     tags: ["Guardian Projects"],
-    summary: "Update a project's note / criticality (audited)",
+    summary: "Update a project's note / criticality / repo (audited)",
     description:
-      "Updates the operator metadata on a project. Both fields optional; only provided fields are written. Audited to billing_events.",
+      "Updates the operator metadata on a project. All fields optional; only provided fields are written. `repo` is a deliberate source — it sets or CHANGES the stored owner/repo (unlike the CF-builds sync, which only fills/refreshes). Audited to billing_events.",
     request: {
       params: z.object({ name: z.string() }),
       body: {
@@ -379,6 +448,7 @@ guardianProjectsRouter.openapi(
             schema: z.object({
               note: z.string().nullable().optional(),
               criticality: z.enum(["hobby", "normal", "important", "critical"]).optional(),
+              repo: z.string().regex(/^[^/]+\/[^/]+$/, "repo must be owner/name").optional(),
             }),
           },
         },
@@ -408,11 +478,16 @@ guardianProjectsRouter.openapi(
     const body = c.req.valid("json");
     const db = getDb(c.env);
 
-    const patch: { note?: string | null; criticality?: (typeof body)["criticality"] } = {};
+    const patch: {
+      note?: string | null;
+      criticality?: (typeof body)["criticality"];
+      repo?: string;
+    } = {};
     if (body.note !== undefined) patch.note = body.note;
     if (body.criticality !== undefined) patch.criticality = body.criticality;
+    if (body.repo !== undefined) patch.repo = body.repo;
     if (Object.keys(patch).length === 0) {
-      return c.json({ error: "Provide at least one of note, criticality." }, 400);
+      return c.json({ error: "Provide at least one of note, criticality, repo." }, 400);
     }
 
     const [updated] = await db

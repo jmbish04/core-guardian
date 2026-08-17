@@ -61,6 +61,9 @@ import {
 import { handleInboundEmail } from "./backend/email/inbound";
 import { snapshotGatewayCosts } from "./backend/guardian/ai-gateway-costs";
 import { syncBillableUsage } from "./backend/guardian/billable-usage";
+import { backfillBillableUsage } from "./backend/guardian/backfill-billable-usage";
+import { snapshotResources, syncZones } from "./backend/guardian/snapshot-resources";
+import { buildSpendRollup } from "./backend/guardian/spend-rollup";
 import { CATALOG_CACHE_KEY, refreshModelCatalog } from "./backend/guardian/model-catalog";
 import { syncRecommendationAlerts } from "./backend/guardian/model-recommendations";
 import { scrapeAllModelPricing } from "./backend/guardian/ai-model-pricing";
@@ -152,6 +155,44 @@ async function runGuardianEvaluation(env: Env) {
   } catch (err) {
     console.error(
       JSON.stringify({ level: "ERROR", source: "guardian.billableUsage", error: String(err) }),
+    );
+  }
+  // One-time: backfill the fuller billable-usage history so "since last login"
+  // deltas have depth on a fresh install. KV-guarded to run exactly once.
+  try {
+    await maybeBackfillBillableUsage(env);
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.backfill", error: String(err) }),
+    );
+  }
+  // Hourly: sync zones + snapshot per-resource usage + the worker→resource
+  // binding map (the spend-attribution data foundation). Non-fatal.
+  try {
+    await syncZones(env);
+    const snap = await snapshotResources(env);
+    console.warn(JSON.stringify({ level: "INFO", source: "guardian.snapshotResources", ...snap }));
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.snapshotResources", error: String(err) }),
+    );
+  }
+  // Hourly: reconcile the billing actual to per-project spend and cache it, so
+  // the frontend reads one row instead of computing on load. Runs after the
+  // snapshot + billable sync above so it reconciles the freshest data. Non-fatal.
+  try {
+    const roll = await buildSpendRollup(env);
+    console.warn(
+      JSON.stringify({
+        level: "INFO",
+        source: "guardian.spendRollup",
+        totalActualUsd: roll.totalActualUsd,
+        projects: roll.projects.length,
+      }),
+    );
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.spendRollup", error: String(err) }),
     );
   }
   // Daily: pull external AI provider billing (Anthropic/OpenAI/Cursor cost APIs
@@ -291,6 +332,18 @@ async function maybeSyncBillableUsage(env: Env) {
   if (latest && Date.now() - latest.capturedAt < ONE_DAY_MS) return;
   const rows = await syncBillableUsage(env, 35);
   console.warn(JSON.stringify({ level: "INFO", source: "guardian.billableUsage", rows }));
+}
+
+const BILLABLE_BACKFILL_KEY = "guardian:billable-backfill-done";
+
+async function maybeBackfillBillableUsage(env: Env) {
+  const done = await env.SESSIONS.get(BILLABLE_BACKFILL_KEY);
+  if (done) return;
+  const bf = await backfillBillableUsage(env);
+  // Only mark done when every window succeeded — otherwise retry next cron so
+  // rate-limited/half-fetched history isn't permanently skipped.
+  if (bf.failures === 0) await env.SESSIONS.put(BILLABLE_BACKFILL_KEY, String(Date.now()));
+  console.warn(JSON.stringify({ level: "INFO", source: "guardian.backfill", ...bf }));
 }
 
 const PROVIDER_SYNC_KEY = "provider-cost:last-sync";

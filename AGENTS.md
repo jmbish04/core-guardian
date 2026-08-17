@@ -262,3 +262,54 @@ the audit row and circuit write are handled server-side.
   optional `details`) from the writer; it renders automatically. If it takes an
   automated action, push a `{kind,detail,at}` onto `actionsTaken` and map the new
   `kind` in `IncidentsPanel.tsx#actionLabel`.
+
+## Guardian Client SDK
+
+**Purpose**: one vendorable, dependency-free client per language so any project
+talks to core-guardian (chiefly the AI Router `/run` ingress, plus usage metering,
+budget, and project status) without hand-rolled fetch calls or hardcoded
+URLs/tokens. Source of truth: [`clients/`](clients/). Distribution is **git-vendor**
+(no npm/PyPI) — GAS has no package manager, so a single copied file is the common
+denominator. Contract version in `clients/VERSION` (currently **1.0.0**, tagged
+`v1.0.0`), stamped into every client and enforced across languages by tests.
+
+**Files**:
+- `clients/ts/guardian-client.ts` — Workers, zero-dep (fetch). `GuardianClient.fromEnv(env)`.
+- `clients/python/guardian_client.py` — stdlib `urllib`, injectable transport. `GuardianClient.from_env(os.environ)`.
+- `clients/gas/GuardianClient.gs` — Apps Script V8 / `UrlFetchApp`. `GuardianClient.fromScriptProperties()`. **No streaming** (`ai.stream` throws).
+- `clients/template/pull-guardian.mjs` — build-time vendor script (wire to `postinstall`/`predeploy`), warn-and-continue when a committed copy exists.
+
+**Config (consumer side)**: identity in the consumer's `wrangler.jsonc`
+`vars.GUARDIAN = {project, repo?, priority?, budget?, baseUrl?}`; secrets are
+**separate bindings** `GUARDIAN_AI_TOKEN` (→ `/api/ai-router/run`) and
+`GUARDIAN_API_KEY` (→ guardian endpoints). Never put tokens in `vars`. `priority` →
+importance: `hobby|normal→low, important→medium, critical→high` (unknown/empty → `low`).
+
+**Surface** (identical across langs, minus GAS streaming): `ai.run` / `ai.stream`
+(POST `/api/ai-router/run`, AI token), `usage.register` (POST
+`/api/guardian/usage/register`, API key, `project`→`worker`), `budget()` (GET
+`/api/ai/budget`), and the project-record fetch — `project()` (TS) /
+`project_status()` (Python) / `projectStatus()` (GAS), all GET
+`/api/guardian/projects/{project}` with the API key. Errors throw `GuardianError
+{status, body, isCircuitBreaker, circuitBrokenMessage?}`. Each client keeps tokens
+out of serialization: TS makes them non-enumerable (`console.log`/`util.inspect`/
+`JSON.stringify` all safe), GAS adds a `toJSON()`, Python stores them under
+underscore-private names.
+
+**Onboarding surface (server-side, in this repo)**: `GET
+/api/integration/instructions?lang=ts|python|gas&mode=curl|submodule|degit` (public,
+`api/routes/integration.ts`) and the `guardian_integration_instructions` MCP tool
+(`api/routes/mcp.ts`) both emit a copy-paste pull command + `GUARDIAN` vars stub +
+secret names + usage snippet, version- and ref-stamped. Pure builder:
+`guardian/integration.ts` (`buildInstructions`).
+
+**Pinning**: pull from `main` for latest, or pin the `v1.0.0` tag (raw URL
+`.../core-guardian/v1.0.0/clients/...`) / `GUARDIAN_CLIENT_REF=v1.0.0` for a frozen
+release. GAS can't read `clients/VERSION` at runtime, so its version is a manual-sync
+literal guarded by `clients/gas/version-sync.test.mjs`.
+
+**Extending**: bump `clients/VERSION` **and** every client's version constant
+together (tests assert equality). Add a language by creating `clients/<lang>/…`,
+adding its branch to `guardian/integration.ts#LANGS`, and updating
+`clients/README.md`. `corepack pnpm test` runs the TS + integration-builder +
+template-vendor + GAS version-sync + Python self-checks.

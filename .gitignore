@@ -17,6 +17,8 @@ pnpm-debug.log*
 # environment variables
 .env
 .env.production
+.env.local
+.env*.local
 
 # macOS-specific files
 .DS_Store
@@ -26,3 +28,7 @@ __pycache__/
 *.pyc
 .env.local
 .env*.local
+
+# local agent orchestration artifacts
+orchestrator.toml
+.orchestrator-state/
