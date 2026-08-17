@@ -26,6 +26,8 @@ import {
   spendRollup,
 } from "@/backend/db/schema";
 
+import { getDoComputeDrivers } from "./resource-attribution";
+
 export const UNATTRIBUTED = "__unattributed__";
 export const SHARED = "__shared__";
 
@@ -42,8 +44,9 @@ function categoryOf(family: string): string {
   return FAMILY_TO_CATEGORY[family] ?? "other";
 }
 /** Categories with a real per-project estimate basis (else the family is pooled).
- *  `compute`/`do`/`other` have no per-project basis yet → pooled unattributed. */
-const ATTRIBUTABLE = new Set(["ai", "d1", "r2", "vectorize"]);
+ *  `do` attributes via #50's per-script DO wall-time drivers; `compute`/`other`
+ *  have no per-project basis yet → pooled unattributed. */
+const ATTRIBUTABLE = new Set(["ai", "d1", "r2", "vectorize", "do"]);
 /** Infra categories attributed through the resource/binding graph (not ai). */
 const INFRA_CATEGORIES = ["d1", "r2", "vectorize"];
 
@@ -175,6 +178,16 @@ export async function buildSpendRollup(env: Env): Promise<RollupPayload> {
     }
     weightsByCategory.set(cat, w);
   }
+
+  // do: weight = per-script DO wall-time share over the cycle (reuses #50's
+  // driver — the one dataset that knows which script burned the lumped DO SKU).
+  // scriptName == worker == project. Empty (query failed / no DO) → pools.
+  const cycleDays = Math.max(1, Math.ceil((now - start) / 86_400_000));
+  const doDrivers = await getDoComputeDrivers(env, cycleDays).catch(() => null);
+  weightsByCategory.set(
+    "do",
+    (doDrivers?.scripts ?? []).map((s) => ({ key: s.scriptName, weight: s.wallTime })),
+  );
 
   // --- Allocate each category's actual across its weights ----------------------
   const projectAcc = new Map<string, { kind: string; total: number; byCategory: Record<string, number> }>();
