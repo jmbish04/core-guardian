@@ -195,7 +195,7 @@ async function runGuardianEvaluation(env: Env) {
       JSON.stringify({ level: "ERROR", source: "guardian.spendRollup", error: String(err) }),
     );
   }
-  // Daily: pull external AI provider billing (Anthropic/OpenAI/Cursor cost APIs
+  // Daily: pull external AI provider billing (Anthropic/OpenAI cost APIs
   // + Gemini Cloud Billing budget) into provider_cost, then run the per-provider
   // budget threshold alerts. Gated on 1 day; each provider is skipped when its
   // key/config is absent (non-fatal).
