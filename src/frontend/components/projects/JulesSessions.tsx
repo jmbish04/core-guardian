@@ -326,7 +326,15 @@ export function JulesSessions() {
     getSubRows: (row) => (row.kind === "group" ? row.subRows : undefined),
     getRowCanExpand: (row) => row.original.kind === "group" && row.original.subRows.length > 0,
     state: { expanded: effectiveExpanded },
-    onExpandedChange: setExpanded,
+    // Resolve the toggle against the base the table actually renders from
+    // (effectiveExpanded), not the raw `{}` — otherwise the first collapse
+    // click, run against an empty map, inverts and collapses every OTHER group.
+    onExpandedChange: (updater) =>
+      setExpanded((prev) => {
+        const base =
+          prev === true || Object.keys(prev).length > 0 ? prev : expandAll(rows);
+        return typeof updater === "function" ? updater(base) : updater;
+      }),
   });
 
   return (
