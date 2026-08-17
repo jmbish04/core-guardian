@@ -8,6 +8,7 @@
     "jsxImportSource": "react",
     "types": ["@cloudflare/workers-types", "./worker-configuration.d.ts", "node"],
     "paths": {
+      "~/*": ["src/frontend/*"],
       "@/*": ["src/frontend/*", "src/backend/*"],
       "@/shared/*": ["src/shared/*"],
       "@/backend/*": ["src/backend/*"],
