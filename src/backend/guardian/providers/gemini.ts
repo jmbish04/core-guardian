@@ -26,7 +26,11 @@ import { getSecret, getSecretStoreBinding } from "@/backend/utils/secrets";
 
 import { num, ProviderBillingError, ymd, type ProviderDailyCost } from "./types";
 
-const BILLING_SCOPE = "https://www.googleapis.com/auth/cloud-billing.readonly";
+// The Cloud Billing Budgets API rejects `cloud-billing.readonly` with
+// "insufficient authentication scopes" — budgets.list requires the full
+// `cloud-billing` (or `cloud-platform`) scope. The SA still needs the
+// Billing Account Viewer IAM role on the account for actual access.
+const BILLING_SCOPE = "https://www.googleapis.com/auth/cloud-billing";
 const CONFIG_KEY = "gemini_billing_account_id";
 
 type Budget = {
