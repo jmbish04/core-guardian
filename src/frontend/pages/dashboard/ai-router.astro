@@ -5,7 +5,12 @@
  * Thin Astro shell over the `<AiRouterConsole>` React island.
  */
 import BaseLayout from "@/layouts/BaseLayout.astro";
-import { AiRouterUsage, AiRouterConsole, AiRouterRecommendations } from "@/components/dashboard";
+import {
+  AiRouterUsage,
+  AiRouterConsole,
+  AiRouterRecommendations,
+  ModelSubstitutions,
+} from "@/components/dashboard";
 ---
 
 <BaseLayout
@@ -21,6 +26,7 @@ import { AiRouterUsage, AiRouterConsole, AiRouterRecommendations } from "@/compo
     </a>
     <AiRouterUsage client:load />
     <AiRouterConsole client:load />
+    <ModelSubstitutions client:load />
     <AiRouterRecommendations client:load />
   </main>
 </BaseLayout>
