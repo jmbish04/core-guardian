@@ -26,6 +26,11 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: "22"
+          # setup-node@v5 enables package-manager caching by default, which
+          # tries to run pnpm (from the "packageManager" field) during THIS
+          # step — before pnpm is installed — and fails with "Unable to locate
+          # executable file: pnpm". We install pnpm ourselves below, so disable it.
+          package-manager-cache: false
 
       - name: Set up Python
         uses: actions/setup-python@v6
