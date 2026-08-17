@@ -1,20 +1,14 @@
 /**
- * @fileoverview SpendByProject — "who's eating the budget" card for the cockpit.
+ * @fileoverview SpendByProject — "who's eating the budget" card, billing-reconciled.
  *
- * A ReUI `stats-3` adaptation. The upstream block shows subscription revenue
- * split by plan tier plus an expiring-soon list; here the same shape answers
- * the owner's real question: of this month's spend, which *categories* and
- * which *projects* are burning the most.
+ * Reads the cron-materialized `GET /api/guardian/spend-rollup` (one cheap D1
+ * read — no compute on load). The headline is the Cloudflare **Billed** actual
+ * with the run-rate **Projected** paired beside it; the composition bar mirrors
+ * the bill by category; "Top spenders" is that actual *allocated* across
+ * projects (sums to the bill), with unattributed/shared shown as honest pools.
  *
- *   - segmented bar   → spend composition by CATEGORY (compute / R2 / D1 /
- *                       Vectorize / AI)
- *   - top-spenders    → the individual projects, largest share first, each
- *                       linking to its per-project detail page
- *
- * Data: `GET /api/guardian/projects/usage` — the binding-graph attribution
- * ledger. Spend on a resource bound to one worker is credited to that project;
- * a resource shared by many workers lands in a "Shared" pool and one bound to
- * no tracked worker in "Unattributed" — never a fabricated per-project split.
+ * A ReUI stats-3 adaptation. Billed = ground truth (`billable_usage`), never a
+ * raw estimate.
  */
 
 "use client";
@@ -24,51 +18,39 @@ import { useMemo } from "react";
 
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { apiGet } from "@/lib/api";
 import { usd } from "@/lib/format";
 
 import { EmptyState, InlineError } from "@/components/dashboard/shared";
 import { KindBadge, useResource, type Kind } from "@/components/projects/shared";
 
-type Category = "compute" | "r2" | "d1" | "vectorize" | "ai";
-type Bucket = Record<Category, number>;
-type ProjectSpend = {
-  name: string;
-  kind: string;
-  criticality: string | null;
-  totalUsd: number;
-  byCategory: Bucket;
-};
-type UsageLedger = {
-  windowHours: number;
-  builtAt: number;
-  categories: Category[];
-  totalUsd: number;
-  byCategory: Bucket;
+type Billed = { family: string; category: string; actualUsd: number; projectedUsd: number };
+type ProjectSpend = { name: string; kind: string; totalUsd: number; byCategory: Record<string, number> };
+type Pool = { name: string; totalUsd: number };
+type Rollup = {
+  window: { start: number; end: number; elapsedFraction: number };
+  billed: Billed[];
+  totalActualUsd: number;
+  totalProjectedUsd: number;
   projects: ProjectSpend[];
+  pools: Pool[];
 };
 
-/** Category order + label + a stable chart-token color. */
-const CATEGORY_META: Record<Category, { label: string; color: string }> = {
-  compute: { label: "Compute", color: "var(--color-chart-1)" },
-  r2: { label: "R2", color: "var(--color-chart-2)" },
+/** category → label + stable chart-token color. */
+const CATEGORY_META: Record<string, { label: string; color: string }> = {
+  ai: { label: "AI", color: "var(--color-chart-1)" },
+  do: { label: "Durable Objects", color: "var(--color-chart-2)" },
   d1: { label: "D1", color: "var(--color-chart-3)" },
-  vectorize: { label: "Vectorize", color: "var(--color-chart-4)" },
-  ai: { label: "AI", color: "var(--color-chart-5)" },
+  compute: { label: "Compute", color: "var(--color-chart-4)" },
+  r2: { label: "R2", color: "var(--color-chart-5)" },
+  vectorize: { label: "Vectorize", color: "var(--color-chart-1)" },
+  other: { label: "Other", color: "var(--color-muted-foreground)" },
 };
-const CATEGORY_ORDER: Category[] = ["compute", "r2", "d1", "vectorize", "ai"];
+const metaFor = (cat: string) => CATEGORY_META[cat] ?? { label: cat, color: "var(--color-muted-foreground)" };
 
-/** The two honest spend pools that aren't a real project. */
-const POOL_KINDS = new Set(["shared", "unattributed"]);
-const POOL_LABEL: Record<string, string> = { shared: "Shared", unattributed: "Unattributed" };
 const POOL_HINT: Record<string, string> = {
-  shared: "A resource bound to several workers — Cloudflare can't split it per caller, so it isn't credited to one project.",
-  unattributed: "Usage on a resource not bound to any tracked worker.",
+  unattributed: "Billed to a product with no per-project basis (e.g. Durable Objects) — honestly not split.",
+  shared: "A resource bound to several workers — Cloudflare can't split it per caller.",
 };
 
 const TOP_N = 6;
@@ -80,23 +62,29 @@ function pctLabel(fraction: number): string {
 }
 
 export function SpendByProject() {
-  const { data, loading, error, reload } = useResource<UsageLedger>(() =>
-    apiGet<UsageLedger>("/guardian/projects/usage"),
+  const { data, loading, error, reload } = useResource<Rollup>(() =>
+    apiGet<Rollup>("/guardian/spend-rollup"),
   );
 
   const view = useMemo(() => {
-    const total = data?.totalUsd ?? 0;
-    const segments = CATEGORY_ORDER.map((cat) => ({
-      cat,
-      ...CATEGORY_META[cat],
-      usd: data?.byCategory?.[cat] ?? 0,
-    })).filter((s) => s.usd > 0);
+    const total = data?.totalActualUsd ?? 0;
+    // Composition bar: actual $ per category, summed across families.
+    const byCat = new Map<string, number>();
+    for (const b of data?.billed ?? []) byCat.set(b.category, (byCat.get(b.category) ?? 0) + b.actualUsd);
+    const segments = [...byCat.entries()]
+      .filter(([, usdv]) => usdv > 0)
+      .sort((a, b) => b[1] - a[1])
+      .map(([cat, usdv]) => ({ cat, ...metaFor(cat), usd: usdv }));
 
-    const all = (data?.projects ?? []).filter((p) => p.totalUsd > 0);
-    const real = all.filter((p) => !POOL_KINDS.has(p.kind));
-    const pools = all.filter((p) => POOL_KINDS.has(p.kind));
-
-    return { total, segments, top: real.slice(0, TOP_N), realCount: real.length, pools };
+    const projects = (data?.projects ?? []).filter((p) => p.totalUsd > 0);
+    return {
+      total,
+      projected: data?.totalProjectedUsd ?? 0,
+      segments,
+      top: projects.slice(0, TOP_N),
+      count: projects.length,
+      pools: (data?.pools ?? []).filter((p) => p.totalUsd > 0),
+    };
   }, [data]);
 
   return (
@@ -105,7 +93,7 @@ export function SpendByProject() {
         <CardTitle>Spend by Project</CardTitle>
         <CardAction>
           <span className="rounded-md border border-border/60 bg-muted/40 px-2.5 py-1 text-xs font-medium text-muted-foreground">
-            This month
+            This cycle
           </span>
         </CardAction>
       </CardHeader>
@@ -114,19 +102,19 @@ export function SpendByProject() {
         {loading ? (
           <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
             <Loader2Icon className="size-4 animate-spin" />
-            Attributing spend…
+            Loading…
           </div>
         ) : error ? (
           <InlineError message={error} onRetry={reload} />
         ) : view.total <= 0 ? (
-          <EmptyState label="No attributed spend yet — per-project cost lands here once usage is recorded this month." />
+          <EmptyState label="No billed spend yet this cycle — the reconciled ledger fills in on the next sync." />
         ) : (
           <>
-            {/* Headline cells */}
+            {/* Headline: Billed (truth) + Projected paired */}
             <div className="mb-1 flex items-center gap-2.5">
               <div className="flex flex-1 flex-col gap-1.5">
                 <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Projected spend · est.
+                  Billed this cycle
                 </div>
                 <div className="text-2xl font-bold tabular-nums text-foreground">
                   {usd(view.total)}
@@ -134,20 +122,20 @@ export function SpendByProject() {
               </div>
               <div className="flex flex-1 flex-col gap-1.5">
                 <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Billing projects
+                  Projected
                 </div>
-                <div className="text-2xl font-bold tabular-nums text-foreground">
-                  {view.realCount}
+                <div className="text-2xl font-bold tabular-nums text-muted-foreground">
+                  {usd(view.projected)}
                 </div>
               </div>
             </div>
 
             <p className="mb-4 text-[11px] leading-4 text-muted-foreground/70">
-              Upper-bound estimate from marginal overage rates — not your actual bill. Reconcile
-              against Cloudflare billing before acting.
+              Billed = your Cloudflare bill (actual). Per-project below is that actual allocated by
+              estimated usage share — it sums to the bill.
             </p>
 
-            {/* Category composition bar */}
+            {/* Category composition bar (of the actual bill) */}
             <div className="mb-3.5 flex h-2.5 w-full items-center gap-0.5 overflow-hidden rounded-full bg-muted">
               {view.segments.map((seg) => (
                 <div
@@ -163,17 +151,14 @@ export function SpendByProject() {
             <div className="mb-6 flex flex-wrap items-center gap-x-5 gap-y-1.5">
               {view.segments.map((seg) => (
                 <div key={seg.cat} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <span
-                    className="inline-block size-2 rounded-full"
-                    style={{ backgroundColor: seg.color }}
-                  />
+                  <span className="inline-block size-2 rounded-full" style={{ backgroundColor: seg.color }} />
                   {seg.label}
                   <span className="font-semibold text-foreground">{pctLabel(seg.usd / view.total)}</span>
                 </div>
               ))}
             </div>
 
-            {/* Top spenders */}
+            {/* Top spenders (reconciled allocation) */}
             <div className="mb-2.5 text-sm tracking-wide text-muted-foreground">Top spenders</div>
             {view.top.map((p) => (
               <div
@@ -201,33 +186,14 @@ export function SpendByProject() {
               </div>
             ))}
 
-            {/* Honest pools — spend that can't be pinned to one project */}
+            {/* Honest pools */}
             {view.pools.map((pool) => (
               <div
                 key={pool.name}
                 className="mb-2 flex items-center justify-between gap-2 rounded-md border border-dashed border-border/40 px-3 py-2.5 last:mb-0"
+                title={POOL_HINT[pool.name]}
               >
-                <div className="flex items-center gap-1.5">
-                  <span className="text-sm font-medium text-muted-foreground">
-                    {POOL_LABEL[pool.kind] ?? pool.name}
-                  </span>
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <button
-                          type="button"
-                          aria-label={`About ${POOL_LABEL[pool.kind] ?? pool.name} spend`}
-                          className="inline-flex cursor-help items-center rounded-full text-muted-foreground outline-none hover:text-foreground"
-                        >
-                          <span className="text-xs">ⓘ</span>
-                        </button>
-                      }
-                    />
-                    <TooltipContent className="max-w-xs">
-                      <p>{POOL_HINT[pool.kind]}</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </div>
+                <span className="text-sm font-medium capitalize text-muted-foreground">{pool.name}</span>
                 <span className="text-xs tabular-nums text-muted-foreground">
                   <span className="font-semibold text-foreground/80">{usd(pool.totalUsd)}</span>
                   {" · "}

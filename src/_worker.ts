@@ -63,6 +63,7 @@ import { snapshotGatewayCosts } from "./backend/guardian/ai-gateway-costs";
 import { syncBillableUsage } from "./backend/guardian/billable-usage";
 import { backfillBillableUsage } from "./backend/guardian/backfill-billable-usage";
 import { snapshotResources, syncZones } from "./backend/guardian/snapshot-resources";
+import { buildSpendRollup } from "./backend/guardian/spend-rollup";
 import { CATALOG_CACHE_KEY, refreshModelCatalog } from "./backend/guardian/model-catalog";
 import { syncRecommendationAlerts } from "./backend/guardian/model-recommendations";
 import { scrapeAllModelPricing } from "./backend/guardian/ai-model-pricing";
@@ -173,6 +174,24 @@ async function runGuardianEvaluation(env: Env) {
   } catch (err) {
     console.error(
       JSON.stringify({ level: "ERROR", source: "guardian.snapshotResources", error: String(err) }),
+    );
+  }
+  // Hourly: reconcile the billing actual to per-project spend and cache it, so
+  // the frontend reads one row instead of computing on load. Runs after the
+  // snapshot + billable sync above so it reconciles the freshest data. Non-fatal.
+  try {
+    const roll = await buildSpendRollup(env);
+    console.warn(
+      JSON.stringify({
+        level: "INFO",
+        source: "guardian.spendRollup",
+        totalActualUsd: roll.totalActualUsd,
+        projects: roll.projects.length,
+      }),
+    );
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.spendRollup", error: String(err) }),
     );
   }
   // Daily: pull external AI provider billing (Anthropic/OpenAI/Cursor cost APIs

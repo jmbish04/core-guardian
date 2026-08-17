@@ -17,4 +17,5 @@ export * from "./projects";
 export * from "./pricing";
 export * from "./provider-cost";
 export * from "./usage-snapshots";
+export * from "./spend-rollup";
 export * from "./webhook-events";
