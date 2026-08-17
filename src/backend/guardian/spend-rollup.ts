@@ -13,7 +13,7 @@
  * so every project's total sums back to the real bill. No AI, pure arithmetic.
  */
 
-import { desc, eq, gte, lt, sql } from "drizzle-orm";
+import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
 
 import { getDb } from "@/backend/db";
 import {
@@ -41,10 +41,11 @@ const FAMILY_TO_CATEGORY: Record<string, string> = {
 function categoryOf(family: string): string {
   return FAMILY_TO_CATEGORY[family] ?? "other";
 }
-/** Categories with a real per-project estimate basis (else the family is pooled). */
-const ATTRIBUTABLE = new Set(["ai", "d1", "r2", "vectorize", "compute"]);
-/** Infra categories attributed through the resource/binding graph (not ai/compute). */
-const INFRA_PROBE_CATEGORY: Record<string, string> = { d1: "d1", r2: "r2", vectorize: "vectorize" };
+/** Categories with a real per-project estimate basis (else the family is pooled).
+ *  `compute`/`do`/`other` have no per-project basis yet → pooled unattributed. */
+const ATTRIBUTABLE = new Set(["ai", "d1", "r2", "vectorize"]);
+/** Infra categories attributed through the resource/binding graph (not ai). */
+const INFRA_CATEGORIES = ["d1", "r2", "vectorize"];
 
 export type RollupPayload = {
   window: { start: number; end: number; elapsedFraction: number };
@@ -74,32 +75,38 @@ export function allocateActual(
   return out;
 }
 
-/** UTC start-of-month (the billing cycle we reconcile). */
+/** UTC start-of-month fallback when no billing period is recorded yet. */
 function cycleStartMs(now = Date.now()): number {
   const d = new Date(now);
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
 }
-function cycleEndMs(now = Date.now()): number {
-  const d = new Date(now);
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
-}
 
-/** Build + persist the reconciled rollup for the current cycle. */
+/** Build + persist the reconciled rollup for the current billing cycle. */
 export async function buildSpendRollup(env: Env): Promise<RollupPayload> {
   const db = getDb(env);
   const now = Date.now();
-  const start = cycleStartMs(now);
-  const end = cycleEndMs(now);
-  const elapsedFraction = Math.min(1, Math.max((now - start) / (end - start), 1e-6));
 
-  // --- Billed lane: actual by family (ground truth, mirrors the CF bill) ------
+  // The billing cycle is CF's actual period (offset from the calendar month —
+  // e.g. Jul 19–Aug 18), keyed off billable_usage.billing_period_start so the
+  // Billed total ties to the bill exactly. Fall back to the calendar month when
+  // no period is recorded yet.
+  const [{ period } = { period: null }] = await db
+    .select({ period: sql<string | null>`max(${billableUsage.billingPeriodStart})` })
+    .from(billableUsage);
+  const start = period ? Date.parse(period) : cycleStartMs(now);
+  const startD = new Date(start);
+  const end = Date.UTC(startD.getUTCFullYear(), startD.getUTCMonth() + 1, startD.getUTCDate());
+  const dayFrac = 86_400_000 / (end - start);
+  const elapsedFraction = Math.min(1, Math.max((now - start) / (end - start), dayFrac));
+
+  // --- Billed lane: actual by family for THIS billing period (ground truth) ---
   const familyRows = await db
     .select({
       family: billableUsage.serviceFamily,
       usd: sql<number>`sum(${billableUsage.contractedCost})`,
     })
     .from(billableUsage)
-    .where(gte(billableUsage.dayStart, start))
+    .where(period ? eq(billableUsage.billingPeriodStart, period) : gte(billableUsage.dayStart, start))
     .groupBy(billableUsage.serviceFamily);
 
   const billed = familyRows
@@ -124,11 +131,11 @@ export async function buildSpendRollup(env: Env): Promise<RollupPayload> {
     .from(guardianProjects);
   const kindOf = new Map(projectRows.map((p) => [p.name, p.kind]));
 
-  // ai: weight = per-project ai_router cost this cycle.
+  // ai: weight = per-project ai_router cost over THIS billing period.
   const aiRows = await db
     .select({ project: aiRouterRequests.project, w: sql<number>`sum(${aiRouterRequests.costUsd})` })
     .from(aiRouterRequests)
-    .where(gte(aiRouterRequests.at, start))
+    .where(and(gte(aiRouterRequests.at, start), lt(aiRouterRequests.at, end)))
     .groupBy(aiRouterRequests.project);
   const weightsByCategory = new Map<string, { key: string; weight: number }[]>();
   weightsByCategory.set(
@@ -136,18 +143,20 @@ export async function buildSpendRollup(env: Env): Promise<RollupPayload> {
     aiRows.filter((r) => r.project).map((r) => ({ key: r.project as string, weight: Number(r.w ?? 0) })),
   );
 
-  // infra (d1/r2/vectorize): weight = latest per-resource est cost → owning project.
-  // Sole-owner binding → that project; multi-owner → SHARED; none → UNATTRIBUTED.
+  // infra (d1/r2/vectorize): weight = CUMULATIVE est cost over the whole cycle
+  // per resource (not a single instant — a resource that spiked mid-cycle then
+  // went idle must still carry its share), routed to the owning project via
+  // bindings. Sole-owner → that project; multi-owner → SHARED; none → UNATTRIBUTED.
   const snaps = await db
     .select({
       resourceId: resourceUsageSnapshots.resourceId,
       product: cfResources.product,
-      usd: resourceUsageSnapshots.estCostUsd,
-      capturedAt: resourceUsageSnapshots.capturedAt,
+      usd: sql<number>`sum(${resourceUsageSnapshots.estCostUsd})`,
     })
     .from(resourceUsageSnapshots)
     .innerJoin(cfResources, eq(resourceUsageSnapshots.resourceId, cfResources.id))
-    .where(gte(resourceUsageSnapshots.capturedAt, now - 3 * 60 * 60 * 1000)); // last few hours = "current"
+    .where(and(gte(resourceUsageSnapshots.capturedAt, start), lt(resourceUsageSnapshots.capturedAt, end)))
+    .groupBy(resourceUsageSnapshots.resourceId, cfResources.product);
   const binds = await db.select().from(resourceBindings);
   const ownersOf = new Map<string, string[]>();
   for (const b of binds) {
@@ -155,27 +164,17 @@ export async function buildSpendRollup(env: Env): Promise<RollupPayload> {
     if (!arr.includes(b.worker)) arr.push(b.worker);
     ownersOf.set(b.resourceId, arr);
   }
-  // Keep only the newest snapshot per (resource) as the current estimate weight.
-  const latestByResource = new Map<string, { product: string; usd: number; at: number }>();
-  for (const s of snaps) {
-    const prev = latestByResource.get(s.resourceId);
-    if (!prev || s.capturedAt > prev.at)
-      latestByResource.set(s.resourceId, { product: s.product, usd: Number(s.usd ?? 0), at: s.capturedAt });
-  }
-  for (const cat of Object.keys(INFRA_PROBE_CATEGORY)) {
+  for (const cat of INFRA_CATEGORIES) {
     const w: { key: string; weight: number }[] = [];
-    for (const [resourceId, v] of latestByResource) {
-      if (v.product !== cat || !(v.usd > 0)) continue;
-      const owners = ownersOf.get(resourceId) ?? [];
+    for (const s of snaps) {
+      const usdv = Number(s.usd ?? 0);
+      if (s.product !== cat || !(usdv > 0)) continue;
+      const owners = ownersOf.get(s.resourceId) ?? [];
       const key = owners.length === 1 ? owners[0] : owners.length > 1 ? SHARED : UNATTRIBUTED;
-      w.push({ key, weight: v.usd });
+      w.push({ key, weight: usdv });
     }
     weightsByCategory.set(cat, w);
   }
-
-  // compute: weight = per-worker snapshot est cost isn't captured (workers probe
-  // isn't a resource); attribute compute wholly unattributed for now.
-  weightsByCategory.set("compute", []);
 
   // --- Allocate each category's actual across its weights ----------------------
   const projectAcc = new Map<string, { kind: string; total: number; byCategory: Record<string, number> }>();
@@ -195,9 +194,12 @@ export async function buildSpendRollup(env: Env): Promise<RollupPayload> {
   };
 
   for (const [cat, actual] of actualByCategory) {
-    if (!(actual > 0)) continue;
-    if (!ATTRIBUTABLE.has(cat)) {
-      poolAcc.set(UNATTRIBUTED, (poolAcc.get(UNATTRIBUTED) ?? 0) + actual); // do / other
+    if (actual === 0) continue;
+    // Non-attributable families (do/other/compute) AND any credit/adjustment
+    // (negative contracted_cost) can't be split by usage share — pool them so
+    // the ledger still ties exactly to the billed total.
+    if (!ATTRIBUTABLE.has(cat) || actual < 0) {
+      poolAcc.set(UNATTRIBUTED, (poolAcc.get(UNATTRIBUTED) ?? 0) + actual);
       continue;
     }
     const allocated = allocateActual(actual, weightsByCategory.get(cat) ?? []);
@@ -208,7 +210,7 @@ export async function buildSpendRollup(env: Env): Promise<RollupPayload> {
     .map(([name, v]) => ({ name, kind: v.kind, totalUsd: v.total, byCategory: v.byCategory }))
     .sort((a, b) => b.totalUsd - a.totalUsd);
   const pools = [...poolAcc.entries()]
-    .filter(([, usd]) => usd > 0)
+    .filter(([, usd]) => Math.abs(usd) > 0.005) // keep credits (negative) so the ledger ties
     .map(([name, usd]) => ({ name: name === SHARED ? "shared" : "unattributed", totalUsd: usd }));
 
   const totalActualUsd = billed.reduce((s, b) => s + b.actualUsd, 0);
