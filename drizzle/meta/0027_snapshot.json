@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "348e65f3-513a-430d-9452-ed58fbd04e94",
+  "id": "f3b3c736-3709-4e0f-9959-494fdc5ffc8d",
   "prevId": "32956196-4d59-4760-b46b-7d90d269b47d",
   "tables": {
     "global_config": {
@@ -1806,6 +1806,14 @@
           "notNull": true,
           "autoincrement": false
         },
+        "metric": {
+          "name": "metric",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "''"
+        },
         "captured_at": {
           "name": "captured_at",
           "type": "integer",
@@ -1871,12 +1879,13 @@
         }
       },
       "compositePrimaryKeys": {
-        "resource_usage_snapshots_resource_id_captured_at_pk": {
+        "resource_usage_snapshots_resource_id_metric_captured_at_pk": {
           "columns": [
             "resource_id",
+            "metric",
             "captured_at"
           ],
-          "name": "resource_usage_snapshots_resource_id_captured_at_pk"
+          "name": "resource_usage_snapshots_resource_id_metric_captured_at_pk"
         }
       },
       "uniqueConstraints": {},

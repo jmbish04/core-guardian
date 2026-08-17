@@ -22,12 +22,13 @@ CREATE TABLE `resource_bindings` (
 CREATE INDEX `idx_resource_bindings_resource` ON `resource_bindings` (`resource_id`);--> statement-breakpoint
 CREATE TABLE `resource_usage_snapshots` (
 	`resource_id` text NOT NULL,
+	`metric` text DEFAULT '' NOT NULL,
 	`captured_at` integer NOT NULL,
 	`window_hours` integer DEFAULT 1 NOT NULL,
 	`usage_qty` real DEFAULT 0 NOT NULL,
 	`unit` text DEFAULT '' NOT NULL,
 	`est_cost_usd` real DEFAULT 0 NOT NULL,
-	PRIMARY KEY(`resource_id`, `captured_at`),
+	PRIMARY KEY(`resource_id`, `metric`, `captured_at`),
 	FOREIGN KEY (`resource_id`) REFERENCES `cf_resources`(`id`) ON UPDATE no action ON DELETE no action
 );
 --> statement-breakpoint

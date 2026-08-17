@@ -40,7 +40,7 @@ export const cfResources = sqliteTable(
 );
 
 export const RESOURCE_USAGE_SNAPSHOTS_TABLE_DESCRIPTION =
-  "Append-only periodic per-resource usage + estimated cost. Powers over-time deltas. Composite-keyed on (resource_id, captured_at) — one snapshot per resource per cron run — so no surrogate id/index is needed. Pruned to a retention window by the writer.";
+  "Append-only periodic per-resource, per-metric usage + estimated cost. Powers over-time deltas. Composite-keyed on (resource_id, metric, captured_at) — a resource can bill on several metrics (e.g. R2 operations vs R2 storage), each its own row with its own unit. Pruned to a retention window by the writer.";
 
 export const resourceUsageSnapshots = sqliteTable(
   "resource_usage_snapshots",
@@ -48,6 +48,9 @@ export const resourceUsageSnapshots = sqliteTable(
     resourceId: text("resource_id")
       .notNull()
       .references(() => cfResources.id),
+    // The billing metric, i.e. the probe id (r2-operations, r2-storage, d1, …).
+    // Keeps distinct-unit metrics on one resource from clobbering each other.
+    metric: text("metric").notNull().default(""),
     capturedAt: integer("captured_at").notNull(),
     windowHours: integer("window_hours").notNull().default(1),
     usageQty: real("usage_qty").notNull().default(0),
@@ -55,9 +58,9 @@ export const resourceUsageSnapshots = sqliteTable(
     estCostUsd: real("est_cost_usd").notNull().default(0),
   },
   (t) => [
-    // PK (resource_id, captured_at) already covers latest-per-resource lookups;
-    // this extra index serves time-range pruning/deltas across all resources.
-    primaryKey({ columns: [t.resourceId, t.capturedAt] }),
+    // PK covers latest-per-(resource,metric); the index serves time-range
+    // pruning/deltas across all resources.
+    primaryKey({ columns: [t.resourceId, t.metric, t.capturedAt] }),
     index("idx_rus_captured").on(t.capturedAt),
   ],
 );

@@ -149,8 +149,20 @@ function toRow(r: ApiRow, capturedAt: number): NewBillableUsageRow | null {
  * @returns number of rows written
  */
 export async function syncBillableUsage(env: Env, days = 35): Promise<number> {
-  const to = ymd(Date.now());
-  const from = ymd(Date.now() - days * DAY_MS);
+  return syncBillableUsageWindow(env, ymd(Date.now() - days * DAY_MS), ymd(Date.now()));
+}
+
+/**
+ * Fetch + upsert an explicit `[from, to]` window (YYYY-MM-DD). Shared by the
+ * trailing-window daily sync and the one-time historic backfill. Idempotent.
+ *
+ * @returns number of rows written
+ */
+export async function syncBillableUsageWindow(
+  env: Env,
+  from: string,
+  to: string,
+): Promise<number> {
   const raw = await fetchBillableUsage(env, from, to);
   const now = Date.now();
   const rows = raw.map((r) => toRow(r, now)).filter((r): r is NewBillableUsageRow => r !== null);
