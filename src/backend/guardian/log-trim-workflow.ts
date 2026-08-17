@@ -33,7 +33,14 @@ import { driveFolders, trimTargets, type TrimTargetRow } from "@/backend/db/sche
 import { findOrCreateFolder, getDriveFolder, uploadToDrive } from "@/backend/lib/google-drive";
 
 import { cfApi } from "./resources";
-import { buildExportSelect, buildRangeDelete, computeExportCount } from "./log-trim-sql";
+import {
+  buildChildDelete,
+  buildChildExportSelect,
+  buildExportSelect,
+  buildRangeCount,
+  buildRangeDelete,
+  computeExportCount,
+} from "./log-trim-sql";
 
 /** Fallback "d1 archives" folder id when drive_folders has no purpose='d1' row. */
 const DEFAULT_D1_FOLDER_ID = "1obQXC7aeHRhzvPayQoZSTvzMgfZ_Hea-";
@@ -68,6 +75,36 @@ async function d1(env: Env, uuid: string, sql: string): Promise<D1Result> {
 async function countRows(env: Env, uuid: string, table: string): Promise<number> {
   const { rows } = await d1(env, uuid, `SELECT COUNT(*) AS n FROM "${table.replace(/"/g, '""')}"`);
   return Number(rows[0]?.n ?? 0);
+}
+
+/** A child table with a foreign key onto the trim target. */
+type FkChild = { childTable: string; childCol: string; parentCol: string };
+
+/**
+ * Discover every table whose foreign key references `parentTable`, so the trim
+ * can delete children before the parent (FK order) instead of dying on a
+ * `FOREIGN KEY constraint failed`. Generic across any D1 via PRAGMA — e.g.
+ * webhook_deliveries.delivery_id is referenced by check_run/pull_request/… .
+ * Returns [] for a table with no children (the plain log-table case).
+ */
+async function discoverFkChildren(env: Env, uuid: string, parentTable: string): Promise<FkChild[]> {
+  const { rows: tables } = await d1(
+    env,
+    uuid,
+    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'",
+  );
+  const children: FkChild[] = [];
+  for (const t of tables) {
+    const childTable = String(t.name);
+    if (childTable === parentTable) continue;
+    const { rows: fks } = await d1(env, uuid, `PRAGMA foreign_key_list("${childTable.replace(/"/g, '""')}")`);
+    for (const fk of fks) {
+      if (String(fk.table) === parentTable) {
+        children.push({ childTable, childCol: String(fk.from), parentCol: String(fk.to) });
+      }
+    }
+  }
+  return children;
 }
 
 /** Resolve the base "d1 archives" Drive folder for a target (row override → drive_folders → fallback). */
@@ -116,6 +153,12 @@ export class LogTrimWorkflow extends WorkflowEntrypoint<Env, TrimParams> {
       // Stage 2: export the oldest window to Drive (SELECT → build → upload), all
       // inside one step so the (potentially large) rows array never crosses a
       // step boundary. Returns only small metadata.
+      // Discover FK children ONCE (memoized) so the export bundles them and the
+      // truncate can delete them before the parent (FK-safe order).
+      const fkChildren = await step.do("discover-fk", async () =>
+        discoverFkChildren(env, t.dbUuid, t.tableName),
+      );
+
       const exported = await step.do("export", async () => {
         const { rows } = await d1(env, t.dbUuid, buildExportSelect(t.tableName, t.keyColumn, exportCount));
         if (rows.length === 0) return null;
@@ -125,12 +168,30 @@ export class LogTrimWorkflow extends WorkflowEntrypoint<Env, TrimParams> {
         // Strip the synthetic key alias from the exported payload rows.
         const cleaned = rows.map(({ __k, ...rest }) => rest);
 
+        // Pull the child rows referencing this parent key window, so the archive
+        // is complete and the cascade delete has a verified backup of everything
+        // it removes.
+        const children: Record<string, Record<string, unknown>[]> = {};
+        let childRowCount = 0;
+        for (const c of fkChildren) {
+          const { rows: crows } = await d1(
+            env,
+            t.dbUuid,
+            buildChildExportSelect(c.childTable, c.childCol, t.tableName, c.parentCol, t.keyColumn, minKey, maxKey),
+          );
+          if (crows.length > 0) {
+            children[c.childTable] = crows;
+            childRowCount += crows.length;
+          }
+        }
+
         const exportedAt = new Date().toISOString().slice(0, 19); // 2026-08-17T12:30:00
         const yyyy = exportedAt.slice(0, 4);
         const mm = exportedAt.slice(5, 7);
         const bundle = JSON.stringify({
-          meta: { dbName: t.dbName, tableName: t.tableName, exportedAt, rowCount: cleaned.length, minKey, maxKey },
+          meta: { dbName: t.dbName, tableName: t.tableName, exportedAt, rowCount: cleaned.length, childRowCount, minKey, maxKey },
           rows: cleaned,
+          children,
         });
         const expectedBytes = new TextEncoder().encode(bundle).length;
 
@@ -148,6 +209,7 @@ export class LogTrimWorkflow extends WorkflowEntrypoint<Env, TrimParams> {
           minKey,
           maxKey,
           rowCount: cleaned.length,
+          childRowCount,
           expectedBytes,
           driveBytes: upload.bytes,
           driveFileId: upload.id,
@@ -177,15 +239,27 @@ export class LogTrimWorkflow extends WorkflowEntrypoint<Env, TrimParams> {
         return { verified: true };
       });
 
-      // Stage 4: truncate exactly the exported key window; assert the delete
-      // removed exactly rowCount rows (meta.changes is precise even under
-      // concurrent inserts, unlike a COUNT re-read).
+      // Stage 4: truncate the exported key window, FK-safe: delete child rows
+      // (referencing the parent window) BEFORE the parent rows, else a
+      // NO ACTION foreign key aborts the delete. Idempotent + retry-safe — the
+      // post-check is "the parent window is now empty" (a range DELETE can't
+      // over-delete, and a retry after a partial delete simply finds fewer rows),
+      // NOT an exact changes count (which a retry would fail).
       await step.do("truncate", async () => {
-        const { changes } = await d1(env, t.dbUuid, buildRangeDelete(t.tableName, t.keyColumn, exported.minKey, exported.maxKey));
-        if (changes !== exported.rowCount) {
-          throw new Error(`truncate: expected to delete ${exported.rowCount} rows, deleted ${changes}`);
+        for (const c of fkChildren) {
+          await d1(
+            env,
+            t.dbUuid,
+            buildChildDelete(c.childTable, c.childCol, t.tableName, c.parentCol, t.keyColumn, exported.minKey, exported.maxKey),
+          );
         }
-        return { deleted: changes };
+        await d1(env, t.dbUuid, buildRangeDelete(t.tableName, t.keyColumn, exported.minKey, exported.maxKey));
+        const { rows } = await d1(env, t.dbUuid, buildRangeCount(t.tableName, t.keyColumn, exported.minKey, exported.maxKey));
+        const remaining = Number(rows[0]?.n ?? -1);
+        if (remaining !== 0) {
+          throw new Error(`truncate: parent window not empty after delete (${remaining} rows remain)`);
+        }
+        return { parentDeleted: exported.rowCount, childDeleted: exported.childRowCount };
       });
 
       // Stage 5: stamp the registry.

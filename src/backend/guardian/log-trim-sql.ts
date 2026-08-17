@@ -10,6 +10,16 @@ export function ident(name: string): string {
 }
 
 /**
+ * Reference to the ordering/range column. SQLite's rowid pseudo-columns
+ * (`rowid`/`_rowid_`/`oid`) must stay UNQUOTED — a double-quoted `"rowid"` that
+ * matches no real column is treated as a string literal in some clauses. Real
+ * columns are quoted normally.
+ */
+export function keyRef(col: string): string {
+  return col === "rowid" || col === "_rowid_" || col === "oid" ? col : ident(col);
+}
+
+/**
  * How many oldest rows to export+delete this run: capped at `batchRows`, and
  * never enough to drop the table below `keepRows`. Zero means "nothing to do".
  */
@@ -24,7 +34,56 @@ export function computeExportCount(count: number, keepRows: number, batchRows: n
  */
 export function buildExportSelect(table: string, keyColumn: string, limit: number): string {
   const n = Math.trunc(limit);
-  return `SELECT ${ident(keyColumn)} AS __k, * FROM ${ident(table)} ORDER BY ${ident(keyColumn)} ASC LIMIT ${n}`;
+  const k = keyRef(keyColumn);
+  return `SELECT ${k} AS __k, * FROM ${ident(table)} ORDER BY ${k} ASC LIMIT ${n}`;
+}
+
+/**
+ * A subquery selecting the parent's referenced-column values for the export key
+ * window — used to scope child export/delete without materializing a huge IN
+ * list. e.g. `(SELECT "delivery_id" FROM "webhook_deliveries" WHERE rowid >= 1 AND rowid <= 100)`.
+ */
+export function parentKeySubquery(
+  parentTable: string,
+  parentCol: string,
+  keyColumn: string,
+  minKey: unknown,
+  maxKey: unknown,
+): string {
+  const k = keyRef(keyColumn);
+  return `SELECT ${ident(parentCol)} FROM ${ident(parentTable)} WHERE ${k} >= ${keyLiteral(minKey)} AND ${k} <= ${keyLiteral(maxKey)}`;
+}
+
+/** Export child rows whose FK column falls in the parent key window. */
+export function buildChildExportSelect(
+  childTable: string,
+  childCol: string,
+  parentTable: string,
+  parentCol: string,
+  keyColumn: string,
+  minKey: unknown,
+  maxKey: unknown,
+): string {
+  return `SELECT * FROM ${ident(childTable)} WHERE ${ident(childCol)} IN (${parentKeySubquery(parentTable, parentCol, keyColumn, minKey, maxKey)})`;
+}
+
+/** Delete child rows whose FK column falls in the parent key window (run BEFORE the parent delete). */
+export function buildChildDelete(
+  childTable: string,
+  childCol: string,
+  parentTable: string,
+  parentCol: string,
+  keyColumn: string,
+  minKey: unknown,
+  maxKey: unknown,
+): string {
+  return `DELETE FROM ${ident(childTable)} WHERE ${ident(childCol)} IN (${parentKeySubquery(parentTable, parentCol, keyColumn, minKey, maxKey)})`;
+}
+
+/** COUNT rows still in the key window — used for the retry-safe "range is empty" post-delete check. */
+export function buildRangeCount(table: string, keyColumn: string, minKey: unknown, maxKey: unknown): string {
+  const k = keyRef(keyColumn);
+  return `SELECT COUNT(*) AS n FROM ${ident(table)} WHERE ${k} >= ${keyLiteral(minKey)} AND ${k} <= ${keyLiteral(maxKey)}`;
 }
 
 /**
@@ -49,7 +108,8 @@ export function buildRangeDelete(
   minKey: unknown,
   maxKey: unknown,
 ): string {
-  return `DELETE FROM ${ident(table)} WHERE ${ident(keyColumn)} >= ${keyLiteral(minKey)} AND ${ident(keyColumn)} <= ${keyLiteral(maxKey)}`;
+  const k = keyRef(keyColumn);
+  return `DELETE FROM ${ident(table)} WHERE ${k} >= ${keyLiteral(minKey)} AND ${k} <= ${keyLiteral(maxKey)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +136,24 @@ if ((import.meta as { main?: boolean }).main) {
   assert(
     buildRangeDelete("logs", "id", 1, 9) === 'DELETE FROM "logs" WHERE "id" >= 1 AND "id" <= 9',
     "range delete shape",
+  );
+  // rowid stays unquoted (the double-quoted-"rowid" string-literal quirk).
+  assert(keyRef("rowid") === "rowid", "rowid unquoted");
+  assert(keyRef("id") === '"id"', "regular key quoted");
+  assert(
+    buildRangeDelete("webhook_deliveries", "rowid", 1, 100) ===
+      'DELETE FROM "webhook_deliveries" WHERE rowid >= 1 AND rowid <= 100',
+    "rowid range delete unquoted",
+  );
+  assert(
+    buildChildDelete("check_run", "delivery_id", "webhook_deliveries", "delivery_id", "rowid", 1, 100) ===
+      'DELETE FROM "check_run" WHERE "delivery_id" IN (SELECT "delivery_id" FROM "webhook_deliveries" WHERE rowid >= 1 AND rowid <= 100)',
+    "child delete subquery",
+  );
+  assert(
+    buildRangeCount("webhook_deliveries", "rowid", 1, 100) ===
+      'SELECT COUNT(*) AS n FROM "webhook_deliveries" WHERE rowid >= 1 AND rowid <= 100',
+    "range count shape",
   );
   console.log("log-trim-sql: all self-checks passed");
 }
