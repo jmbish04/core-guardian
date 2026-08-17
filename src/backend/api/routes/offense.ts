@@ -32,7 +32,7 @@
  */
 
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import { and, desc, eq, gte, inArray, ne, or } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, ne } from "drizzle-orm";
 
 import { getDb } from "@/backend/db";
 import {
@@ -599,11 +599,18 @@ offensePublicRouter.openapi(
 // POST /right-size-findings  (P3 — Jules reports back on a right-sizing dispatch)
 // ---------------------------------------------------------------------------
 
+// Matches NONCE_TTL_MS in guardian/offense/jules-dispatch.ts (not exported there).
+const NONCE_TTL_MS = 2 * 60 * 60 * 1000;
+
 /** The reporting contract Jules curls back for a right-sizing dispatch. */
 const rightSizeFindingsSchema = z.object({
   suggested_model: z.string().optional(),
   savings_usd: z.number().optional(),
-  pr_url: z.string().optional(),
+  pr_url: z
+    .string()
+    .url()
+    .refine((u) => u.startsWith("https://"), "must be https")
+    .optional(),
   project: z.string(),
   nonce: z.string(),
 });
@@ -640,44 +647,43 @@ offensePublicRouter.openapi(
   async (c) => {
     const body = c.req.valid("json");
     const db = getDb(c.env);
+    const now = Date.now();
+    const prUrl = body.pr_url ?? null;
 
-    // Auth IS the lookup: only a pending right_sizing dispatch matches. A replayed
-    // (already reported) or unknown nonce finds nothing → generic 403, no leak.
-    const [dispatch] = await db
-      .select()
-      .from(julesDispatches)
+    // ATOMIC claim: the nonce is the sole credential on this public route, so
+    // validate + spend it in one statement — pending, right_sizing, and not
+    // expired (NONCE_TTL_MS) — guarded on a row actually flipping. A replayed
+    // or concurrent nonce can't double-claim, and an expired nonce is rejected.
+    const [claimed] = await db
+      .update(julesDispatches)
+      .set({ status: "reported", reportedAt: now, findings: body })
       .where(
         and(
           eq(julesDispatches.nonce, body.nonce),
           eq(julesDispatches.status, "pending"),
           eq(julesDispatches.taskType, "right_sizing"),
+          gt(julesDispatches.dispatchedAt, now - NONCE_TTL_MS),
         ),
       )
-      .limit(1);
-    if (!dispatch) return c.json({ error: "Invalid or expired token." }, 403);
+      .returning();
+    if (!claimed) return c.json({ error: "Invalid or expired token." }, 403);
 
-    const now = Date.now();
-    const prUrl = body.pr_url ?? null;
-
+    // Status-guarded: only flips a still-dispatched rec, never un-dismisses one
+    // the operator already resolved.
     await db
       .update(aiRouterRecommendations)
       .set({ status: "pr_opened", prUrl })
-      .where(eq(aiRouterRecommendations.julesSessionId, dispatch.julesSessionId));
-
-    await db
-      .update(julesDispatches)
-      .set({ status: "reported", reportedAt: now, findings: body })
-      .where(eq(julesDispatches.id, dispatch.id));
+      .where(
+        and(
+          eq(aiRouterRecommendations.julesSessionId, claimed.julesSessionId),
+          eq(aiRouterRecommendations.status, "dispatched"),
+        ),
+      );
 
     await db
       .update(julesSessions)
       .set({ status: "submitted", prUrl, updatedAt: now })
-      .where(
-        or(
-          eq(julesSessions.dispatchId, dispatch.id),
-          eq(julesSessions.sessionId, dispatch.julesSessionId),
-        ),
-      );
+      .where(eq(julesSessions.dispatchId, claimed.id));
 
     return c.json({ ok: true }, 200);
   },
