@@ -4,10 +4,10 @@
  * guardianAuth-gated.
  */
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import { desc } from "drizzle-orm";
+import { desc, isNull } from "drizzle-orm";
 import { guardianAuth } from "@/backend/api/routes/guardian";
 import { getDb } from "@/backend/db";
-import { aiRouterRequests, billingEvents } from "@/backend/db/schema";
+import { aiRouterRequests, billingEvents, guardianProjects } from "@/backend/db/schema";
 import {
   breakGlass, deleteCircuit, evaluateBreakers, getKillSwitch, incrementSpend, listCircuits, setCircuit, setKillSwitch,
 } from "@/backend/guardian/ai-router/circuits";
@@ -21,10 +21,17 @@ import type { RouterRequest } from "@/backend/guardian/ai-router/types";
 
 export const aiRouterRouter = new OpenAPIHono<{ Bindings: Env }>();
 
-const KNOWN = new Set(["project","importance","mode","provider","model","aiGatewayId","transport","stream","providerApiKey","input"]);
+const KNOWN = new Set(["project","importance","mode","provider","model","aiGatewayId","transport","stream","providerApiKey","input","repo"]);
+
+/** owner/repo shape for the optional repo hint (path 2 project→repo population). */
+const REPO_RE = /^[^/]+\/[^/]+$/;
 
 const runBody = z.object({
   project: z.string().min(1),
+  // Optional GitHub "owner/repo" hint. NOT strictly validated here — a malformed
+  // value must never reject an inference call; it's shape-checked at write time
+  // and simply skipped if bad (see the fill-if-empty upsert below).
+  repo: z.string().optional(),
   importance: z.enum(["low", "medium", "high"]),
   mode: z.enum(["gateway","gateway-custom","provider-sdk-gateway","openai-compat","native","gemini-native"]).default("gateway"),
   provider: z.string().min(1),
@@ -104,6 +111,26 @@ aiRouterRouter.openapi(
     const req: RouterRequest = { ...raw, extra } as RouterRequest;
     const now = Date.now();
     const requestUuid = crypto.randomUUID();
+
+    // Path 2: project→repo population from the AI payload. Fill-if-empty only —
+    // an automated caller is a first-writer, so it seeds repo when unset but
+    // never overwrites a value set by CF-builds sync or the frontend/API. Bad
+    // shape is skipped, not rejected. Off the hot path via waitUntil.
+    if (typeof raw.repo === "string" && REPO_RE.test(raw.repo)) {
+      const repo = raw.repo;
+      const project = String(raw.project);
+      c.executionCtx.waitUntil(
+        getDb(c.env)
+          .insert(guardianProjects)
+          .values({ name: project, kind: "ai_project", repo, lastSeen: now, createdAt: now })
+          .onConflictDoUpdate({
+            target: guardianProjects.name,
+            set: { repo },
+            setWhere: isNull(guardianProjects.repo),
+          })
+          .catch((e) => console.error("ai-router: repo fill-if-empty failed", e)),
+      );
+    }
 
     await storePrompt(c.env, requestUuid, req.input);
 

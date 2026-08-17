@@ -311,9 +311,9 @@ guardianProjectsRouter.openapi(
     path: "/{name}/config",
     operationId: "guardianProjectsUpdate",
     tags: ["Guardian Projects"],
-    summary: "Update a project's note / criticality (audited)",
+    summary: "Update a project's note / criticality / repo (audited)",
     description:
-      "Updates the operator metadata on a project. Both fields optional; only provided fields are written. Audited to billing_events.",
+      "Updates the operator metadata on a project. All fields optional; only provided fields are written. `repo` is a deliberate source — it sets or CHANGES the stored owner/repo (unlike the CF-builds sync, which only fills/refreshes). Audited to billing_events.",
     request: {
       params: z.object({ name: z.string() }),
       body: {
@@ -322,6 +322,7 @@ guardianProjectsRouter.openapi(
             schema: z.object({
               note: z.string().nullable().optional(),
               criticality: z.enum(["hobby", "normal", "important", "critical"]).optional(),
+              repo: z.string().regex(/^[^/]+\/[^/]+$/, "repo must be owner/name").optional(),
             }),
           },
         },
@@ -351,11 +352,16 @@ guardianProjectsRouter.openapi(
     const body = c.req.valid("json");
     const db = getDb(c.env);
 
-    const patch: { note?: string | null; criticality?: (typeof body)["criticality"] } = {};
+    const patch: {
+      note?: string | null;
+      criticality?: (typeof body)["criticality"];
+      repo?: string;
+    } = {};
     if (body.note !== undefined) patch.note = body.note;
     if (body.criticality !== undefined) patch.criticality = body.criticality;
+    if (body.repo !== undefined) patch.repo = body.repo;
     if (Object.keys(patch).length === 0) {
-      return c.json({ error: "Provide at least one of note, criticality." }, 400);
+      return c.json({ error: "Provide at least one of note, criticality, repo." }, 400);
     }
 
     const [updated] = await db
