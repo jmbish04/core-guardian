@@ -21,7 +21,9 @@ const CF_API_BASE = "https://api.cloudflare.com/client/v4";
 
 /** Cache key + TTL for the Worker binding index. */
 const BINDINGS_CACHE_KEY = "guardian:worker-bindings";
-const BINDINGS_CACHE_TTL_SECONDS = 3600;
+// Bindings change rarely; cache for a day so the hourly cron reads the cache
+// instead of re-fanning-out to every worker script (~190 subrequests) every run.
+const BINDINGS_CACHE_TTL_SECONDS = 86_400;
 
 /** Max concurrent Cloudflare API calls when fanning out. */
 const FANOUT = 12;
