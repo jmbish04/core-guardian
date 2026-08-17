@@ -35,4 +35,4 @@ jobs:
           python-version: "3.11"
 
       - name: Run client SDK tests
-        run: pnpm test
+        run: corepack pnpm test
