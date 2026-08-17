@@ -433,6 +433,13 @@ aiRouterRouter.openapi(createRoute({
   const [rec] = await db.select().from(aiRouterRecommendations).where(eq(aiRouterRecommendations.id, id)).limit(1);
   if (!rec) return c.json({ error: "Recommendation not found." }, 404);
 
+  if (rec.status !== "open") {
+    return c.json({ error: "Recommendation is not open (already dispatched or resolved)." }, 409);
+  }
+  if (!rec.suggestedModel) {
+    return c.json({ error: "Recommendation has no suggested model to switch to." }, 409);
+  }
+
   const [proj] = await db.select({ repo: guardianProjects.repo }).from(guardianProjects).where(eq(guardianProjects.name, rec.project)).limit(1);
   if (!proj?.repo) return c.json({ error: "No repo mapping for project; advisory only." }, 409);
 
