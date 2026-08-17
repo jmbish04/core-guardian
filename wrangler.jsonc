@@ -206,6 +206,40 @@
       "database_id": "d555f8ce-77c9-4c82-be80-de95b8d9c003",
       "migrations_dir": "drizzle",
     },
+    {
+      // Separate logs DB (tail-event ingestion). Kept out of the main DB so its
+      // churn/bloat never touches core-guardian's own tables; trimmed to Drive by
+      // the LogTrimWorkflow. Schema is managed by raw SQL (drizzle-kit is bound to
+      // the main DB only), so NO migrations_dir here.
+      "binding": "LOGS_DB",
+      "database_name": "core-guardian-logs",
+      "database_id": "4c116ac2-0c5a-49c8-a00b-05adfd394c6f",
+    },
+  ],
+  // Log ingestion: /api/guardian/logs/ingest enqueues here; the queue consumer
+  // batch-inserts into LOGS_DB (keeps D1 writes off the request hot path).
+  "queues": {
+    "producers": [
+      { "queue": "core-guardian-log-ingest", "binding": "LOG_QUEUE" },
+    ],
+    "consumers": [
+      {
+        "queue": "core-guardian-log-ingest",
+        "max_batch_size": 100,
+        "max_batch_timeout": 10,
+        "max_retries": 3,
+      },
+    ],
+  },
+  // Durable export→verify→truncate for oversized log/webhook tables. One class,
+  // driven by the trim_targets registry; cron fires an instance per over-threshold
+  // target. Verify-before-truncate lives in the workflow steps.
+  "workflows": [
+    {
+      "name": "core-guardian-log-trim",
+      "binding": "TRIM_WORKFLOW",
+      "class_name": "LogTrimWorkflow",
+    },
   ],
   "secrets_store_secrets": [
     {
