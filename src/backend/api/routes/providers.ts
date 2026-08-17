@@ -7,7 +7,7 @@
  *  - `PUT  /budgets` — set provider budgets / Gemini billing-account id.
  *  - `POST /sync`    — pull all provider billing APIs now + run threshold alerts.
  *
- * Provider **billing keys** (Anthropic/OpenAI admin keys, Cursor team key) are
+ * Provider **billing keys** (Anthropic/OpenAI admin keys) are
  * onboarded as Secrets Store bindings, NOT here — see wrangler.jsonc. This route
  * only manages the non-secret budget/threshold config.
  */
@@ -59,7 +59,7 @@ providersRouter.openapi(
     operationId: "guardianProvidersReport",
     summary: "External AI provider spend — per-provider daily series + MTD totals",
     description:
-      "Daily billed cost per external provider (Anthropic/OpenAI/Cursor) from each provider's own billing API, plus Gemini's Cloud Billing budget ceiling (metric='budget'). `totalSpentMtdUsd` sums only spend, not budget ceilings.",
+      "Daily billed cost per external provider (Anthropic/OpenAI) from each provider's own billing API, plus Gemini's Cloud Billing budget ceiling (metric='budget'). `totalSpentMtdUsd` sums only spend, not budget ceilings.",
     request: { query: z.object({ days: z.coerce.number().int().min(1).max(90).default(35) }) },
     responses: {
       200: {
