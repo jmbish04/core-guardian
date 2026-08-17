@@ -48,6 +48,12 @@ import { aiRouterRequests } from "@/backend/db/schema";
 import { getBillableUsageReport } from "@/backend/guardian/billable-usage";
 import { getDailyCostReport } from "@/backend/guardian/daily-cost";
 import { projectMonthEnd, utcDayKey } from "@/backend/guardian/offense/insights";
+import {
+  type DoComputeDrivers,
+  type GatewayModelUsage,
+  getDoComputeDrivers,
+  getGatewayWorkersAiMix,
+} from "@/backend/guardian/resource-attribution";
 
 const DAY_MS = 86_400_000;
 
@@ -77,6 +83,48 @@ export interface SkuAttribution {
   byProject: { project: string; usd: number; calls: number }[];
 }
 
+/** One Workers-AI model's slice of the neuron bill, seen through the gateway. */
+export interface AiGatewayModelShare {
+  model: string;
+  provider: string;
+  /** Gateway's own dollar estimate for this model (undercounts neuron billing). */
+  gatewayCostUsd: number;
+  /** Share of the attributable (gateway-covered) neuron spend, in [0,1]. */
+  share: number;
+  /** The covered billed dollars apportioned onto this model by its share. */
+  apportionedUsd: number;
+  tokensIn: number;
+  tokensOut: number;
+  calls: number;
+}
+
+/**
+ * The AI-gateway coverage gap for the neuron SKU: how much of the billed neuron
+ * total we can tie to a model (via the gateway) vs the direct-AI remainder that
+ * bypassed the gateway and is model-unknown.
+ *
+ * Gateway dollar estimates UNDERCOUNT neuron billing, so we treat them as
+ * attribution *shares*, not exact dollars: the gateway-covered slice
+ * (`attributableUsd = min(gatewaySum, billed)`) is apportioned across the model
+ * mix, and the non-gateway remainder (`unattributableUsd`) is surfaced loudly.
+ * Because the gateway undercounts, `unattributableUsd` is an UPPER bound — it
+ * folds together truly-bypassed calls and the gateway/neuron pricing gap.
+ */
+export interface AiGatewayGap {
+  /** Actual billed neuron dollars for this SKU (the ranking/actualUsd value). */
+  billedUsd: number;
+  /** Sum of the gateway's per-model dollar estimate for Workers-AI models. */
+  gatewayCostUsd: number;
+  /** The billed dollars we can attribute to a model (min of the two above). */
+  attributableUsd: number;
+  /** billedUsd − attributableUsd — direct-AI spend that bypassed the gateway. */
+  unattributableUsd: number;
+  /** unattributableUsd as a % of the billed neuron total. */
+  unattributablePct: number;
+  /** Per-model attributable breakdown, ranked by gateway cost desc. */
+  models: AiGatewayModelShare[];
+}
+
 /** One billed SKU line = Layer 1 (actual) + Layer 2 (value-add). */
 export interface AccountantSku {
   /** The Cloudflare SKU name, verbatim (`ServiceName`). */
@@ -96,6 +144,17 @@ export interface AccountantSku {
   projectedMonthEnd: number;
   /** AI attribution on `ai` lines; null everywhere else. */
   attribution: SkuAttribution | null;
+  /**
+   * Per-script Durable Objects wall-time drivers — attached to the largest DO
+   * SKU only (the compute/wall-time line the wall-time actually explains); null
+   * everywhere else. Additive: consumers that don't know the field ignore it.
+   */
+  doDrivers: DoComputeDrivers | null;
+  /**
+   * AI-gateway coverage gap — attached to the neuron SKU (the largest `ai` line)
+   * only; null everywhere else, including secondary AI SKUs.
+   */
+  gatewayGap: AiGatewayGap | null;
 }
 
 /** A flagged discrepancy — the dispute list ("the math isn't mathing"). */
@@ -182,6 +241,49 @@ function projectFromPoints(
 }
 
 /**
+ * Compute the AI-gateway coverage gap for the neuron SKU. Pure so the apportion
+ * + remainder math is self-checkable.
+ *
+ * We apportion the gateway-COVERED slice of the billed neuron total across the
+ * gateway model mix (by each model's gateway-cost share), and surface the rest
+ * as unattributable direct-AI spend. Gateway dollars undercount neuron billing,
+ * so the covered slice is `min(gatewaySum, billed)` and the remainder is an
+ * upper-bound estimate of what bypassed the gateway.
+ *
+ * @param billedUsd - the neuron SKU's ACTUAL billed dollars
+ * @param mix - gateway-observed Workers-AI model usage
+ */
+export function buildAiGatewayGap(billedUsd: number, mix: GatewayModelUsage[]): AiGatewayGap {
+  const gatewayCostUsd = mix.reduce((s, m) => s + m.gatewayCostUsd, 0);
+  const attributableUsd = Math.min(gatewayCostUsd, billedUsd);
+  const unattributableUsd = Math.max(0, billedUsd - attributableUsd);
+  const unattributablePct = billedUsd > 0 ? (unattributableUsd / billedUsd) * 100 : 0;
+
+  const models: AiGatewayModelShare[] = mix.map((m) => {
+    const share = gatewayCostUsd > 0 ? m.gatewayCostUsd / gatewayCostUsd : 0;
+    return {
+      model: m.model,
+      provider: m.provider,
+      gatewayCostUsd: m.gatewayCostUsd,
+      share,
+      apportionedUsd: attributableUsd * share,
+      tokensIn: m.tokensIn,
+      tokensOut: m.tokensOut,
+      calls: m.calls,
+    };
+  });
+
+  return {
+    billedUsd,
+    gatewayCostUsd,
+    attributableUsd,
+    unattributableUsd,
+    unattributablePct,
+    models,
+  };
+}
+
+/**
  * The whole report as a pure function of already-fetched inputs, so the ranking,
  * estimate-matching, discrepancy and flag logic is unit-self-checkable.
  *
@@ -200,6 +302,8 @@ export function buildAccountant(
   byProject: { project: string; usd: number; calls: number }[],
   days: number,
   nowMs: number,
+  doDrivers: DoComputeDrivers | null = null,
+  gatewayMix: GatewayModelUsage[] = [],
 ): AccountantReport {
   // Estimate total per product category (usually one probe per category).
   const estByCategory = new Map<Category, number>();
@@ -222,6 +326,12 @@ export function buildAccountant(
   // category claims that category's estimate; later SKUs in it get null.
   const ranked = [...actual.services].sort((a, b) => b.totalUsd - a.totalUsd);
   const estUsedBy = new Set<Category>();
+  // Drivers attach to the FIRST (largest) SKU in their category only — the DO
+  // wall-time split explains the compute line, not storage-row lines; the
+  // gateway gap explains the neuron line, not secondary AI SKUs. Later SKUs in
+  // the category get null (mirrors the estimate-matching rule above).
+  let doDriversUsed = false;
+  let gatewayGapUsed = false;
 
   const skus: AccountantSku[] = ranked.map((sv) => {
     const category = classify(sv.service);
@@ -232,6 +342,12 @@ export function buildAccountant(
     const estimateUsd = hasEst ? estByCategory.get(category)! : null;
     if (hasEst) estUsedBy.add(category);
     const { discrepancyUsd, discrepancyPct } = discrepancy(sv.totalUsd, estimateUsd);
+
+    const attachDo = category === "durable_objects" && !doDriversUsed && doDrivers != null;
+    if (attachDo) doDriversUsed = true;
+    const attachGap = category === "ai" && !gatewayGapUsed;
+    if (attachGap) gatewayGapUsed = true;
+
     return {
       sku: sv.service,
       family: sv.family,
@@ -243,6 +359,8 @@ export function buildAccountant(
       category,
       projectedMonthEnd: projectFromPoints(sv.points, nowMs),
       attribution: category === "ai" ? aiAttribution : null,
+      doDrivers: attachDo ? doDrivers : null,
+      gatewayGap: attachGap ? buildAiGatewayGap(sv.totalUsd, gatewayMix) : null,
     };
   });
 
@@ -294,7 +412,12 @@ export async function getAccountantReport(
   const db = getDb(env);
   const cutoff = nowMs - days * DAY_MS;
 
-  const [actual, estimate, routerRows] = await Promise.all([
+  // DO wall-time is a live GraphQL read; if the analytics token can't serve it
+  // (scope gap / retention), attribution degrades to null rather than failing
+  // the whole bill view.
+  const doDriversPromise = getDoComputeDrivers(env, days).catch(() => null);
+
+  const [actual, estimate, routerRows, doDrivers, gatewayMix] = await Promise.all([
     getBillableUsageReport(env, days),
     getDailyCostReport(env, days),
     db
@@ -306,13 +429,15 @@ export async function getAccountantReport(
       .from(aiRouterRequests)
       .where(gte(aiRouterRequests.at, cutoff))
       .groupBy(aiRouterRequests.project),
+    doDriversPromise,
+    getGatewayWorkersAiMix(env, days),
   ]);
 
   const byProject = routerRows
     .map((r) => ({ project: r.project, usd: r.usd, calls: r.calls }))
     .sort((a, b) => b.usd - a.usd);
 
-  return buildAccountant(actual, estimate, byProject, days, nowMs);
+  return buildAccountant(actual, estimate, byProject, days, nowMs, doDrivers, gatewayMix);
 }
 
 // ---------------------------------------------------------------------------
@@ -419,6 +544,47 @@ if (import.meta.main) {
   eq(rep.flags.length, 1, "one flag");
   eq(rep.flags[0].sku, "Regular Twitch Neurons", "flag is the AI line");
   eq(rep.flags[0].severity, "high", "flag severity high");
+
+  // --- AI-gateway coverage gap -------------------------------------------
+  // Billed $588.67, gateway sees only $300 of Workers-AI → $288.67 (49%)
+  // bypassed the gateway and is unattributable.
+  const gap = buildAiGatewayGap(588.67, [
+    { model: "@cf/meta/llama", provider: "workers-ai", gatewayCostUsd: 200, tokensIn: 10, tokensOut: 20, calls: 5 },
+    { model: "gpt-oss-120b", provider: "workers-ai", gatewayCostUsd: 100, tokensIn: 5, tokensOut: 10, calls: 2 },
+  ]);
+  near(gap.gatewayCostUsd, 300, "gateway sum");
+  near(gap.attributableUsd, 300, "attributable = min(gateway, billed)");
+  near(gap.unattributableUsd, 288.67, "unattributable remainder");
+  near(gap.unattributablePct, (288.67 / 588.67) * 100, "unattributable %");
+  near(gap.models[0].share, 200 / 300, "top model share");
+  near(gap.models[0].apportionedUsd, 300 * (200 / 300), "apportioned onto top model");
+  // Gateway with no Workers-AI traffic → whole bill is unattributable.
+  eq(buildAiGatewayGap(100, []).unattributablePct, 100, "no gateway → 100% unattributable");
+
+  // --- Driver attachment (largest-in-category only) ----------------------
+  const rep2 = buildAccountant(
+    {
+      currency: "USD",
+      totalActualUsd: 638.67,
+      windowAccuracy: null,
+      services: [
+        { service: "Regular Twitch Neurons", family: "Workers AI", unit: "neurons", totalUsd: 588.67, deltaUsd: null, points: [] },
+        { service: "AI Gateway logs", family: "AI Gateway", unit: "logs", totalUsd: 1, deltaUsd: null, points: [] },
+        { service: "Durable Objects Compute Duration", family: "Durable Objects", unit: "gb-s", totalUsd: 25, deltaUsd: null, points: [] },
+        { service: "Durable Objects Storage Rows Read", family: "Durable Objects", unit: "rows", totalUsd: 24, deltaUsd: null, points: [] },
+      ],
+    },
+    { services: [], workersAiModels: { day: "", models: [] } },
+    [],
+    30,
+    now,
+    { totalWallTime: 100, totalRequests: 10, scripts: [{ scriptName: "dopamine", wallTime: 100, requests: 10, wallTimeShare: 1, wallTimePerRequest: 10, longLivedSmell: true }] },
+    [{ model: "gpt-oss-120b", provider: "workers-ai", gatewayCostUsd: 100, tokensIn: 1, tokensOut: 1, calls: 1 }],
+  );
+  eq(rep2.skus[0].gatewayGap != null, true, "neuron SKU carries the gateway gap");
+  eq(rep2.skus.find((s) => s.sku === "AI Gateway logs")!.gatewayGap, null, "second AI SKU has no gap");
+  eq(rep2.skus.find((s) => s.sku === "Durable Objects Compute Duration")!.doDrivers != null, true, "largest DO SKU carries drivers");
+  eq(rep2.skus.find((s) => s.sku === "Durable Objects Storage Rows Read")!.doDrivers, null, "second DO SKU has no drivers");
 
   // eslint-disable-next-line no-console
   console.log("ok — accountant report verified");

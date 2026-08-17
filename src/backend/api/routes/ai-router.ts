@@ -4,31 +4,39 @@
  * guardianAuth-gated.
  */
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import { desc } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 import { guardianAuth } from "@/backend/api/routes/guardian";
 import { getDb } from "@/backend/db";
-import { aiRouterRequests, billingEvents } from "@/backend/db/schema";
+import { aiRouterRecommendations, aiRouterRequests, billingEvents, guardianProjects } from "@/backend/db/schema";
+import { dispatchRightSizing } from "@/backend/guardian/offense/jules-dispatch";
 import {
   breakGlass, deleteCircuit, evaluateBreakers, getKillSwitch, incrementSpend, listCircuits, setCircuit, setKillSwitch,
 } from "@/backend/guardian/ai-router/circuits";
 import { captureResult, storePrompt } from "@/backend/guardian/ai-router/capture";
 import { forward } from "@/backend/guardian/ai-router/router";
 import { forwardStream } from "@/backend/guardian/ai-router/router-stream";
+import { isConcreteModel, resolveModel, type ResolveResult } from "@/backend/guardian/ai-router/resolve-model";
 import { canPrice, priceSplit } from "@/backend/guardian/ai-router/pricing";
-import { usageByProject, usageByModelForProject } from "@/backend/guardian/ai-router-usage";
+import { syncRouterRecommendations, usageByProject, usageByModelForProject } from "@/backend/guardian/ai-router-usage";
 import { getSecretStoreBinding } from "@/backend/utils/secrets";
 import type { RouterRequest } from "@/backend/guardian/ai-router/types";
 
 export const aiRouterRouter = new OpenAPIHono<{ Bindings: Env }>();
 
-const KNOWN = new Set(["project","importance","mode","provider","model","aiGatewayId","transport","stream","providerApiKey","input"]);
+const KNOWN = new Set(["project","importance","mode","provider","model","aiGatewayId","transport","stream","providerApiKey","input","budgetUsd","capabilities"]);
 
 const runBody = z.object({
   project: z.string().min(1),
   importance: z.enum(["low", "medium", "high"]),
   mode: z.enum(["gateway","gateway-custom","provider-sdk-gateway","openai-compat","native","gemini-native"]).default("gateway"),
   provider: z.string().min(1),
-  model: z.string().min(1),
+  // P12: model is OPTIONAL. Absent (or a sentinel "auto"/"best"/"budget"/
+  // "cheapest") ⇒ the resolver picks one; a concrete model still passes through
+  // unchanged unless a model_substitutions rule retargets it.
+  model: z.string().min(1).optional(),
+  // Optional hints for dynamic selection (ignored on the passthrough path).
+  budgetUsd: z.number().positive().optional(),
+  capabilities: z.array(z.string()).optional(),
   aiGatewayId: z.string().optional(),
   transport: z.enum(["ai-sdk","provider-sdk","openai-compat","gemini-sdk"]).optional(),
   stream: z.boolean().default(false),
@@ -71,6 +79,7 @@ aiRouterRouter.openapi(
   }),
   async (c) => {
     const raw = c.req.valid("json");
+    const requestedModelRaw = raw.model; // pre-resolution, for the audit trail
     // Reject ':' in scope-forming fields so circuit KV scope keys can't collide
     // (e.g. project "a:b" vs scope prefixes like "project:"/"model:").
     for (const f of ["project", "provider", "model"] as const) {
@@ -86,6 +95,49 @@ aiRouterRouter.openapi(
     // (providers.ts / extractUsage key on "google").
     if (raw.provider === "gemini") raw.provider = "google";
 
+    // P12 smart proxy: resolve the model to dispatch BEFORE any model-dependent
+    // guard, so stream/bypass/pricing all run against what actually dispatches.
+    //   - concrete model + no rule → unchanged (reason "passthrough"): a caller
+    //     that named a model with no substitution gets IDENTICAL behavior to pre-P12.
+    //   - concrete model + enabled rule → the rule's to_model ("substitution").
+    //   - absent/sentinel model → best catalog pick ("dynamic").
+    // Only the dynamic path (opt-in) can fail (empty catalog) → 400.
+    let resolution: ResolveResult;
+    try {
+      resolution = await resolveModel(c.env, {
+        project: raw.project,
+        requestedModel: raw.model,
+        importance: raw.importance,
+        budgetUsd: raw.budgetUsd,
+        capabilities: raw.capabilities,
+      });
+    } catch (err) {
+      // Resolution only throws on the DYNAMIC path (no concrete model to fall
+      // back to) — that request genuinely can't proceed, so 400. But a request
+      // that named a CONCRETE model must NEVER 400 here: fall back to
+      // dispatching exactly what was asked for (passthrough) so a resolver/D1
+      // hiccup can't break a previously-working call.
+      if (isConcreteModel(raw.model)) {
+        console.warn(
+          JSON.stringify({ level: "WARN", source: "aiRouter.resolveModel", project: raw.project, model: raw.model, error: String(err) }),
+        );
+        resolution = { model: raw.model!.trim(), provider: null, reason: "passthrough" };
+      } else {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+    }
+    raw.model = resolution.model;
+    // Only substitution/dynamic set a provider; passthrough leaves the caller's
+    // provider byte-identical (resolution.provider is null there).
+    if (resolution.provider) raw.provider = resolution.provider;
+    // Re-apply the ':' guard to the RESOLVED model/provider — a catalog- or
+    // rule-sourced value must satisfy the same scope-key invariant as caller input.
+    for (const f of ["provider", "model"] as const) {
+      if (String(raw[f] ?? "").includes(":")) {
+        return c.json({ error: `resolved "${f}" must not contain ':'` }, 400);
+      }
+    }
+
     // C1: streaming supports only provider "openai" in v1 — reject BEFORE
     // storePrompt so a rejected request never orphans a stored prompt.
     if (raw.stream && raw.provider !== "openai") {
@@ -100,7 +152,13 @@ aiRouterRouter.openapi(
     }
 
     const extra: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(raw)) if (!KNOWN.has(k)) extra[k] = v;
+    // Exclude the `__`-prefixed namespace: it is reserved for internal audit
+    // keys set below, so a client can't forge e.g. `__requestedModel`.
+    for (const [k, v] of Object.entries(raw)) if (!KNOWN.has(k) && !k.startsWith("__")) extra[k] = v;
+    // Audit the resolution so a substituted/dynamic dispatch is traceable in the
+    // stored request row (payloadJson). Passthrough is recorded too for symmetry.
+    extra.__resolution = resolution.reason;
+    if (resolution.reason !== "passthrough") extra.__requestedModel = requestedModelRaw ?? null;
     const req: RouterRequest = { ...raw, extra } as RouterRequest;
     const now = Date.now();
     const requestUuid = crypto.randomUUID();
@@ -312,4 +370,88 @@ aiRouterRouter.openapi(createRoute({
   const e = end ?? Date.now();
   const s = start ?? e - 30 * 86_400_000;
   return c.json({ models: await usageByModelForProject(c.env, project, s, e) }, 200);
+});
+
+// ---------------------------------------------------------------------------
+// Recommendations routes — cheaper-model suggestions (Task 4). guardianAuth-gated.
+// ---------------------------------------------------------------------------
+
+aiRouterRouter.use("/recommendations", guardianAuth);
+aiRouterRouter.use("/recommendations/*", guardianAuth);
+
+aiRouterRouter.openapi(createRoute({
+  method: "get", path: "/recommendations", operationId: "aiRouterListRecommendations",
+  summary: "List open router recommendations (newest first), optionally filtered by project",
+  request: { query: z.object({ project: z.string().optional() }) },
+  responses: { 200: { description: "Recommendations", content: { "application/json": { schema: z.object({ recommendations: z.array(z.any()) }) } } } },
+}), async (c) => {
+  const { project } = c.req.valid("query");
+  const where = project
+    ? and(ne(aiRouterRecommendations.status, "dismissed"), eq(aiRouterRecommendations.project, project))
+    : ne(aiRouterRecommendations.status, "dismissed");
+  const rows = await getDb(c.env).select().from(aiRouterRecommendations).where(where).orderBy(desc(aiRouterRecommendations.at)).limit(500);
+  return c.json({ recommendations: rows }, 200);
+});
+
+aiRouterRouter.openapi(createRoute({
+  method: "post", path: "/recommendations/refresh", operationId: "aiRouterRefreshRecommendations",
+  summary: "Recompute router recommendations now (manual stand-in for the deferred weekly cron)",
+  responses: { 200: { description: "Refreshed", content: { "application/json": { schema: z.object({ written: z.number() }) } } } },
+}), async (c) => {
+  const written = await syncRouterRecommendations(c.env);
+  await audit(c.env, `Refreshed router recommendations: ${written} written`);
+  return c.json({ written }, 200);
+});
+
+aiRouterRouter.openapi(createRoute({
+  method: "post", path: "/recommendations/{id}/dismiss", operationId: "aiRouterDismissRecommendation",
+  summary: "Dismiss a router recommendation",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: { description: "Dismissed", content: { "application/json": { schema: z.object({ ok: z.boolean() }) } } } },
+}), async (c) => {
+  const { id } = c.req.valid("param");
+  await getDb(c.env).update(aiRouterRecommendations).set({ status: "dismissed" }).where(eq(aiRouterRecommendations.id, id));
+  await audit(c.env, `Dismissed recommendation ${id}`);
+  return c.json({ ok: true }, 200);
+});
+
+aiRouterRouter.openapi(createRoute({
+  method: "post", path: "/recommendations/{id}/dispatch-jules", operationId: "aiRouterDispatchJules",
+  summary: "Dispatch a router recommendation to Jules for a right-sizing PR",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: { description: "Dispatched", content: { "application/json": { schema: z.object({
+      ok: z.boolean(), julesSessionId: z.string().nullable(), dispatchId: z.string().nullable() }) } } },
+    404: { description: "Recommendation not found", content: { "application/json": { schema: z.object({ error: z.string() }) } } },
+    409: { description: "No repo mapping for project", content: { "application/json": { schema: z.object({ error: z.string() }) } } },
+    502: { description: "Jules dispatch failed", content: { "application/json": { schema: z.object({ error: z.string() }) } } },
+  },
+}), async (c) => {
+  const { id } = c.req.valid("param");
+  const db = getDb(c.env);
+
+  const [rec] = await db.select().from(aiRouterRecommendations).where(eq(aiRouterRecommendations.id, id)).limit(1);
+  if (!rec) return c.json({ error: "Recommendation not found." }, 404);
+
+  if (rec.status !== "open") {
+    return c.json({ error: "Recommendation is not open (already dispatched or resolved)." }, 409);
+  }
+  if (!rec.suggestedModel) {
+    return c.json({ error: "Recommendation has no suggested model to switch to." }, 409);
+  }
+
+  const [proj] = await db.select({ repo: guardianProjects.repo }).from(guardianProjects).where(eq(guardianProjects.name, rec.project)).limit(1);
+  if (!proj?.repo) return c.json({ error: "No repo mapping for project; advisory only." }, 409);
+
+  const result = await dispatchRightSizing(c.env, {
+    repo: proj.repo, project: rec.project, currentModel: rec.model,
+    suggestedModel: rec.suggestedModel ?? "", rationale: rec.rationale,
+  });
+  if (!result.ok) return c.json({ error: result.error ?? "Jules dispatch failed." }, 502);
+
+  await db.update(aiRouterRecommendations)
+    .set({ status: "dispatched", julesSessionId: result.julesSessionId })
+    .where(eq(aiRouterRecommendations.id, id));
+  await audit(c.env, `Dispatched right-sizing to Jules for ${rec.project}/${rec.model} (session ${result.julesSessionId})`);
+  return c.json({ ok: true, julesSessionId: result.julesSessionId, dispatchId: result.dispatchId }, 200);
 });

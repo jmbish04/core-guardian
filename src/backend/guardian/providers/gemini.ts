@@ -10,8 +10,9 @@
  * Auth reuses the repo's Google service account (the same SA that does Drive),
  * minted for the `cloud-billing.readonly` scope with NO impersonation — the SA
  * itself must be granted `billing.budgets.get/list` on the billing account.
- * The billing account id is a non-secret config value (`gemini_billing_account_id`
- * in `global_config`); absent → Gemini is skipped.
+ * The billing account id (e.g. `012345-6789AB-CDEF01`) is read from the
+ * `GCP_BILLING_ACCOUNT_ID` Secrets Store binding, falling back to a runtime
+ * `gemini_billing_account_id` in `global_config`; absent → Gemini is skipped.
  *
  * @see https://cloud.google.com/billing/docs/reference/budget/rest
  */
@@ -21,10 +22,15 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/backend/db";
 import { globalConfig } from "@/backend/db/schema";
 import { getGoogleServiceAccountToken } from "@/backend/lib/google-drive";
+import { getSecret, getSecretStoreBinding } from "@/backend/utils/secrets";
 
 import { num, ProviderBillingError, ymd, type ProviderDailyCost } from "./types";
 
-const BILLING_SCOPE = "https://www.googleapis.com/auth/cloud-billing.readonly";
+// The Cloud Billing Budgets API rejects `cloud-billing.readonly` with
+// "insufficient authentication scopes" — budgets.list requires the full
+// `cloud-billing` (or `cloud-platform`) scope. The SA still needs the
+// Billing Account Viewer IAM role on the account for actual access.
+const BILLING_SCOPE = "https://www.googleapis.com/auth/cloud-billing";
 const CONFIG_KEY = "gemini_billing_account_id";
 
 type Budget = {
@@ -32,8 +38,16 @@ type Budget = {
   amount?: { specifiedAmount?: { currencyCode?: string; units?: string | number; nanos?: number } };
 };
 
-/** Read the configured GCP billing account id (e.g. `012345-6789AB-CDEF01`). */
+/**
+ * Read the GCP billing account id — Secrets Store binding first
+ * (`GCP_BILLING_ACCOUNT_ID`), then a runtime `global_config` override.
+ */
 async function billingAccountId(env: Env): Promise<string | null> {
+  const secret =
+    (await getSecretStoreBinding(env, "GCP_BILLING_ACCOUNT_ID")) ??
+    getSecret(env, "GCP_BILLING_ACCOUNT_ID");
+  if (secret && secret.trim()) return secret.trim();
+
   const [row] = await getDb(env)
     .select()
     .from(globalConfig)

@@ -28,6 +28,7 @@ import { aiGatewayAdminRouter } from "./routes/ai-gateway-admin";
 import { aiModelsRouter } from "./routes/ai-models";
 import { aiProxyRouter } from "./routes/ai-proxy";
 import { aiRouterRouter } from "./routes/ai-router";
+import { modelSubstitutionsRouter } from "./routes/model-substitutions";
 import { authRouter } from "./routes/auth";
 import { billingInsightsRouter } from "./routes/billing-insights";
 import { clientErrorRouter } from "./routes/client-error";
@@ -176,6 +177,8 @@ app.route("/api/ai-models", aiModelsRouter);
 app.route("/api/ai-gateway-admin", aiGatewayAdminRouter);
 app.route("/api/ai-gateway", aiGatewayRouter);
 app.route("/api/ai-router", aiRouterRouter);
+// P12 smart proxy: model-substitution rule CRUD (guardianAuth), read on /run.
+app.route("/api/guardian/ai-router/substitutions", modelSubstitutionsRouter);
 app.route("/api/rules", rulesRouter);
 app.route("/api/alerting", alertingRouter);
 

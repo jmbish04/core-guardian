@@ -49,6 +49,37 @@ type SkuAttribution = {
   byModel: { model: string; usd: number; neurons: number }[];
   byProject: { project: string; usd: number; calls: number }[];
 };
+type DoScriptDriver = {
+  scriptName: string;
+  wallTime: number;
+  requests: number;
+  wallTimeShare: number;
+  wallTimePerRequest: number;
+  longLivedSmell: boolean;
+};
+type DoDrivers = {
+  totalWallTime: number;
+  totalRequests: number;
+  scripts: DoScriptDriver[];
+};
+type GatewayModelShare = {
+  model: string;
+  provider: string;
+  gatewayCostUsd: number;
+  share: number;
+  apportionedUsd: number;
+  tokensIn: number;
+  tokensOut: number;
+  calls: number;
+};
+type GatewayGap = {
+  billedUsd: number;
+  gatewayCostUsd: number;
+  attributableUsd: number;
+  unattributableUsd: number;
+  unattributablePct: number;
+  models: GatewayModelShare[];
+};
 type AccountantSku = {
   sku: string;
   family: string;
@@ -60,6 +91,8 @@ type AccountantSku = {
   category: Category;
   projectedMonthEnd: number;
   attribution: SkuAttribution | null;
+  doDrivers: DoDrivers | null;
+  gatewayGap: GatewayGap | null;
 };
 type DiscrepancyFlag = {
   sku: string;
@@ -232,10 +265,145 @@ function AttributionPanel({ attribution }: { attribution: SkuAttribution }) {
   );
 }
 
-/** One ledger row. AI rows with attribution expand to the who-drove-it panel. */
+/**
+ * DO wall-time drivers — which script burned the Durable Objects compute. Each
+ * row is a wall-time share bar + request count; a stuck / long-lived DO (huge
+ * wall-time on few requests) is flagged loud so it reads as the smell it is.
+ */
+function DoDriversPanel({ drivers }: { drivers: DoDrivers }) {
+  return (
+    <div className="flex flex-col gap-2 rounded-lg bg-muted/20 p-4 ring-1 ring-border/40">
+      <div className="flex items-center justify-between">
+        <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          By script
+        </h4>
+        <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+          {formatCount(drivers.totalRequests, "requests")}
+        </span>
+      </div>
+      <ul className="flex flex-col gap-1.5">
+        {drivers.scripts.map((s) => (
+          <li key={s.scriptName} className="flex flex-col gap-1">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate font-mono text-xs">{s.scriptName}</span>
+                {s.longLivedSmell ? (
+                  <Badge variant="destructive" className="shrink-0 text-[9px] uppercase">
+                    long-lived
+                  </Badge>
+                ) : null}
+              </div>
+              <div className="flex shrink-0 items-center gap-3 font-mono text-[11px] tabular-nums text-muted-foreground">
+                <span>{formatCount(s.requests, "req")}</span>
+                <span className="w-12 text-right text-foreground">
+                  {Math.round(s.wallTimeShare * 100)}%
+                </span>
+              </div>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-muted/40">
+              <div
+                className={`h-full rounded-full ${s.longLivedSmell ? "bg-destructive" : "bg-primary/60"}`}
+                style={{ width: `${Math.max(2, Math.round(s.wallTimeShare * 100))}%` }}
+              />
+            </div>
+          </li>
+        ))}
+      </ul>
+      <p className="text-[10px] text-muted-foreground/70">
+        Ranked by wall-time (the GB-s billing basis). A flagged script stays alive far longer per
+        request than its peers — the stuck / long-lived-DO smell.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * AI-gateway coverage gap — the loud unattributable line + the attributable
+ * model mix. CF bills every Workers-AI model under one neuron SKU; only
+ * gateway-routed calls carry a model, so anything that bypassed the gateway is
+ * spend we cannot pin to a model.
+ */
+function GatewayGapPanel({ gap }: { gap: GatewayGap }) {
+  const hasGap = gap.unattributableUsd >= 0.005;
+  return (
+    <div className="flex flex-col gap-3">
+      {/* The loud line — direct-AI spend that bypassed the gateway. */}
+      <div
+        className={`flex flex-col gap-1 rounded-lg p-4 ring-1 ${
+          hasGap ? "bg-destructive/10 ring-destructive/40" : "bg-emerald-500/[0.07] ring-emerald-500/40"
+        }`}
+      >
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="text-xs font-medium text-foreground">
+            {hasGap ? "Unattributable direct-AI" : "Fully attributable"}
+          </span>
+          <span
+            className={`text-lg font-semibold tabular-nums ${
+              hasGap ? "text-destructive" : "text-emerald-600 dark:text-emerald-400"
+            }`}
+          >
+            {usd(gap.unattributableUsd)}
+            <span className="ml-1 text-sm">
+              ({Math.round(gap.unattributablePct)}%)
+            </span>
+          </span>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          {hasGap
+            ? "These calls bypassed the AI Gateway and cannot be attributed to a model. Gateway dollar estimates undercount neuron billing, so this is an upper bound."
+            : "Every billed neuron traces to a gateway-routed model."}
+        </p>
+      </div>
+
+      {/* The attributable mix — real billed dollars apportioned across models. */}
+      <div className="rounded-lg bg-muted/20 p-4 ring-1 ring-border/40">
+        <div className="mb-2 flex items-center justify-between">
+          <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Attributable by model
+          </h4>
+          <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+            {usd(gap.attributableUsd)} of {usd(gap.billedUsd)}
+          </span>
+        </div>
+        {gap.models.length ? (
+          <ul className="flex flex-col gap-1.5">
+            {gap.models.map((m) => (
+              <li key={m.model} className="flex flex-col gap-1">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="truncate font-mono text-xs">{m.model}</span>
+                  <div className="flex shrink-0 items-center gap-3 font-mono text-[11px] tabular-nums text-muted-foreground">
+                    <span>{formatCount(m.calls, "calls")}</span>
+                    <span className="w-16 text-right text-xs font-medium text-foreground">
+                      {usd(m.apportionedUsd)}
+                    </span>
+                  </div>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-muted/40">
+                  <div
+                    className="h-full rounded-full bg-primary/60"
+                    style={{ width: `${Math.max(2, Math.round(m.share * 100))}%` }}
+                  />
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-xs text-muted-foreground/60">
+            No gateway-routed Workers-AI calls in this window — the whole neuron bill is
+            unattributable.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** One ledger row. Rows with drivers/attribution expand to the who-drove-it panel. */
 function SkuRow({ sku, emphasized }: { sku: AccountantSku; emphasized: boolean }) {
   const [open, setOpen] = useState(false);
-  const expandable = sku.category === "ai" && sku.attribution != null;
+  const expandable =
+    (sku.category === "ai" && (sku.attribution != null || sku.gatewayGap != null)) ||
+    sku.doDrivers != null;
   return (
     <>
       <TableRow
@@ -283,7 +451,11 @@ function SkuRow({ sku, emphasized }: { sku: AccountantSku; emphasized: boolean }
       {expandable && open ? (
         <TableRow className="hover:bg-transparent">
           <TableCell colSpan={6} className="px-4 pb-4 pt-0">
-            <AttributionPanel attribution={sku.attribution!} />
+            <div className="flex flex-col gap-4">
+              {sku.gatewayGap ? <GatewayGapPanel gap={sku.gatewayGap} /> : null}
+              {sku.attribution ? <AttributionPanel attribution={sku.attribution} /> : null}
+              {sku.doDrivers ? <DoDriversPanel drivers={sku.doDrivers} /> : null}
+            </div>
           </TableCell>
         </TableRow>
       ) : null}
@@ -408,7 +580,8 @@ export function AccountantView() {
             <div>
               <h2 className="text-sm font-semibold">The ledger</h2>
               <p className="text-xs text-muted-foreground">
-                Ranked by actual billed dollars. AI rows expand to the model/project breakdown.
+                Ranked by actual billed dollars. AI and Durable Objects rows expand to show what
+                drove the spend.
               </p>
             </div>
             <div className="overflow-x-auto rounded-xl bg-card/40 ring-1 ring-border/40">

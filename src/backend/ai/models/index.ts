@@ -34,10 +34,12 @@ const MODEL_MAP: Record<string, ModelDescriptor<any, any>> = {
 // Default static registry (used when env vars are not needed)
 // ---------------------------------------------------------------------------
 
+// Defaults deliberately avoid gpt-oss-120b (the ~$588/90d cost driver). An
+// unset MODEL_* env must fall back to a cheap capable model, never the 120B.
 export const modelRegistry = {
-  chat: gpt_oss_120b,
-  extract: gpt_oss_120b,
-  draft: gpt_oss_120b,
+  chat: llama_3_3_70b,
+  extract: llama_3_3_70b,
+  draft: llama_3_1_8b,
   embed: bge_large_en_v1_5,
   stt: whisper,
   tts: aura_1,
@@ -51,9 +53,9 @@ export const modelRegistry = {
 export function getModelRegistry(env: Env) {
   return {
     ...modelRegistry,
-    chat: resolveModel(env.MODEL_CHAT, gpt_oss_120b),
-    extract: resolveModel(env.MODEL_EXTRACT, gpt_oss_120b),
-    draft: resolveModel(env.MODEL_DRAFT, gpt_oss_120b),
+    chat: resolveModel(env.MODEL_CHAT, llama_3_3_70b),
+    extract: resolveModel(env.MODEL_EXTRACT, llama_3_3_70b),
+    draft: resolveModel(env.MODEL_DRAFT, llama_3_1_8b),
     embed: withModelId(modelRegistry.embed, env.DEFAULT_MODEL_EMBEDDING),
   } as const;
 }

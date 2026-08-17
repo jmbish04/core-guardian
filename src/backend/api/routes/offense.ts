@@ -32,13 +32,15 @@
  */
 
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import { and, desc, eq, gte, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, ne } from "drizzle-orm";
 
 import { getDb } from "@/backend/db";
 import {
+  aiRouterRecommendations,
   billingEvents,
   circuitBreakEvents,
   julesDispatches,
+  julesSessions,
   scanTargets,
   type CircuitBreakAction,
 } from "@/backend/db/schema";
@@ -590,5 +592,99 @@ offensePublicRouter.openapi(
     const { incidentId, circuitFlipped } = await recordFindings(c.env, dispatch, body);
     // incidentId null → the nonce was already spent/expired (idempotent no-op).
     return c.json({ ok: incidentId !== null, incidentId, circuitFlipped }, 200);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /right-size-findings  (P3 — Jules reports back on a right-sizing dispatch)
+// ---------------------------------------------------------------------------
+
+// Matches NONCE_TTL_MS in guardian/offense/jules-dispatch.ts (not exported there).
+const NONCE_TTL_MS = 2 * 60 * 60 * 1000;
+
+/** The reporting contract Jules curls back for a right-sizing dispatch. */
+const rightSizeFindingsSchema = z.object({
+  suggested_model: z.string().optional(),
+  savings_usd: z.number().optional(),
+  pr_url: z
+    .string()
+    .url()
+    .refine((u) => u.startsWith("https://"), "must be https")
+    .optional(),
+  project: z.string(),
+  nonce: z.string(),
+});
+
+offensePublicRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/right-size-findings",
+    operationId: "offenseRightSizeFindings",
+    tags: ["Guardian Offense"],
+    summary: "Jules reports right-sizing findings (nonce-authenticated)",
+    description:
+      "Nonce-authenticated: NOT behind guardianAuth. The presented `nonce` must match a PENDING `jules_dispatches` row of task_type `right_sizing`; no match → 403 (generic). On match, the linked `ai_router_recommendations` row(s) (matched by `julesSessionId`) are marked `pr_opened` with the PR url, the dispatch is spent (→ reported, one-time), and the linked `jules_sessions` row is marked `submitted`. NO AI.",
+    request: {
+      body: {
+        content: { "application/json": { schema: rightSizeFindingsSchema } },
+      },
+    },
+    responses: {
+      200: {
+        description: "Findings recorded",
+        content: {
+          "application/json": {
+            schema: z.object({ ok: z.boolean() }),
+          },
+        },
+      },
+      403: {
+        description: "Nonce did not match a pending right_sizing dispatch (generic — does not leak)",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => {
+    const body = c.req.valid("json");
+    const db = getDb(c.env);
+    const now = Date.now();
+    const prUrl = body.pr_url ?? null;
+
+    // ATOMIC claim: the nonce is the sole credential on this public route, so
+    // validate + spend it in one statement — pending, right_sizing, and not
+    // expired (NONCE_TTL_MS) — guarded on a row actually flipping. A replayed
+    // or concurrent nonce can't double-claim, and an expired nonce is rejected.
+    const [claimed] = await db
+      .update(julesDispatches)
+      .set({ status: "reported", reportedAt: now, findings: body })
+      .where(
+        and(
+          eq(julesDispatches.nonce, body.nonce),
+          eq(julesDispatches.status, "pending"),
+          eq(julesDispatches.taskType, "right_sizing"),
+          gt(julesDispatches.dispatchedAt, now - NONCE_TTL_MS),
+        ),
+      )
+      .returning();
+    if (!claimed) return c.json({ error: "Invalid or expired token." }, 403);
+
+    // Status-guarded: only flips a still-dispatched rec, never un-dismisses one
+    // the operator already resolved.
+    await db
+      .update(aiRouterRecommendations)
+      .set({ status: "pr_opened", prUrl })
+      .where(
+        and(
+          eq(aiRouterRecommendations.julesSessionId, claimed.julesSessionId),
+          eq(aiRouterRecommendations.status, "dispatched"),
+        ),
+      );
+
+    await db
+      .update(julesSessions)
+      .set({ status: "submitted", prUrl, updatedAt: now })
+      .where(eq(julesSessions.dispatchId, claimed.id));
+
+    return c.json({ ok: true }, 200);
   },
 );

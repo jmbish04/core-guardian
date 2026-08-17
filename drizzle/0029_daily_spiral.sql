@@ -42,6 +42,16 @@ CREATE TABLE `zones` (
 );
 --> statement-breakpoint
 CREATE INDEX `idx_zones_billable` ON `zones` (`billable`);--> statement-breakpoint
+CREATE TABLE `spend_rollup` (
+	`id` text PRIMARY KEY NOT NULL,
+	`built_at` integer NOT NULL,
+	`window_start` integer NOT NULL,
+	`window_end` integer NOT NULL,
+	`total_actual_usd` real DEFAULT 0 NOT NULL,
+	`payload` text NOT NULL
+);
+--> statement-breakpoint
+CREATE INDEX `idx_spend_rollup_built` ON `spend_rollup` (`built_at`);--> statement-breakpoint
 ALTER TABLE `billable_usage` ADD `zone_fk` text;--> statement-breakpoint
 --> backfill: existing zone-scoped rows carry the raw zone id in `zone_id`; seed the relation.
 UPDATE `billable_usage` SET `zone_fk` = `zone_id` WHERE `zone_id` != '';
