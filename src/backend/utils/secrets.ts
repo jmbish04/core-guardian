@@ -76,6 +76,33 @@ export async function getOpenRouterApiKey(env: Env): Promise<string | undefined>
   );
 }
 
+/**
+ * Fetch the Anthropic **Admin** API key (`sk-ant-admin…`) used for the org
+ * cost report. Distinct from `ANTHROPIC_API_KEY` (inference) — the cost report
+ * requires an admin key. Optional: absent → the Anthropic sync is skipped.
+ */
+export async function getAnthropicAdminKey(env: Env): Promise<string | undefined> {
+  return (
+    (await getSecretStoreBinding(env, "ANTHROPIC_ADMIN_KEY")) ??
+    getSecret(env, "ANTHROPIC_ADMIN_KEY")
+  );
+}
+
+/**
+ * Fetch the OpenAI **Admin** API key (`sk-admin-…`) used for the org costs API.
+ * Distinct from `OPENAI_API_KEY` (inference). Optional.
+ */
+export async function getOpenAiAdminKey(env: Env): Promise<string | undefined> {
+  return (
+    (await getSecretStoreBinding(env, "OPENAI_ADMIN_KEY")) ?? getSecret(env, "OPENAI_ADMIN_KEY")
+  );
+}
+
+/** Fetch the Cursor Teams admin API key (team spend endpoint). Optional. */
+export async function getCursorApiKey(env: Env): Promise<string | undefined> {
+  return (await getSecretStoreBinding(env, "CURSOR_API_KEY")) ?? getSecret(env, "CURSOR_API_KEY");
+}
+
 /** Fetch the Cloudflare account id. */
 export async function getCloudflareAccountId(env: Env): Promise<string | undefined> {
   return (

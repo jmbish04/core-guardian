@@ -108,19 +108,25 @@ export class GuardianClient {
 
   private cfg: GuardianConfig;
   private baseUrl: string;
-  private aiToken?: string;
-  private apiKey?: string;
   private fetchImpl: typeof fetch;
+  // `declare` emits NO runtime field — the tokens are defined as non-enumerable
+  // properties in the constructor, so neither JSON.stringify nor
+  // util.inspect/console.log (Workers Logs) ever surfaces them.
+  private declare readonly aiToken?: string;
+  private declare readonly apiKey?: string;
 
   constructor(opts: Opts) {
     if (!opts.project) throw new Error("GuardianClient: config.project is required");
     // Narrowed copy — never spread aiToken/apiKey into cfg, or a logged/serialized
-    // client instance would leak both secrets (see private fields below).
+    // client instance would leak both secrets.
     this.cfg = { project: opts.project, repo: opts.repo, priority: opts.priority, budget: opts.budget, baseUrl: opts.baseUrl };
     this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
-    this.aiToken = opts.aiToken;
-    this.apiKey = opts.apiKey;
     this.fetchImpl = opts.fetch ?? fetch;
+    // Non-enumerable so the tokens are excluded from every serialization path
+    // (JSON.stringify, util.inspect, structured loggers) while staying readable
+    // as this.aiToken / this.apiKey.
+    Object.defineProperty(this, "aiToken", { value: opts.aiToken, enumerable: false });
+    Object.defineProperty(this, "apiKey", { value: opts.apiKey, enumerable: false });
   }
 
   static fromEnv(env: Record<string, unknown>): GuardianClient {
@@ -224,11 +230,8 @@ export class GuardianClient {
     return this.getJson(`/api/guardian/projects/${encodeURIComponent(this.cfg.project)}`, this.apiKey);
   }
 
-  // TS `private` is compile-time only — aiToken/apiKey are still plain enumerable
-  // instance properties at runtime, so JSON.stringify(client) would otherwise
-  // dump both secrets (e.g. via a structured logger). toJSON() is the standard
-  // JS hook JSON.stringify checks for; this excludes them without changing the
-  // field-declaration style.
+  // The non-enumerable token properties already keep secrets out of
+  // JSON.stringify; toJSON additionally drops the fetch impl for a tidy dump.
   toJSON(): unknown {
     return { cfg: this.cfg, baseUrl: this.baseUrl };
   }

@@ -19,7 +19,7 @@
     "fmt": "oxfmt",
     "lint": "oxlint",
     "check": "oxlint && oxfmt",
-    "test": "npx tsx --test clients/ts/guardian-client.test.ts src/backend/guardian/integration.test.ts && node --test clients/template/pull-guardian.test.mjs",
+    "test": "npx tsx --test clients/ts/guardian-client.test.ts src/backend/guardian/integration.test.ts && node --test clients/template/pull-guardian.test.mjs clients/gas/version-sync.test.mjs && python3 clients/python/test_guardian_client.py",
     "db:generate": "drizzle-kit generate",
     "migrate:local": "pnpm run db:generate && npx wrangler d1 migrations apply DB --local",
     "migrate:remote": "pnpm run db:generate && npx wrangler d1 migrations apply DB --remote",

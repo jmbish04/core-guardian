@@ -68,6 +68,7 @@ import { evaluateUsage } from "./backend/guardian/collect";
 import { backfillDailyCost, snapshotDailyCost } from "./backend/guardian/daily-cost";
 import { checkSustainedSpend } from "./backend/guardian/offense/auto-break";
 import { checkInfraSpikes, checkNuclearBudget } from "./backend/guardian/offense/nuclear";
+import { checkProviderSpendAlerts, syncProviderCosts } from "./backend/guardian/providers/sync";
 import { pollJulesSessions } from "./backend/guardian/projects/poll-jules";
 import { syncWorkerProjects } from "./backend/guardian/projects/sync-workers";
 import { scrapeAllPricing } from "./backend/guardian/pricing-scrape";
@@ -150,6 +151,17 @@ async function runGuardianEvaluation(env: Env) {
   } catch (err) {
     console.error(
       JSON.stringify({ level: "ERROR", source: "guardian.billableUsage", error: String(err) }),
+    );
+  }
+  // Daily: pull external AI provider billing (Anthropic/OpenAI/Cursor cost APIs
+  // + Gemini Cloud Billing budget) into provider_cost, then run the per-provider
+  // budget threshold alerts. Gated on 1 day; each provider is skipped when its
+  // key/config is absent (non-fatal).
+  try {
+    await maybeSyncProviderCosts(env);
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.providers", error: String(err) }),
     );
   }
   // Daily: refresh the merged model-pricing candidate catalog (OpenRouter + AI
@@ -274,6 +286,32 @@ async function maybeSyncBillableUsage(env: Env) {
   if (latest && Date.now() - latest.capturedAt < ONE_DAY_MS) return;
   const rows = await syncBillableUsage(env, 35);
   console.warn(JSON.stringify({ level: "INFO", source: "guardian.billableUsage", rows }));
+}
+
+const PROVIDER_SYNC_KEY = "provider-cost:last-sync";
+
+async function maybeSyncProviderCosts(env: Env) {
+  // Debounce on a KV timestamp, NOT the latest provider_cost row: a provider
+  // with $0 spend (or no key) writes no rows, so a D1-latest gate would leave
+  // the table empty forever and re-hit the provider APIs every cron tick.
+  try {
+    const raw = await env.SESSIONS.get(PROVIDER_SYNC_KEY);
+    const at = raw ? Number(raw) : NaN;
+    if (Number.isFinite(at) && Date.now() - at < ONE_DAY_MS) return;
+  } catch {
+    /* fall through to a sync */
+  }
+  const synced = await syncProviderCosts(env, 35);
+  const alerts = await checkProviderSpendAlerts(env);
+  await env.SESSIONS.put(PROVIDER_SYNC_KEY, String(Date.now())).catch(() => {});
+  console.warn(
+    JSON.stringify({
+      level: "INFO",
+      source: "guardian.providers",
+      synced,
+      firedAlerts: alerts.filter((a) => a.fired).map((a) => a.provider),
+    }),
+  );
 }
 
 async function maybeRefreshModelCatalog(env: Env) {
