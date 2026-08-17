@@ -87,6 +87,7 @@ function AddRuleDialog({ onSaved }: { onSaved: () => void }) {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (submitting) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -218,7 +219,14 @@ function DeleteRuleButton({ rule, onDeleted }: { rule: Rule; onDeleted: () => vo
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={submitting}>Cancel</AlertDialogCancel>
-          <AlertDialogAction variant="destructive" onClick={confirm} disabled={submitting}>
+          <AlertDialogAction
+            variant="destructive"
+            onClick={(e) => {
+              e.preventDefault();
+              void confirm();
+            }}
+            disabled={submitting}
+          >
             {submitting ? <Loader2Icon className="size-3.5 animate-spin" /> : null}
             Delete
           </AlertDialogAction>
@@ -243,9 +251,12 @@ export function ModelSubstitutions() {
     const id = ++reqId.current;
     setLoading(true);
     setError(null);
+    setMutError(null);
     try {
       const r = await apiGet<{ substitutions: Rule[] }>(BASE);
-      if (id === reqId.current) setRules(r.substitutions);
+      // Freeze row order at load time so an optimistic toggle can flip `enabled`
+      // in place without the row jumping. Order only re-derives on the next load.
+      if (id === reqId.current) setRules(r.substitutions.slice().sort(rank));
     } catch (err) {
       if (id !== reqId.current) return;
       setError(
@@ -266,22 +277,27 @@ export function ModelSubstitutions() {
 
   async function toggle(rule: Rule) {
     setMutError(null);
-    // Optimistic flip.
+    // Optimistic flip in place — no reorder (see load()).
     setRules((prev) =>
       prev ? prev.map((r) => (r.id === rule.id ? { ...r, enabled: !r.enabled } : r)) : prev,
     );
     try {
-      await apiSend<{ id: string; enabled: boolean }>("POST", `${BASE}/${rule.id}/toggle`);
-    } catch (err) {
-      // Revert.
-      setRules((prev) =>
-        prev ? prev.map((r) => (r.id === rule.id ? { ...r, enabled: rule.enabled } : r)) : prev,
+      const res = await apiSend<{ id: string; enabled: boolean }>(
+        "POST",
+        `${BASE}/${rule.id}/toggle`,
       );
+      // Trust the server's value over the optimistic guess (concurrent toggles).
+      // ponytail: admin panel — narrow D1 read-after-write window; a stray refetch
+      // mid-toggle self-heals on next load.
+      setRules((prev) =>
+        prev ? prev.map((r) => (r.id === res.id ? { ...r, enabled: res.enabled } : r)) : prev,
+      );
+    } catch (err) {
       setMutError(err instanceof ApiError ? err.message : "Failed to toggle the rule.");
+      // Resync from the server rather than reverting via a stale closure.
+      void load();
     }
   }
-
-  const sorted = rules ? [...rules].sort(rank) : [];
 
   return (
     <section className="flex flex-col gap-4 rounded-xl border border-border/60 bg-background/40 p-6">
@@ -305,7 +321,7 @@ export function ModelSubstitutions() {
             <Skeleton key={i} className="h-11 w-full rounded-md" />
           ))}
         </div>
-      ) : sorted.length === 0 ? (
+      ) : !rules || rules.length === 0 ? (
         <EmptyState label="No substitution rules" />
       ) : (
         <Table>
@@ -319,7 +335,7 @@ export function ModelSubstitutions() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {sorted.map((rule) => (
+            {rules.map((rule) => (
               <TableRow key={rule.id} className={rule.enabled ? undefined : "opacity-50"}>
                 <TableCell className="font-medium">{rule.project}</TableCell>
                 <TableCell className="font-mono text-xs">
