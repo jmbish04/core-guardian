@@ -53,6 +53,8 @@ export function AiRouterRecommendations() {
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [dismissing, setDismissing] = useState<string | null>(null);
+  const [dispatching, setDispatching] = useState<string | null>(null);
+  const [rowNotice, setRowNotice] = useState<{ id: string; msg: string } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -96,6 +98,26 @@ export function AiRouterRecommendations() {
         setError(describeError(err, "Failed to dismiss recommendation."));
       } finally {
         setDismissing(null);
+      }
+    },
+    [load],
+  );
+
+  const sendToJules = useCallback(
+    async (id: string) => {
+      setDispatching(id);
+      setRowNotice(null);
+      try {
+        await apiSend("POST", "/ai-router/recommendations/" + encodeURIComponent(id) + "/dispatch-jules");
+        await load();
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 409) {
+          setRowNotice({ id, msg: "No repo mapping — advisory only." });
+        } else {
+          setError(describeError(err, "Failed to dispatch to Jules."));
+        }
+      } finally {
+        setDispatching(null);
       }
     },
     [load],
@@ -175,21 +197,81 @@ export function AiRouterRecommendations() {
       key: "actions",
       header: "",
       align: "right",
-      render: (r) => (
-        <div className="flex justify-end gap-1">
-          {/* P3: "Send to Jules" dispatch button goes here */}
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 px-2 text-xs"
-            disabled={dismissing === r.id}
-            onClick={() => void dismiss(r.id)}
-          >
-            {dismissing === r.id ? <Loader2Icon className="size-3 animate-spin" /> : "Dismiss"}
-          </Button>
-        </div>
-      ),
+      render: (r) => {
+        if (r.status === "dispatched") {
+          return (
+            <div className="flex justify-end">
+              {r.julesSessionId ? (
+                <a
+                  href={`https://jules.google.com/session/${r.julesSessionId}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="hover:underline"
+                >
+                  <Badge variant="default">Dispatched to Jules</Badge>
+                </a>
+              ) : (
+                <Badge variant="default">Dispatched to Jules</Badge>
+              )}
+            </div>
+          );
+        }
+
+        if (r.status === "pr_opened") {
+          return (
+            <div className="flex items-center justify-end gap-2">
+              <Badge variant="default">PR opened</Badge>
+              {r.prUrl && (
+                <a
+                  href={r.prUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-primary hover:underline"
+                >
+                  PR
+                </a>
+              )}
+            </div>
+          );
+        }
+
+        return (
+          <div className="flex flex-col items-end gap-1">
+            <div className="flex justify-end gap-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                disabled={dispatching === r.id}
+                onClick={() => void sendToJules(r.id)}
+              >
+                {dispatching === r.id ? (
+                  <span className="flex items-center gap-1">
+                    <Loader2Icon className="size-3 animate-spin" />
+                    Sending…
+                  </span>
+                ) : (
+                  "Send to Jules"
+                )}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                disabled={dismissing === r.id}
+                onClick={() => void dismiss(r.id)}
+              >
+                {dismissing === r.id ? <Loader2Icon className="size-3 animate-spin" /> : "Dismiss"}
+              </Button>
+            </div>
+            {rowNotice?.id === r.id && (
+              <span className="text-[11px] text-muted-foreground">{rowNotice.msg}</span>
+            )}
+          </div>
+        );
+      },
     },
   ];
 
