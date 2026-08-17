@@ -26,6 +26,8 @@ import {
   spendRollup,
 } from "@/backend/db/schema";
 
+import { getDoComputeDrivers } from "./resource-attribution";
+
 export const UNATTRIBUTED = "__unattributed__";
 export const SHARED = "__shared__";
 
@@ -42,8 +44,9 @@ function categoryOf(family: string): string {
   return FAMILY_TO_CATEGORY[family] ?? "other";
 }
 /** Categories with a real per-project estimate basis (else the family is pooled).
- *  `compute`/`do`/`other` have no per-project basis yet → pooled unattributed. */
-const ATTRIBUTABLE = new Set(["ai", "d1", "r2", "vectorize"]);
+ *  `do` attributes via #50's per-script DO wall-time drivers; `compute`/`other`
+ *  have no per-project basis yet → pooled unattributed. */
+const ATTRIBUTABLE = new Set(["ai", "d1", "r2", "vectorize", "do"]);
 /** Infra categories attributed through the resource/binding graph (not ai). */
 const INFRA_CATEGORIES = ["d1", "r2", "vectorize"];
 
@@ -176,6 +179,27 @@ export async function buildSpendRollup(env: Env): Promise<RollupPayload> {
     weightsByCategory.set(cat, w);
   }
 
+  // do: allocate the DO family by per-script COMPUTE wall-time share (reuses
+  // #50's driver — the one dataset that knows which script burned the lumped DO
+  // SKU). scriptName == worker == project. Approximate for the storage sub-lines
+  // (not wall-time-driven); the Billed lane still shows the true DO total.
+  // getDoComputeDrivers truncates to the top-N scripts, so the untruncated tail
+  // + any unknown-script time must POOL — never inflate the named scripts.
+  const cycleDays = Math.max(1, Math.ceil((now - start) / 86_400_000));
+  const doDrivers = await getDoComputeDrivers(env, cycleDays).catch(() => null);
+  const doWeights: { key: string; weight: number }[] = [];
+  if (doDrivers) {
+    let named = 0;
+    for (const s of doDrivers.scripts) {
+      if (!s.scriptName || s.scriptName === "(unknown)") continue; // pooled via remainder
+      doWeights.push({ key: s.scriptName, weight: s.wallTime });
+      named += s.wallTime;
+    }
+    const remainder = Math.max(0, doDrivers.totalWallTime - named);
+    if (remainder > 0) doWeights.push({ key: UNATTRIBUTED, weight: remainder });
+  }
+  weightsByCategory.set("do", doWeights);
+
   // --- Allocate each category's actual across its weights ----------------------
   const projectAcc = new Map<string, { kind: string; total: number; byCategory: Record<string, number> }>();
   const poolAcc = new Map<string, number>();
@@ -219,8 +243,11 @@ export async function buildSpendRollup(env: Env): Promise<RollupPayload> {
   // Reconciliation invariant: every billed dollar lands in exactly one project or
   // pool. If this ever drifts > 1¢, the allocation dropped or double-counted —
   // surface it loudly rather than ship a ledger that doesn't tie to the bill.
+  // Sum the UNFILTERED accumulators — `pools` drops sub-cent rows for display,
+  // which must not fool the reconciliation check.
   const allocatedUsd =
-    projects.reduce((s, p) => s + p.totalUsd, 0) + pools.reduce((s, p) => s + p.totalUsd, 0);
+    projects.reduce((s, p) => s + p.totalUsd, 0) +
+    [...poolAcc.values()].reduce((s, u) => s + u, 0);
   if (Math.abs(allocatedUsd - totalActualUsd) > 0.01) {
     console.warn(
       JSON.stringify({
