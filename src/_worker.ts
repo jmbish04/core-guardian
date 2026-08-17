@@ -69,6 +69,7 @@ import { backfillDailyCost, snapshotDailyCost } from "./backend/guardian/daily-c
 import { checkSustainedSpend } from "./backend/guardian/offense/auto-break";
 import { checkInfraSpikes, checkNuclearBudget } from "./backend/guardian/offense/nuclear";
 import { checkProviderSpendAlerts, syncProviderCosts } from "./backend/guardian/providers/sync";
+import { syncRouterRecommendations } from "./backend/guardian/ai-router-usage";
 import { pollJulesSessions } from "./backend/guardian/projects/poll-jules";
 import { syncWorkerProjects } from "./backend/guardian/projects/sync-workers";
 import { scrapeAllPricing } from "./backend/guardian/pricing-scrape";
@@ -217,6 +218,10 @@ async function runGuardianEvaluation(env: Env) {
       JSON.stringify({ level: "ERROR", source: "guardian.projects.pollJules", error: String(err) }),
     );
   }
+  // Weekly (Monday UTC-08): sync AI Router right-sizing recommendations.
+  // maybeRunRightSizing self-gates and self-catches, so this never breaks the
+  // hourly path.
+  await maybeRunRightSizing(env);
 }
 
 const THIRTY_DAYS_MS = 30 * 24 * 3_600_000;
@@ -391,6 +396,23 @@ async function pollJules(env: Env) {
   const summary = await pollJulesSessions(env);
   if (summary.updated > 0) {
     console.warn(JSON.stringify({ level: "INFO", source: "guardian.projects.pollJules", ...summary }));
+  }
+}
+
+/**
+ * Weekly gate (Monday UTC-08) for the AI Router right-sizing recommendation
+ * sync. Runs once per week via the dedicated `0 8 * * 1` cron trigger; the
+ * hourly `0 * * * *` cron also fires this function, so the day+hour check
+ * keeps it a no-op the other 167 hours.
+ */
+async function maybeRunRightSizing(env: Env): Promise<void> {
+  const d = new Date();
+  if (d.getUTCDay() !== 1 || d.getUTCHours() !== 8) return; // Monday 08:00 UTC
+  try {
+    const n = await syncRouterRecommendations(env);
+    console.log(`ai-router: weekly right-sizing recommendations synced (${n} rows)`);
+  } catch (e) {
+    console.error("ai-router: weekly right-sizing sync failed", e);
   }
 }
 
