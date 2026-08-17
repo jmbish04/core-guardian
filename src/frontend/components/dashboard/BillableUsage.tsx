@@ -18,6 +18,8 @@
 
 "use client";
 
+import { lookupBillable } from "@/shared/billable-catalog";
+
 import { Loader2Icon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CartesianGrid, Line, LineChart, XAxis } from "recharts";
@@ -344,14 +346,24 @@ export function BillableUsage() {
               <TableBody>
                 {report.services.map((s) => {
                   const last = s.points.at(-1);
+                  const cat = lookupBillable(s.service);
                   return (
                     <TableRow key={s.service}>
                       <TableCell className="ps-4">
                         <div className="font-medium">{s.service}</div>
-                        {s.family && (
-                          <div className="font-mono text-[10px] text-muted-foreground">
-                            {s.family}
+                        {cat ? (
+                          <div
+                            className="mt-0.5 max-w-md text-[11px] leading-4 text-muted-foreground"
+                            title={`Reduce it: ${cat.lever}`}
+                          >
+                            <span className="text-foreground/70">Caused by:</span> {cat.action}
                           </div>
+                        ) : (
+                          s.family && (
+                            <div className="font-mono text-[10px] text-muted-foreground">
+                              {s.family}
+                            </div>
+                          )
                         )}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
