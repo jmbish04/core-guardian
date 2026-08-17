@@ -252,6 +252,7 @@ export function ModelSubstitutions() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mutError, setMutError] = useState<string | null>(null);
+  const [pendingId, setPendingId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
 
   // Request-id guard: a mutation-triggered refetch must not be overwritten by a
@@ -287,6 +288,7 @@ export function ModelSubstitutions() {
 
   const toggle = useCallback(async (rule: Rule) => {
     setMutError(null);
+    setPendingId(rule.id);
     // Optimistic flip in place — no reorder (see load()).
     setRules((prev) =>
       prev ? prev.map((r) => (r.id === rule.id ? { ...r, enabled: !r.enabled } : r)) : prev,
@@ -303,6 +305,8 @@ export function ModelSubstitutions() {
       setMutError(err instanceof ApiError ? err.message : "Failed to toggle the rule.");
       // Resync from the server rather than reverting via a stale closure.
       void load();
+    } finally {
+      setPendingId(null);
     }
   }, [load]);
 
@@ -375,6 +379,7 @@ export function ModelSubstitutions() {
           <div className="flex justify-center">
             <Switch
               checked={row.original.enabled}
+              disabled={pendingId === row.original.id}
               onCheckedChange={() => void toggle(row.original)}
               aria-label={`Toggle ${row.original.project} substitution`}
             />
@@ -394,7 +399,7 @@ export function ModelSubstitutions() {
         size: 56,
       },
     ],
-    [toggle, load],
+    [toggle, load, pendingId],
   );
 
   // eslint-disable-next-line react-hooks/incompatible-library
