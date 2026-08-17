@@ -26,3 +26,7 @@ pnpm-debug.log*
 # Python
 __pycache__/
 *.pyc
+
+# local agent orchestration artifacts
+orchestrator.toml
+.orchestrator-state/
