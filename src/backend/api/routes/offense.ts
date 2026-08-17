@@ -48,7 +48,6 @@ import { guardianAuth } from "@/backend/api/routes/guardian";
 import { deleteCircuit, setCircuit, setKillSwitch } from "@/backend/guardian/ai-router/circuits";
 import { scanWorkers } from "@/backend/guardian/offense/scan-workers";
 import { scanGithub } from "@/backend/guardian/offense/scan-github";
-import { dispatchToJules, recordFindings } from "@/backend/guardian/offense/jules-dispatch";
 
 const errorResponseSchema = z.object({ error: z.string() });
 
@@ -496,6 +495,9 @@ offenseRouter.openapi(
       .limit(1);
     if (!target) return c.json({ error: "No scan target with that id." }, 404);
 
+    // Lazy import: jules-dispatch pulls the Workers-only `agents` runtime — defer
+    // it to the dispatch path so it stays out of cold-start (and its own chunk).
+    const { dispatchToJules } = await import("@/backend/guardian/offense/jules-dispatch");
     const result = await dispatchToJules(c.env, target);
     if (!result.ok) return c.json({ error: result.error ?? "Jules dispatch failed." }, 400);
 
@@ -589,6 +591,7 @@ offensePublicRouter.openapi(
       .limit(1);
     if (!dispatch) return c.json({ error: "Invalid or expired token." }, 403);
 
+    const { recordFindings } = await import("@/backend/guardian/offense/jules-dispatch");
     const { incidentId, circuitFlipped } = await recordFindings(c.env, dispatch, body);
     // incidentId null → the nonce was already spent/expired (idempotent no-op).
     return c.json({ ok: incidentId !== null, incidentId, circuitFlipped }, 200);

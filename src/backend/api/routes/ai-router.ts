@@ -8,7 +8,6 @@ import { and, desc, eq, isNull, ne } from "drizzle-orm";
 import { guardianAuth } from "@/backend/api/routes/guardian";
 import { getDb } from "@/backend/db";
 import { aiRouterRecommendations, aiRouterRequests, billingEvents, guardianProjects } from "@/backend/db/schema";
-import { dispatchRightSizing } from "@/backend/guardian/offense/jules-dispatch";
 import {
   breakGlass, deleteCircuit, evaluateBreakers, getKillSwitch, incrementSpend, listCircuits, setCircuit, setKillSwitch,
 } from "@/backend/guardian/ai-router/circuits";
@@ -470,6 +469,9 @@ aiRouterRouter.openapi(createRoute({
   const [proj] = await db.select({ repo: guardianProjects.repo }).from(guardianProjects).where(eq(guardianProjects.name, rec.project)).limit(1);
   if (!proj?.repo) return c.json({ error: "No repo mapping for project; advisory only." }, 409);
 
+  // Lazy import: jules-dispatch pulls the Workers-only `agents` runtime — keep it
+  // out of cold-start for every non-dispatch request (also makes it its own chunk).
+  const { dispatchRightSizing } = await import("@/backend/guardian/offense/jules-dispatch");
   const result = await dispatchRightSizing(c.env, {
     repo: proj.repo, project: rec.project, currentModel: rec.model,
     suggestedModel: rec.suggestedModel ?? "", rationale: rec.rationale,
