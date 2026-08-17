@@ -24,7 +24,7 @@
  */
 
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import { desc, eq, gte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, sql } from "drizzle-orm";
 
 import { getDb } from "@/backend/db";
 import {
@@ -87,20 +87,28 @@ function monthStartMs(now = Date.now()): number {
 
 /**
  * Sum this month's ai_router_requests.cost_usd per project, as a Map. One
- * grouped scan rather than a per-row subquery.
+ * grouped scan rather than a per-row subquery. Pass `names` to restrict the
+ * scan to a known set of projects (e.g. the current page) instead of the whole
+ * month — avoids a full-table aggregation on every paged fetch.
  */
 async function monthlySpendByProject(
   db: ReturnType<typeof getDb>,
+  names?: string[],
 ): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  if (names && names.length === 0) return map; // empty page → no scan
+  const where =
+    names && names.length
+      ? and(gte(aiRouterRequests.at, monthStartMs()), inArray(aiRouterRequests.project, names))
+      : gte(aiRouterRequests.at, monthStartMs());
   const rows = await db
     .select({
       project: aiRouterRequests.project,
       total: sql<number>`sum(${aiRouterRequests.costUsd})`,
     })
     .from(aiRouterRequests)
-    .where(gte(aiRouterRequests.at, monthStartMs()))
+    .where(where)
     .groupBy(aiRouterRequests.project);
-  const map = new Map<string, number>();
   for (const r of rows) if (r.project) map.set(r.project, Number(r.total ?? 0));
   return map;
 }
@@ -143,30 +151,32 @@ guardianProjectsRouter.openapi(
     const offset = q.offset ?? 0;
     const db = getDb(c.env);
 
-    // Fetch limit+1 to detect a further page without a COUNT query.
-    const [rows, spend] = await Promise.all([
-      all
-        ? db
-            .select()
-            .from(guardianProjects)
-            .orderBy(desc(guardianProjects.lastSeen))
-            .limit(limit + 1)
-            .offset(offset)
-        : db
-            .select()
-            .from(guardianProjects)
-            .where(eq(guardianProjects.isActive, true))
-            .orderBy(desc(guardianProjects.lastSeen))
-            .limit(limit + 1)
-            .offset(offset),
-      monthlySpendByProject(db),
-    ]);
+    // Fetch limit+1 to detect a further page without a COUNT query. name is the
+    // unique tie-breaker so rows never leapfrog page boundaries when several
+    // share a last_seen.
+    const rows = all
+      ? await db
+          .select()
+          .from(guardianProjects)
+          .orderBy(desc(guardianProjects.lastSeen), asc(guardianProjects.name))
+          .limit(limit + 1)
+          .offset(offset)
+      : await db
+          .select()
+          .from(guardianProjects)
+          .where(eq(guardianProjects.isActive, true))
+          .orderBy(desc(guardianProjects.lastSeen), asc(guardianProjects.name))
+          .limit(limit + 1)
+          .offset(offset);
 
     const hasMore = rows.length > limit;
-    const projects = (hasMore ? rows.slice(0, limit) : rows).map((r) => ({
-      ...r,
-      spendThisMonthUsd: spend.get(r.name) ?? 0,
-    }));
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    // Scope the spend aggregation to just this page's projects.
+    const spend = await monthlySpendByProject(
+      db,
+      page.map((r) => r.name),
+    );
+    const projects = page.map((r) => ({ ...r, spendThisMonthUsd: spend.get(r.name) ?? 0 }));
     return c.json({ projects, hasMore }, 200);
   },
 );
@@ -215,19 +225,20 @@ guardianProjectsRouter.openapi(
     const offset = q.offset ?? 0;
     const db = getDb(c.env);
     // Fetch limit+1 to detect a further page without a COUNT query.
+    // id is the unique tie-breaker for stable paging across equal created_at.
     const rows =
       status === "all"
         ? await db
             .select()
             .from(julesSessions)
-            .orderBy(desc(julesSessions.createdAt))
+            .orderBy(desc(julesSessions.createdAt), asc(julesSessions.id))
             .limit(limit + 1)
             .offset(offset)
         : await db
             .select()
             .from(julesSessions)
             .where(eq(julesSessions.status, status))
-            .orderBy(desc(julesSessions.createdAt))
+            .orderBy(desc(julesSessions.createdAt), asc(julesSessions.id))
             .limit(limit + 1)
             .offset(offset);
     const hasMore = rows.length > limit;
@@ -289,7 +300,7 @@ guardianProjectsRouter.openapi(
     tags: ["Guardian Projects"],
     summary: "Get one project with its Jules sessions and current circuit state",
     description:
-      "Returns the project row (+ this month's spend), every jules_sessions row that names it, and its current AI Router circuit (CIRCUITS KV, scope project:<name>) — null when no circuit is set.",
+      "Returns the project row (+ this month's spend), its most recent jules_sessions rows (capped at 100, newest first), and its current AI Router circuit (CIRCUITS KV, scope project:<name>) — null when no circuit is set.",
     request: { params: z.object({ name: z.string() }) },
     responses: {
       200: {
@@ -326,8 +337,13 @@ guardianProjectsRouter.openapi(
     if (!row) return c.json({ error: "No project with that name." }, 404);
 
     const [sessions, spend, circuit] = await Promise.all([
-      db.select().from(julesSessions).where(eq(julesSessions.project, name)).orderBy(desc(julesSessions.createdAt)),
-      monthlySpendByProject(db),
+      db
+        .select()
+        .from(julesSessions)
+        .where(eq(julesSessions.project, name))
+        .orderBy(desc(julesSessions.createdAt), asc(julesSessions.id))
+        .limit(PAGE_MAX),
+      monthlySpendByProject(db, [name]),
       getCircuit(c.env, `project:${name}`),
     ]);
 
@@ -413,7 +429,7 @@ guardianProjectsRouter.openapi(
       timestamp: Date.now(),
     });
 
-    const spend = await monthlySpendByProject(db);
+    const spend = await monthlySpendByProject(db, [name]);
     return c.json({ project: { ...updated, spendThisMonthUsd: spend.get(name) ?? 0 } }, 200);
   },
 );
