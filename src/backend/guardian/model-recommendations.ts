@@ -54,7 +54,7 @@ const MIN_TIER_SCHEMA = z.object({
 });
 
 /** One model's observed workload over the window. */
-type ObservedModel = {
+export type ObservedModel = {
   provider: string;
   model: string;
   requests: number;
@@ -210,9 +210,18 @@ export async function getRecommendations(
     days = 30,
     classifyPrompts = false,
     minSavingsUsd = 0.01,
-  }: { days?: number; classifyPrompts?: boolean; minSavingsUsd?: number } = {},
+    observed: injectedObserved,
+    catalog: injectedCatalog,
+  }: {
+    days?: number;
+    classifyPrompts?: boolean;
+    minSavingsUsd?: number;
+    observed?: ObservedModel[];
+    catalog?: CatalogModel[];
+  } = {},
 ): Promise<RecommendationReport> {
-  const [observed, catalog] = await Promise.all([observedUsage(env, days), getModelCatalog(env)]);
+  const catalog = injectedCatalog ?? (await getModelCatalog(env));
+  const observed = injectedObserved ?? (await observedUsage(env, days));
   const scale = 30 / days; // observed-window → monthly
 
   const minTiers = classifyPrompts ? await classifyMinTiers(env, observed) : new Map();
