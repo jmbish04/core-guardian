@@ -14,6 +14,7 @@ import {
 import { captureResult, storePrompt } from "@/backend/guardian/ai-router/capture";
 import { forward } from "@/backend/guardian/ai-router/router";
 import { forwardStream } from "@/backend/guardian/ai-router/router-stream";
+import { resolveModel, type ResolveResult } from "@/backend/guardian/ai-router/resolve-model";
 import { canPrice, priceSplit } from "@/backend/guardian/ai-router/pricing";
 import { usageByProject, usageByModelForProject } from "@/backend/guardian/ai-router-usage";
 import { getSecretStoreBinding } from "@/backend/utils/secrets";
@@ -21,14 +22,20 @@ import type { RouterRequest } from "@/backend/guardian/ai-router/types";
 
 export const aiRouterRouter = new OpenAPIHono<{ Bindings: Env }>();
 
-const KNOWN = new Set(["project","importance","mode","provider","model","aiGatewayId","transport","stream","providerApiKey","input"]);
+const KNOWN = new Set(["project","importance","mode","provider","model","aiGatewayId","transport","stream","providerApiKey","input","budgetUsd","capabilities"]);
 
 const runBody = z.object({
   project: z.string().min(1),
   importance: z.enum(["low", "medium", "high"]),
   mode: z.enum(["gateway","gateway-custom","provider-sdk-gateway","openai-compat","native","gemini-native"]).default("gateway"),
   provider: z.string().min(1),
-  model: z.string().min(1),
+  // P12: model is OPTIONAL. Absent (or a sentinel "auto"/"best"/"budget"/
+  // "cheapest") ⇒ the resolver picks one; a concrete model still passes through
+  // unchanged unless a model_substitutions rule retargets it.
+  model: z.string().min(1).optional(),
+  // Optional hints for dynamic selection (ignored on the passthrough path).
+  budgetUsd: z.number().positive().optional(),
+  capabilities: z.array(z.string()).optional(),
   aiGatewayId: z.string().optional(),
   transport: z.enum(["ai-sdk","provider-sdk","openai-compat","gemini-sdk"]).optional(),
   stream: z.boolean().default(false),
@@ -71,6 +78,7 @@ aiRouterRouter.openapi(
   }),
   async (c) => {
     const raw = c.req.valid("json");
+    const requestedModelRaw = raw.model; // pre-resolution, for the audit trail
     // Reject ':' in scope-forming fields so circuit KV scope keys can't collide
     // (e.g. project "a:b" vs scope prefixes like "project:"/"model:").
     for (const f of ["project", "provider", "model"] as const) {
@@ -85,6 +93,35 @@ aiRouterRouter.openapi(
     // Normalize the Gemini alias so provider is canonical everywhere downstream
     // (providers.ts / extractUsage key on "google").
     if (raw.provider === "gemini") raw.provider = "google";
+
+    // P12 smart proxy: resolve the model to dispatch BEFORE any model-dependent
+    // guard, so stream/bypass/pricing all run against what actually dispatches.
+    //   - concrete model + no rule → unchanged (reason "passthrough"): a caller
+    //     that named a model with no substitution gets IDENTICAL behavior to pre-P12.
+    //   - concrete model + enabled rule → the rule's to_model ("substitution").
+    //   - absent/sentinel model → best catalog pick ("dynamic").
+    // Only the dynamic path (opt-in) can fail (empty catalog) → 400.
+    let resolution: ResolveResult;
+    try {
+      resolution = await resolveModel(c.env, {
+        project: raw.project,
+        requestedModel: raw.model,
+        importance: raw.importance,
+        budgetUsd: raw.budgetUsd,
+        capabilities: raw.capabilities,
+      });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+    raw.model = resolution.model;
+    if (resolution.provider) raw.provider = resolution.provider;
+    // Re-apply the ':' guard to the RESOLVED model/provider — a catalog- or
+    // rule-sourced value must satisfy the same scope-key invariant as caller input.
+    for (const f of ["provider", "model"] as const) {
+      if (String(raw[f] ?? "").includes(":")) {
+        return c.json({ error: `resolved "${f}" must not contain ':'` }, 400);
+      }
+    }
 
     // C1: streaming supports only provider "openai" in v1 — reject BEFORE
     // storePrompt so a rejected request never orphans a stored prompt.
@@ -101,6 +138,10 @@ aiRouterRouter.openapi(
 
     const extra: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(raw)) if (!KNOWN.has(k)) extra[k] = v;
+    // Audit the resolution so a substituted/dynamic dispatch is traceable in the
+    // stored request row (payloadJson). Passthrough is recorded too for symmetry.
+    extra.__resolution = resolution.reason;
+    if (resolution.reason !== "passthrough") extra.__requestedModel = requestedModelRaw ?? null;
     const req: RouterRequest = { ...raw, extra } as RouterRequest;
     const now = Date.now();
     const requestUuid = crypto.randomUUID();
