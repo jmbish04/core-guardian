@@ -1,6 +1,7 @@
-import { HomeIcon } from "lucide-react";
+import { HomeIcon, SettingsIcon } from "lucide-react";
 import * as React from "react";
 
+import { AlertsBell } from "@/components/AlertsBell";
 import { MainNav } from "@/components/MainNav";
 import { MobileNav } from "@/components/MobileNav";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -29,7 +30,15 @@ export function Header() {
           <MainNav className="hidden lg:flex" />
 
           <div className="ml-auto flex items-center gap-2 md:flex-1 md:justify-end">
-            {/* AI AGENT: Add your custom header actions here */}
+            <AlertsBell />
+
+            <a
+              href="/settings"
+              aria-label="Settings"
+              className={cn(buttonVariants({ variant: "ghost", size: "icon" }), "size-8")}
+            >
+              <SettingsIcon className="size-5" />
+            </a>
 
             <Separator orientation="vertical" className="my-auto" />
             <ThemeToggle />

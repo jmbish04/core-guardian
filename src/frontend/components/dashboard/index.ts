@@ -19,6 +19,7 @@ export { CostTraceIsland } from "./CostTraceIsland";
 export { IncidentsPanel } from "./IncidentsPanel";
 export { RiskTargetsPanel } from "./RiskTargetsPanel";
 export { SpendOverview } from "./SpendOverview";
+export { SpendByProject } from "./SpendByProject";
 export { DailyCost } from "./DailyCost";
 export { BillableUsage } from "./BillableUsage";
 export { ModelAdvisor } from "./ModelAdvisor";
