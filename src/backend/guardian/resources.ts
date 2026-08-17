@@ -182,7 +182,7 @@ export async function getBindingIndex(env: Env, refresh = false): Promise<Bindin
     if (cached) return cached as BindingIndex;
   }
 
-  const { ids: scriptIds } = await listWorkerScriptIds(env);
+  const { ids: scriptIds, complete } = await listWorkerScriptIds(env);
   const byResource: BindingIndex["byResource"] = {};
 
   await mapLimit(scriptIds, FANOUT, async (scriptId) => {
@@ -206,9 +206,14 @@ export async function getBindingIndex(env: Env, refresh = false): Promise<Bindin
     workerCount: scriptIds.length,
     builtAt: Date.now(),
   };
-  await env.SESSIONS.put(BINDINGS_CACHE_KEY, JSON.stringify(index), {
-    expirationTtl: BINDINGS_CACHE_TTL_SECONDS,
-  });
+  // Only cache a COMPLETE index. A partial worker list (a page errored) would
+  // otherwise poison attribution for the whole TTL; return it for this call but
+  // let the next call retry fresh.
+  if (complete) {
+    await env.SESSIONS.put(BINDINGS_CACHE_KEY, JSON.stringify(index), {
+      expirationTtl: BINDINGS_CACHE_TTL_SECONDS,
+    });
+  }
   return index;
 }
 

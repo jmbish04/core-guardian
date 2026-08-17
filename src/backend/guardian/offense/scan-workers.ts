@@ -185,10 +185,23 @@ async function scanOne(
  */
 export async function scanWorkers(env: Env): Promise<ScanSummary> {
   const db = getDb(env);
-  const [{ ids: scriptIds }, registered] = await Promise.all([
+  const [{ ids: scriptIds, complete }, registered] = await Promise.all([
     listWorkerScriptIds(env),
     loadRegisteredNames(db),
   ]);
+  if (!complete) {
+    // Partial worker list (a page errored). The scan is non-destructive (no
+    // deactivation sweep), so proceed with what we have — but never let a
+    // truncated list read as a full-account scan.
+    console.warn(
+      JSON.stringify({
+        level: "WARN",
+        source: "guardian.offense.scanWorkers",
+        msg: "worker list incomplete — scanning a partial account this run",
+        scriptIds: scriptIds.length,
+      }),
+    );
+  }
 
   const scanned = await mapLimit(scriptIds, FANOUT, async (scriptId) => {
     try {

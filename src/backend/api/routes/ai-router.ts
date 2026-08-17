@@ -118,7 +118,7 @@ aiRouterRouter.openapi(
     // shape is skipped, not rejected. Off the hot path via waitUntil.
     if (typeof raw.repo === "string" && REPO_RE.test(raw.repo)) {
       const repo = raw.repo;
-      const project = String(raw.project);
+      const project = raw.project;
       c.executionCtx.waitUntil(
         getDb(c.env)
           .insert(guardianProjects)
