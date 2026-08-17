@@ -74,6 +74,8 @@ export type RollupPayload = {
   estimateUsd: number;
   /** Billed − estimate (signed). >0 = billed above our reconstruction → worth a look. */
   disputeUsd: number;
+  /** "Since your last review" — attached by the read route, not the builder. */
+  reviewDelta?: { deltaUsd: number; sinceAt: number | null };
   projects: { name: string; kind: string; totalUsd: number; byCategory: Record<string, number> }[];
   pools: { name: string; totalUsd: number }[];
 };
@@ -349,6 +351,30 @@ export async function buildSpendRollup(env: Env): Promise<RollupPayload> {
   }
 
   return payload;
+}
+
+/**
+ * "Since your last review" delta. A single KV checkpoint {at, total}; the delta
+ * is `currentActual − checkpoint.total`, so it accumulates between reviews and
+ * stays stable across polls. The checkpoint bootstraps on first read and resets
+ * only when `reset` is set (the Refresh button = "I've reviewed this"). Single
+ * key — this is a personal one-account tool.
+ *
+ * @returns `{ deltaUsd, sinceAt }` — sinceAt is null until a baseline exists.
+ */
+export async function reviewDelta(
+  env: Env,
+  currentActualUsd: number,
+  reset = false,
+): Promise<{ deltaUsd: number; sinceAt: number | null }> {
+  const KEY = "guardian:last-review";
+  const prev = (await env.SESSIONS.get(KEY, "json")) as { at: number; total: number } | null;
+  const deltaUsd = prev ? currentActualUsd - prev.total : 0;
+  const sinceAt = prev?.at ?? null;
+  if (!prev || reset) {
+    await env.SESSIONS.put(KEY, JSON.stringify({ at: Date.now(), total: currentActualUsd }));
+  }
+  return { deltaUsd, sinceAt };
 }
 
 /** Read the latest cached rollup, or null when none built yet. */
