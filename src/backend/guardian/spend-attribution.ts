@@ -33,9 +33,13 @@ import { getBindingIndex, type BindingIndex } from "./resources";
 export const SPEND_CATEGORIES = ["compute", "r2", "d1", "vectorize", "ai"] as const;
 export type SpendCategory = (typeof SPEND_CATEGORIES)[number];
 
-/** Pooled pseudo-owners for spend that cannot be honestly assigned to one project. */
-export const SHARED = "__shared__";
-export const UNATTRIBUTED = "__unattributed__";
+/**
+ * Pooled pseudo-owners for spend that cannot be honestly assigned to one project.
+ * The leading `*` is invalid in a Cloudflare Worker script name, so these can
+ * never collide with a real project row in the accumulator.
+ */
+export const SHARED = "*shared";
+export const UNATTRIBUTED = "*unattributed";
 
 /** Probe id → the category it rolls into + how its breakdown label becomes a binding key. */
 const RESOURCE_PROBES: Record<string, { category: SpendCategory; key: (label: string) => string }> = {
@@ -183,7 +187,14 @@ export async function attributeSpendByProject(
     }
   }
 
+  // calculateOperations maps `operations` 1:1 in input order (no drop/reorder),
+  // so priced.lines[i] corresponds to tags[i]. Guard the invariant explicitly.
   const priced = ops.length ? await calculateOperations(env, ops) : { lines: [], totalUsd: 0 };
+  if (priced.lines.length !== ops.length) {
+    throw new Error(
+      `attribution pricing length mismatch: ${priced.lines.length} priced vs ${ops.length} ops`,
+    );
+  }
   const lines: PricedLine[] = priced.lines.map((l, i) => ({ ...tags[i], usd: l.costUsd ?? 0 }) as PricedLine);
 
   for (const a of aiRows) {

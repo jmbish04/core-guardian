@@ -49,7 +49,14 @@ function toneFor(frac: number | null): { bar: string; text: string } {
 }
 
 function fmtDate(ms: number): string {
-  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  // The period boundary is a UTC instant (start-of-month). Render it in UTC so a
+  // western-timezone user doesn't see the reset date shifted a day early.
+  return new Date(ms).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
 }
 
 export function BillingSettings() {

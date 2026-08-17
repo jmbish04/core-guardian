@@ -51,13 +51,13 @@ export function AlertsBell() {
 
   useEffect(() => {
     let live = true;
-    apiGet<Payload>("/guardian/alerts?status=all")
+    // Ask the server for active only — never pull the full alert history over the
+    // wire to filter client-side (it grows unbounded). The endpoint already
+    // returns these severity-first.
+    apiGet<Payload>("/guardian/alerts?status=active")
       .then((p) => {
         if (!live) return;
-        const active = p.alerts
-          .filter((a) => a.status === "active")
-          .sort((a, b) => SEV[b.severity].rank - SEV[a.severity].rank || b.updatedAt - a.updatedAt);
-        setAlerts(active);
+        setAlerts(p.alerts);
       })
       .catch((err) => {
         if (!live) return;
