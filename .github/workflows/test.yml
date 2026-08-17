@@ -1,0 +1,38 @@
+name: Client SDK Tests
+
+# Runs the vendorable-client self-checks (TS + integration builder + template
+# vendor script + GAS version-sync + Python) on every push to main and every PR.
+# The suite is dependency-free — npx fetches tsx, node --test and python3 are
+# built in — so no pnpm install step is needed.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run client SDK tests
+        run: pnpm test
