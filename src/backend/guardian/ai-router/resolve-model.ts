@@ -49,7 +49,11 @@ export type ResolveArgs = {
   capabilities?: string[];
 };
 
-export type ResolveReason = "substitution" | "dynamic" | "passthrough";
+export type ResolveReason =
+  | "substitution"
+  | "substitution_skipped_no_provider"
+  | "dynamic"
+  | "passthrough";
 
 export type ResolveResult = {
   /** The model to dispatch. */
@@ -122,12 +126,15 @@ export function pickDynamic(
   })[0];
 }
 
-/** Provider for a catalog model id (best-effort match), else null. */
+/**
+ * Provider for a catalog model id — EXACT id/name match only. No substring
+ * fallback: a loose match could route e.g. "llama-3" to whichever provider
+ * happens to sort first, silently crossing providers. No exact hit → null,
+ * which (per the substitution branch) means "don't swap".
+ */
 function providerFor(catalog: CatalogModel[], modelId: string): string | null {
   const norm = modelId.toLowerCase();
-  const hit =
-    catalog.find((c) => c.id.toLowerCase() === norm || c.name.toLowerCase() === norm) ??
-    catalog.find((c) => c.id.toLowerCase().includes(norm));
+  const hit = catalog.find((c) => c.id.toLowerCase() === norm || c.name.toLowerCase() === norm);
   return hit?.provider ?? null;
 }
 
@@ -146,24 +153,49 @@ export async function resolveModel(env: Env, args: ResolveArgs): Promise<Resolve
   // project. This is the only place a named model gets redirected.
   if (concrete) {
     const requested = args.requestedModel!.trim();
-    const rule = await getDb(env)
-      .select({ toModel: modelSubstitutions.toModel })
-      .from(modelSubstitutions)
-      .where(
-        and(
-          eq(modelSubstitutions.project, args.project),
-          eq(modelSubstitutions.fromModel, requested),
-          eq(modelSubstitutions.enabled, true),
-        ),
-      )
-      .limit(1);
+    const passthrough: ResolveResult = { model: requested, provider: null, reason: "passthrough" };
+
+    // The rule lookup MUST NOT be able to break a passthrough request: if D1
+    // throws, treat it as "no matching rule" and dispatch the requested model
+    // unchanged. A named-model request never fails because of this table.
+    let rule: { toModel: string }[];
+    try {
+      rule = await getDb(env)
+        .select({ toModel: modelSubstitutions.toModel })
+        .from(modelSubstitutions)
+        .where(
+          and(
+            eq(modelSubstitutions.project, args.project),
+            eq(modelSubstitutions.fromModel, requested),
+            eq(modelSubstitutions.enabled, true),
+          ),
+        )
+        .limit(1);
+    } catch (err) {
+      console.warn(
+        JSON.stringify({ level: "WARN", source: "resolveModel.ruleLookup", project: args.project, error: String(err) }),
+      );
+      return passthrough; // degrade to passthrough, never throw
+    }
+
     if (rule.length > 0) {
       const toModel = rule[0].toModel;
       const catalog = await getModelCatalog(env).catch(() => [] as CatalogModel[]);
-      return { model: toModel, provider: providerFor(catalog, toModel), reason: "substitution" };
+      const provider = providerFor(catalog, toModel);
+      // A substitution stores only the target model. If we can't resolve its
+      // provider from the catalog, swapping would dispatch the new model under
+      // the CALLER's provider (e.g. openai + claude-3) → a guaranteed misfire.
+      // Refuse the swap and pass the original through instead.
+      if (!provider) {
+        console.warn(
+          JSON.stringify({ level: "WARN", source: "resolveModel.substitution", project: args.project, from: requested, to: toModel, reason: "no catalog provider for target" }),
+        );
+        return { model: requested, provider: null, reason: "substitution_skipped_no_provider" };
+      }
+      return { model: toModel, provider, reason: "substitution" };
     }
     // (c) Concrete model, no rule → IDENTICAL to today. Caller keeps its provider.
-    return { model: requested, provider: null, reason: "passthrough" };
+    return passthrough;
   }
 
   // (b) Dynamic — caller omitted the model or passed a sentinel.
@@ -244,8 +276,10 @@ if (import.meta.main) {
     "budget below every rate → null",
   );
 
-  // providerFor resolves via id, else null.
-  assert(providerFor(catalog, "mid-y") === "openai", "provider by id");
+  // providerFor: EXACT id/name match only — no substring fallback (would cross
+  // providers). "mid" is a substring of "mid-y" but must NOT match.
+  assert(providerFor(catalog, "mid-y") === "openai", "provider by exact id");
+  assert(providerFor(catalog, "mid") === null, "substring must NOT match (exact only)");
   assert(providerFor(catalog, "not-in-catalog") === null, "unknown model → null provider");
 
   // blendedRate: balanced blend, null when unpriced.

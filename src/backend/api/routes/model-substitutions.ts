@@ -14,6 +14,7 @@ import { desc, eq } from "drizzle-orm";
 
 import { getDb } from "@/backend/db";
 import { billingEvents, modelSubstitutions } from "@/backend/db/schema";
+import { DYNAMIC_SENTINELS } from "@/backend/guardian/ai-router/resolve-model";
 
 import { guardianAuth } from "./guardian";
 
@@ -73,9 +74,23 @@ modelSubstitutionsRouter.openapi(createRoute({
     400: { description: "Invalid field (':' in project/model)", content: { "application/json": { schema: errorSchema } } },
   },
 }), async (c) => {
-  const { project, fromModel, toModel, note } = c.req.valid("json");
+  const body = c.req.valid("json");
+  // Trim so a rule can't substitute to/from whitespace-only, then re-check min
+  // length AFTER trim (zod's min(1) passes "   ").
+  const project = body.project.trim();
+  const fromModel = body.fromModel.trim();
+  const toModel = body.toModel.trim();
+  const note = body.note;
+  if (!project || !fromModel || !toModel) {
+    return c.json({ error: "project/fromModel/toModel must be non-empty (after trimming)." }, 400);
+  }
   const colon = badColon(project, fromModel, toModel);
   if (colon) return c.json({ error: colon }, 400);
+  // A rule keyed on a dynamic sentinel never fires — the resolver treats those
+  // as "you pick", never as a concrete from_model. Reject so it can't be saved.
+  if (DYNAMIC_SENTINELS.has(fromModel.toLowerCase())) {
+    return c.json({ error: `fromModel "${fromModel}" is a dynamic sentinel; a substitution keyed on it would never fire.` }, 400);
+  }
 
   const db = getDb(c.env);
   const row = {

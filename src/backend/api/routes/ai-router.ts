@@ -14,7 +14,7 @@ import {
 import { captureResult, storePrompt } from "@/backend/guardian/ai-router/capture";
 import { forward } from "@/backend/guardian/ai-router/router";
 import { forwardStream } from "@/backend/guardian/ai-router/router-stream";
-import { resolveModel, type ResolveResult } from "@/backend/guardian/ai-router/resolve-model";
+import { isConcreteModel, resolveModel, type ResolveResult } from "@/backend/guardian/ai-router/resolve-model";
 import { canPrice, priceSplit } from "@/backend/guardian/ai-router/pricing";
 import { usageByProject, usageByModelForProject } from "@/backend/guardian/ai-router-usage";
 import { getSecretStoreBinding } from "@/backend/utils/secrets";
@@ -111,9 +111,23 @@ aiRouterRouter.openapi(
         capabilities: raw.capabilities,
       });
     } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      // Resolution only throws on the DYNAMIC path (no concrete model to fall
+      // back to) — that request genuinely can't proceed, so 400. But a request
+      // that named a CONCRETE model must NEVER 400 here: fall back to
+      // dispatching exactly what was asked for (passthrough) so a resolver/D1
+      // hiccup can't break a previously-working call.
+      if (isConcreteModel(raw.model)) {
+        console.warn(
+          JSON.stringify({ level: "WARN", source: "aiRouter.resolveModel", project: raw.project, model: raw.model, error: String(err) }),
+        );
+        resolution = { model: raw.model!.trim(), provider: null, reason: "passthrough" };
+      } else {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
     }
     raw.model = resolution.model;
+    // Only substitution/dynamic set a provider; passthrough leaves the caller's
+    // provider byte-identical (resolution.provider is null there).
     if (resolution.provider) raw.provider = resolution.provider;
     // Re-apply the ':' guard to the RESOLVED model/provider — a catalog- or
     // rule-sourced value must satisfy the same scope-key invariant as caller input.
@@ -137,7 +151,9 @@ aiRouterRouter.openapi(
     }
 
     const extra: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(raw)) if (!KNOWN.has(k)) extra[k] = v;
+    // Exclude the `__`-prefixed namespace: it is reserved for internal audit
+    // keys set below, so a client can't forge e.g. `__requestedModel`.
+    for (const [k, v] of Object.entries(raw)) if (!KNOWN.has(k) && !k.startsWith("__")) extra[k] = v;
     // Audit the resolution so a substituted/dynamic dispatch is traceable in the
     // stored request row (payloadJson). Passthrough is recorded too for symmetry.
     extra.__resolution = resolution.reason;
