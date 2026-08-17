@@ -3,7 +3,7 @@ name: Client SDK Tests
 # Runs the vendorable-client self-checks (TS + integration builder + template
 # vendor script + GAS version-sync + Python) on every push to main and every PR.
 # The suite is dependency-free — npx fetches tsx, node --test and python3 are
-# built in — so no pnpm install step is needed.
+# built in — so no `pnpm install` step is needed; pnpm just runs the test script.
 
 on:
   push:
@@ -26,8 +26,13 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Enable Corepack
-        run: corepack enable
+      # Enable + activate the pinned pnpm so it lands on PATH. `enable` alone
+      # only installs the shim; `prepare --activate` is what makes bare `pnpm`
+      # resolve (same pattern as fix-lockfile.yml).
+      - name: Enable Corepack and activate pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.2 --activate
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -35,4 +40,4 @@ jobs:
           python-version: "3.11"
 
       - name: Run client SDK tests
-        run: corepack pnpm test
+        run: pnpm test
