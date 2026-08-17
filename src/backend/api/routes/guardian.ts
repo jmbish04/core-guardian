@@ -1435,8 +1435,8 @@ guardianRouter.openapi(
         ? await buildSpendRollup(c.env)
         : // Read cache; build once if empty (fresh deploy, before the first cron).
           ((await latestSpendRollup(c.env)) ?? (await buildSpendRollup(c.env)));
-    // Attach the "since last review" delta (read-only — no baseline reset here).
-    rollup.reviewDelta = await reviewDelta(c.env, rollup.totalActualUsd);
+    // Attach the "since last review" delta (read-only — window-keyed baseline).
+    rollup.reviewDelta = await reviewDelta(c.env, rollup.totalActualUsd, rollup.window.start);
     return c.json(rollup, 200);
   },
 );
@@ -1445,19 +1445,17 @@ guardianRouter.openapi(
 // POST /api/guardian/spend-rollup/rebuild  — on-demand refresh
 // ---------------------------------------------------------------------------
 
-const REBUILD_LOCK_KEY = "guardian:spend-rebuild-lock";
-
 guardianRouter.openapi(
   createRoute({
     method: "post",
     path: "/spend-rollup/rebuild",
     operationId: "guardianSpendRollupRebuild",
-    summary: "On-demand spend refresh: pull the latest bill, rebuild the rollup, reset the delta",
+    summary: "On-demand spend refresh: re-reconcile from current data + reset the review delta",
     description:
-      "Manual refresh — pulls the freshest Cloudflare Billable Usage actual, rebuilds the reconciled rollup, and RESETS the 'since last review' baseline (clicking refresh means 'I've reviewed'). Coalesced by a 90s KV lock so concurrent clicks don't stampede the billing API; a click while a rebuild is in flight returns the current cache with `inProgress`. NO AI.",
+      "Manual refresh — rebuilds the reconciled rollup from the freshest data on hand (billed actual is synced daily by the cron; this re-runs the allocation so new AI/infra usage lands) and RESETS the 'since last review' baseline. A cheap, idempotent D1 + arithmetic rebuild — no lock needed (concurrent clicks just re-run the same cheap build). NO AI.",
     responses: {
       200: {
-        description: "The freshly rebuilt rollup (or the current cache when a rebuild is already running)",
+        description: "The freshly rebuilt rollup",
         content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
       },
       401: {
@@ -1467,24 +1465,10 @@ guardianRouter.openapi(
     },
   }),
   async (c) => {
-    // Coalesce: a rebuild already in flight → return the current cache, flagged.
-    const locked = await c.env.SESSIONS.get(REBUILD_LOCK_KEY);
-    if (locked) {
-      const current = (await latestSpendRollup(c.env)) ?? (await buildSpendRollup(c.env));
-      current.reviewDelta = await reviewDelta(c.env, current.totalActualUsd);
-      return c.json({ ...current, inProgress: true }, 200);
-    }
-    await c.env.SESSIONS.put(REBUILD_LOCK_KEY, String(Date.now()), { expirationTtl: 90 });
-    try {
-      // Force the freshest actual, then reconcile.
-      await syncBillableUsage(c.env, 35).catch(() => 0);
-      const fresh = await buildSpendRollup(c.env);
-      // Refresh = "I've reviewed" → reset the delta baseline to now.
-      fresh.reviewDelta = await reviewDelta(c.env, fresh.totalActualUsd, true);
-      return c.json(fresh, 200);
-    } finally {
-      await c.env.SESSIONS.delete(REBUILD_LOCK_KEY);
-    }
+    const fresh = await buildSpendRollup(c.env);
+    // Refresh = "I've reviewed" → reset the delta baseline (clean zero).
+    fresh.reviewDelta = await reviewDelta(c.env, fresh.totalActualUsd, fresh.window.start, true);
+    return c.json(fresh, 200);
   },
 );
 

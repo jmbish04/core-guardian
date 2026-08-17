@@ -88,7 +88,7 @@ function Lane({
 }
 
 export function SpendLanes() {
-  const { data, loading, error, reload } = useResource<Rollup>(() =>
+  const { data, loading, error, reload, setData } = useResource<Rollup>(() =>
     apiGet<Rollup>("/guardian/spend-rollup"),
   );
   const [refreshing, setRefreshing] = useState(false);
@@ -96,12 +96,13 @@ export function SpendLanes() {
   const refresh = async () => {
     setRefreshing(true);
     try {
-      // Pull the freshest bill + rebuild off the cache; resets the review baseline.
-      await apiSend("POST", "guardian/spend-rollup/rebuild");
+      // Use the POST response directly — re-GETting could read a stale KV-edge
+      // baseline for up to ~60s and make the reset look like it didn't take.
+      const fresh = await apiSend<Rollup>("POST", "guardian/spend-rollup/rebuild");
+      setData(fresh);
     } catch {
-      // reload() below surfaces any error through the normal resource path.
+      reload(); // surface the error through the normal resource path
     } finally {
-      reload();
       setRefreshing(false);
     }
   };
