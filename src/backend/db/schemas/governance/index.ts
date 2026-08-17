@@ -1,6 +1,7 @@
 export * from "./action-items";
 export * from "./ai-gateway-costs";
 export * from "./ai-model-pricing";
+export * from "./ai-router-recommendations";
 export * from "./ai-router-requests";
 export * from "./ai-usage-registrations";
 export * from "./alert-rules";
