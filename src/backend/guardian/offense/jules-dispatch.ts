@@ -81,11 +81,18 @@ export interface RecordFindingsResult {
  *   Optional: {@link dispatchToJules} needs the nonce *before* it can create the
  *   session, so it inserts with `""` and UPDATEs the real id after POST /sessions.
  * @param args.targetId - The scan_targets row being audited, if known.
+ * @param args.taskType - What Jules is being asked to do. Defaults to
+ *   `"spend_audit"` (the original P4 behavior); P3 right-sizing dispatches pass
+ *   `"right_sizing"` explicitly.
  * @returns the new dispatch `id` and its `nonce`.
  */
 export async function createJulesDispatch(
   env: Env,
-  args: { julesSessionId?: string | null; targetId?: string | null },
+  args: {
+    julesSessionId?: string | null;
+    targetId?: string | null;
+    taskType?: "spend_audit" | "right_sizing";
+  },
 ): Promise<{ id: string; nonce: string }> {
   const db = getDb(env);
   const id = crypto.randomUUID();
@@ -95,7 +102,7 @@ export async function createJulesDispatch(
     nonce,
     julesSessionId: args.julesSessionId ?? "",
     targetId: args.targetId ?? null,
-    taskType: "spend_audit",
+    taskType: args.taskType ?? "spend_audit",
     status: "pending",
     dispatchedAt: Date.now(),
   });
@@ -170,6 +177,45 @@ where <json> is:
   "nonce": "${nonce}"
 }
 Fill cron_audit_findings, ai_audit_findings, and actions_taken with your findings. For circuit_breaker_recommendation: ONLY if you determine this project's AI access must be disabled to stop runaway spend, include the EXACT token "DISABLE_AI_ACCESS" as an element of the array (you may add human-readable strings alongside it). If disabling is not warranted, leave circuit_breaker_recommendation empty — do not include the token in any negative or explanatory sentence. If you find no violations, still report once with empty finding arrays.
+
+SECURITY: the nonce above is a one-time secret that authenticates this report. Do NOT reference, print, log, or include the findings API URL or the nonce anywhere in the pull request, commit messages, code comments, or PR description. Use them only in the single curl call above.`;
+}
+
+/**
+ * The self-contained right-sizing brief handed to Jules (AI Router P3). Mirrors
+ * {@link buildAuditPrompt}'s structure — same nonce-carrying findings callback,
+ * same leak warning — but instructs Jules to switch a project's model down
+ * rather than audit for spend-bypass violations.
+ */
+function buildRightSizingPrompt(args: {
+  owner: string;
+  repo: string;
+  findingsUrl: string;
+  nonce: string;
+  project: string;
+  currentModel: string;
+  suggestedModel: string;
+  rationale: string;
+}): string {
+  const { owner, repo, findingsUrl, nonce, project, currentModel, suggestedModel, rationale } = args;
+  return `You are right-sizing an AI model for the "${project}" project in the GitHub repository ${owner}/${repo} on behalf of core-guardian, an automated Cloudflare spend watchdog.
+
+RATIONALE: ${rationale}
+
+TASK: audit "${project}"'s AI calls in this repo. Where the workload allows it, switch the model from "${currentModel}" to "${suggestedModel}". Only make the switch where it is safe — do not degrade a workload that genuinely needs "${currentModel}"'s capability. Open a pull request with your changes. Do not merge the PR.
+
+REPORT: after opening the PR (or determining no switch is safe), call the findings API EXACTLY ONCE with curl:
+  curl -X POST '${findingsUrl}' \\
+    -H 'Content-Type: application/json' \\
+    -d '<json>'
+where <json> is:
+{
+  "suggested_model": "<the model you actually switched to, or \\"${currentModel}\\" if you made no change>",
+  "savings_usd": <optional estimated monthly USD savings as a number, or omit>,
+  "pr_url": "<the PR URL you opened, or omit if you made no change>",
+  "project": "${project}",
+  "nonce": "${nonce}"
+}
 
 SECURITY: the nonce above is a one-time secret that authenticates this report. Do NOT reference, print, log, or include the findings API URL or the nonce anywhere in the pull request, commit messages, code comments, or PR description. Use them only in the single curl call above.`;
 }
@@ -306,6 +352,151 @@ export async function dispatchToJules(env: Env, target: ScanTargetRow): Promise<
           dispatchId,
           project: target.workerName ?? null,
           repo: `${owner}/${repo}`,
+          status: "pending",
+          sessionUrl: `https://jules.google.com/session/${sessionId}`,
+        });
+    } catch (err) {
+      console.error(
+        JSON.stringify({ level: "ERROR", source: "guardian.offense.jules.session", error: String(err) }),
+      );
+    }
+
+    return { ok: true, dispatchId, julesSessionId: sessionId };
+  } catch (err) {
+    await markDispatchFailed(env, dispatchId).catch(() => {});
+    return {
+      ok: false,
+      dispatchId,
+      julesSessionId: null,
+      error: `Jules dispatch error: ${String(err)}`,
+    };
+  }
+}
+
+/**
+ * Dispatch a Jules right-sizing session for a named project (AI Router P3).
+ * Reuses the same capability-token + Jules-session infra as {@link dispatchToJules}
+ * (createJulesDispatch, the Jules POST /sessions call, the jules_sessions insert),
+ * but takes `repo`/`project` directly instead of a {@link ScanTargetRow} — the
+ * caller already knows which project and model swap it wants audited.
+ *
+ * @param env - Worker env (D1, JULES_API_KEY Secrets Store binding, WORKER_BASE_URL).
+ * @param args.repo - `owner/repo` GitHub full name to dispatch Jules against.
+ * @param args.project - The core-guardian project name whose spend is being
+ *   right-sized (keys the eventual findings report).
+ * @param args.currentModel - The model currently in use.
+ * @param args.suggestedModel - The model right-sizing suggests switching to.
+ * @param args.rationale - Why the switch is suggested (embedded in the prompt).
+ */
+export async function dispatchRightSizing(
+  env: Env,
+  args: {
+    repo: string;
+    project: string;
+    currentModel: string;
+    suggestedModel: string;
+    rationale: string;
+  },
+): Promise<DispatchResult> {
+  const { repo, project, currentModel, suggestedModel, rationale } = args;
+
+  const parsed = parseOwnerRepo(repo);
+  if (!parsed) {
+    return {
+      ok: false,
+      dispatchId: null,
+      julesSessionId: null,
+      error: `Cannot resolve a GitHub owner/repo from "${repo}". Expected "owner/repo".`,
+    };
+  }
+  const { owner, repo: repoName } = parsed;
+
+  // Secret Store bindings are async .get(); local-dev plain-var fallback.
+  const apiKey =
+    (await getSecretStoreBinding(env, "JULES_API_KEY")) ?? getSecret(env, "JULES_API_KEY");
+  if (!apiKey) {
+    return {
+      ok: false,
+      dispatchId: null,
+      julesSessionId: null,
+      error: "JULES_API_KEY is not configured (no Secrets Store binding, no local var).",
+    };
+  }
+
+  // Mint the nonce + pending row first — the prompt needs the nonce, the row's
+  // session id is backfilled after the API responds.
+  const { id: dispatchId, nonce } = await createJulesDispatch(env, {
+    julesSessionId: "",
+    taskType: "right_sizing",
+  });
+
+  try {
+    const prompt = buildRightSizingPrompt({
+      owner,
+      repo: repoName,
+      findingsUrl: `${env.WORKER_BASE_URL}/api/offense/right-size-findings`,
+      nonce,
+      project,
+      currentModel,
+      suggestedModel,
+      rationale,
+    });
+    const res = await fetch(`${JULES_BASE}/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Goog-Api-Key": apiKey },
+      body: JSON.stringify({
+        prompt,
+        sourceContext: {
+          // ponytail: assume the default branch is `main`, same as dispatchToJules.
+          source: `sources/github/${owner}/${repoName}`,
+          githubRepoContext: { startingBranch: "main" },
+        },
+        // Auto-approve the plan (unattended) and open a PR — but never auto-merge.
+        automationMode: "AUTO_CREATE_PR",
+        title: `core-guardian right-sizing — ${project} (${owner}/${repoName})`,
+      }),
+    });
+
+    if (!res.ok) {
+      const detail = (await res.text().catch(() => "")).slice(0, 500);
+      await markDispatchFailed(env, dispatchId);
+      return {
+        ok: false,
+        dispatchId,
+        julesSessionId: null,
+        error: `Jules session create failed (${res.status}): ${detail || res.statusText}`,
+      };
+    }
+
+    const json = (await res.json().catch(() => null)) as { id?: string; name?: string } | null;
+    // Response is `{ name: "sessions/<id>", id: "<id>", ... }`.
+    const sessionId = json?.id ?? json?.name?.split("/").pop() ?? "";
+    if (!sessionId) {
+      await markDispatchFailed(env, dispatchId);
+      return {
+        ok: false,
+        dispatchId,
+        julesSessionId: null,
+        error: "Jules session create returned no session id.",
+      };
+    }
+
+    await getDb(env)
+      .update(julesDispatches)
+      .set({ julesSessionId: sessionId })
+      .where(eq(julesDispatches.id, dispatchId));
+
+    // Best-effort — a session-row failure must not fail the dispatch (the
+    // dispatch/nonce is the load-bearing part). Mirrors dispatchToJules.
+    try {
+      await getDb(env)
+        .insert(julesSessions)
+        .values({
+          id: crypto.randomUUID(),
+          sessionId,
+          dispatchId,
+          project,
+          repo: `${owner}/${repoName}`,
           status: "pending",
           sessionUrl: `https://jules.google.com/session/${sessionId}`,
         });
@@ -543,6 +734,21 @@ if (import.meta.main) {
   });
   assert(prompt.includes("NONCE-123"), "prompt carries the nonce");
   assert(/Do NOT reference/i.test(prompt), "prompt forbids leaking the URL/nonce in the PR");
+
+  // right-sizing prompt: same nonce/leak contract, plus the model-switch instruction
+  const rsPrompt = buildRightSizingPrompt({
+    owner: "o",
+    repo: "r",
+    findingsUrl: "https://x/api/offense/right-size-findings",
+    nonce: "NONCE-456",
+    project: "spend-offense",
+    currentModel: "gpt-oss-120b",
+    suggestedModel: "gpt-oss-20b",
+    rationale: "workload is low-complexity batch classification",
+  });
+  assert(rsPrompt.includes("NONCE-456"), "right-sizing prompt carries the nonce");
+  assert(/Do NOT reference/i.test(rsPrompt), "right-sizing prompt forbids leaking the URL/nonce");
+  assert(rsPrompt.includes("gpt-oss-120b") && rsPrompt.includes("gpt-oss-20b"), "prompt names both models");
 
   // eslint-disable-next-line no-console
   console.log("ok — jules-dispatch recommendation classifier + dispatch helpers verified");
