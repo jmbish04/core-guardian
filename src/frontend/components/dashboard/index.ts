@@ -22,6 +22,7 @@ export { SpendOverview } from "./SpendOverview";
 export { DailyCost } from "./DailyCost";
 export { BillableUsage } from "./BillableUsage";
 export { ModelAdvisor } from "./ModelAdvisor";
+export { ModelSubstitutions } from "./ModelSubstitutions";
 export { AlertsBoard } from "./AlertsBoard";
 export { BindingDetail } from "./BindingDetail";
 export { WorkerSpendMonitor } from "./WorkerSpendMonitor";
