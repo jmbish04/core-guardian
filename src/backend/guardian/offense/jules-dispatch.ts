@@ -434,7 +434,7 @@ export async function dispatchRightSizing(
     const prompt = buildRightSizingPrompt({
       owner,
       repo: repoName,
-      findingsUrl: `${env.WORKER_BASE_URL}/api/offense/right-size-findings`,
+      findingsUrl: `${env.WORKER_BASE_URL}/api/guardian/offense/right-size-findings`,
       nonce,
       project,
       currentModel,
@@ -739,7 +739,7 @@ if (import.meta.main) {
   const rsPrompt = buildRightSizingPrompt({
     owner: "o",
     repo: "r",
-    findingsUrl: "https://x/api/offense/right-size-findings",
+    findingsUrl: "https://x/api/guardian/offense/right-size-findings",
     nonce: "NONCE-456",
     project: "spend-offense",
     currentModel: "gpt-oss-120b",
