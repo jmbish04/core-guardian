@@ -26,7 +26,7 @@ import {
   type NewScanTargetRow,
   type RiskSignals,
 } from "@/backend/db/schema";
-import { cfApi } from "@/backend/guardian/resources";
+import { cfApi, listWorkerScriptIds } from "@/backend/guardian/resources";
 import { getWorkerSpend } from "@/backend/guardian/worker-spend";
 import {
   classifyBindings,
@@ -185,14 +185,14 @@ async function scanOne(
  */
 export async function scanWorkers(env: Env): Promise<ScanSummary> {
   const db = getDb(env);
-  const [{ result: scripts }, registered] = await Promise.all([
-    cfApi<{ id: string }[]>(env, "/workers/scripts"),
+  const [{ ids: scriptIds }, registered] = await Promise.all([
+    listWorkerScriptIds(env),
     loadRegisteredNames(db),
   ]);
 
-  const scanned = await mapLimit(scripts ?? [], FANOUT, async (script) => {
+  const scanned = await mapLimit(scriptIds, FANOUT, async (scriptId) => {
     try {
-      return await scanOne(env, script.id, registered);
+      return await scanOne(env, scriptId, registered);
     } catch {
       // A single unreadable script must not sink the whole scan.
       return null;

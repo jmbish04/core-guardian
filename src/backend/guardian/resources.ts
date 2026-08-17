@@ -89,6 +89,51 @@ async function mapLimit<T, R>(
   return results;
 }
 
+/**
+ * Lists EVERY Worker script id, following pagination. `/workers/scripts`
+ * returns ~50 per page, so an unpaginated read silently misses page 2+ workers.
+ *
+ * Robust to either API behaviour: it stops on a short page (true pagination) OR
+ * when a page adds no new ids (an API that ignores paging and returns everything
+ * on page 1) — the Set makes repeated pages a no-op instead of an infinite loop.
+ * Caps at 200 pages.
+ *
+ * @returns `ids` seen and `complete=false` if any page errored — the caller
+ * decides whether a partial list is safe to act on (e.g. skip a deactivation
+ * sweep).
+ */
+export async function listWorkerScriptIds(
+  env: Env,
+): Promise<{ ids: string[]; complete: boolean }> {
+  const seen = new Set<string>();
+  const perPage = 50;
+  for (let page = 1; page <= 200; page++) {
+    let batch: { id: string }[];
+    try {
+      const { result } = await cfApi<{ id: string }[]>(
+        env,
+        `/workers/scripts?per_page=${perPage}&page=${page}`,
+      );
+      batch = result ?? [];
+    } catch (err) {
+      console.warn(
+        JSON.stringify({
+          level: "WARN",
+          source: "guardian.listWorkerScriptIds",
+          page,
+          error: String(err),
+        }),
+      );
+      return { ids: [...seen], complete: false };
+    }
+    const before = seen.size;
+    for (const s of batch) seen.add(s.id);
+    if (batch.length < perPage) break; // last page
+    if (seen.size === before) break; // no growth → API ignored paging / repeat
+  }
+  return { ids: [...seen], complete: true };
+}
+
 // ---------------------------------------------------------------------------
 // Worker binding index (attribution)
 // ---------------------------------------------------------------------------
@@ -137,19 +182,19 @@ export async function getBindingIndex(env: Env, refresh = false): Promise<Bindin
     if (cached) return cached as BindingIndex;
   }
 
-  const { result: scripts } = await cfApi<{ id: string }[]>(env, "/workers/scripts");
+  const { ids: scriptIds } = await listWorkerScriptIds(env);
   const byResource: BindingIndex["byResource"] = {};
 
-  await mapLimit(scripts ?? [], FANOUT, async (script) => {
+  await mapLimit(scriptIds, FANOUT, async (scriptId) => {
     try {
       const { result: bindings } = await cfApi<Record<string, any>[]>(
         env,
-        `/workers/scripts/${encodeURIComponent(script.id)}/bindings`,
+        `/workers/scripts/${encodeURIComponent(scriptId)}/bindings`,
       );
       for (const binding of bindings ?? []) {
         const key = bindingKey(binding);
         if (!key) continue;
-        (byResource[key] ??= []).push({ worker: script.id, binding: binding.name });
+        (byResource[key] ??= []).push({ worker: scriptId, binding: binding.name });
       }
     } catch {
       // A single unreadable script must not sink the whole index.
@@ -158,7 +203,7 @@ export async function getBindingIndex(env: Env, refresh = false): Promise<Bindin
 
   const index: BindingIndex = {
     byResource,
-    workerCount: scripts?.length ?? 0,
+    workerCount: scriptIds.length,
     builtAt: Date.now(),
   };
   await env.SESSIONS.put(BINDINGS_CACHE_KEY, JSON.stringify(index), {
