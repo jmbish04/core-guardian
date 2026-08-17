@@ -23,9 +23,7 @@
   "registries": {
     "@reui": {
       "url": "https://reui.io/r/{style}/{name}.json",
-      "headers": {
-        "Authorization": "Bearer ${REUI_LICENSE_KEY}"
-      }
+      "headers": { "Authorization": "Bearer ${REUI_LICENSE_KEY}" }
     }
   }
 }

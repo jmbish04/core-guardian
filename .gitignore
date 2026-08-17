@@ -26,6 +26,8 @@ pnpm-debug.log*
 # Python
 __pycache__/
 *.pyc
+.env.local
+.env*.local
 
 # local agent orchestration artifacts
 orchestrator.toml
