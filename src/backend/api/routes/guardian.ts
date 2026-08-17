@@ -73,7 +73,7 @@ import { proposeHotfix } from "@/backend/guardian/hotfix";
 import { getWorkersPlan, setWorkersPlan } from "@/backend/guardian/plan";
 import { scrapeAllPricing, scrapeOneProduct } from "@/backend/guardian/pricing-scrape";
 import { archiveR2Bucket } from "@/backend/guardian/r2-archive";
-import { buildSpendRollup, latestSpendRollup } from "@/backend/guardian/spend-rollup";
+import { buildSpendRollup, latestSpendRollup, reviewDelta } from "@/backend/guardian/spend-rollup";
 import { listUsageRegistrations, registerDirectUsage } from "@/backend/guardian/register-usage";
 import {
   getBindingIndex,
@@ -1430,13 +1430,45 @@ guardianRouter.openapi(
     },
   }),
   async (c) => {
-    if (c.req.valid("query").rebuild === "1") {
-      return c.json(await buildSpendRollup(c.env), 200);
-    }
-    // Read the cache; if empty (fresh deploy, before the first cron), build once
-    // so the card is never blank. Subsequent reads hit the cache — no per-load compute.
-    const rollup = (await latestSpendRollup(c.env)) ?? (await buildSpendRollup(c.env));
+    const rollup =
+      c.req.valid("query").rebuild === "1"
+        ? await buildSpendRollup(c.env)
+        : // Read cache; build once if empty (fresh deploy, before the first cron).
+          ((await latestSpendRollup(c.env)) ?? (await buildSpendRollup(c.env)));
+    // Attach the "since last review" delta (read-only — window-keyed baseline).
+    rollup.reviewDelta = await reviewDelta(c.env, rollup.totalActualUsd, rollup.window.start);
     return c.json(rollup, 200);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/guardian/spend-rollup/rebuild  — on-demand refresh
+// ---------------------------------------------------------------------------
+
+guardianRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/spend-rollup/rebuild",
+    operationId: "guardianSpendRollupRebuild",
+    summary: "On-demand spend refresh: re-reconcile from current data + reset the review delta",
+    description:
+      "Manual refresh — rebuilds the reconciled rollup from the freshest data on hand (billed actual is synced daily by the cron; this re-runs the allocation so new AI/infra usage lands) and RESETS the 'since last review' baseline. A cheap, idempotent D1 + arithmetic rebuild — no lock needed (concurrent clicks just re-run the same cheap build). NO AI.",
+    responses: {
+      200: {
+        description: "The freshly rebuilt rollup",
+        content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+      },
+      401: {
+        description: "Missing or invalid session cookie / WORKER_API_KEY bearer token",
+        content: { "application/json": { schema: errorResponseSchema } },
+      },
+    },
+  }),
+  async (c) => {
+    const fresh = await buildSpendRollup(c.env);
+    // Refresh = "I've reviewed" → reset the delta baseline (clean zero).
+    fresh.reviewDelta = await reviewDelta(c.env, fresh.totalActualUsd, fresh.window.start, true);
+    return c.json(fresh, 200);
   },
 );
 

@@ -74,6 +74,8 @@ export type RollupPayload = {
   estimateUsd: number;
   /** Billed − estimate (signed). >0 = billed above our reconstruction → worth a look. */
   disputeUsd: number;
+  /** "Since your last review" — attached by the read route, not the builder. */
+  reviewDelta?: { deltaUsd: number; sinceAt: number | null };
   projects: { name: string; kind: string; totalUsd: number; byCategory: Record<string, number> }[];
   pools: { name: string; totalUsd: number }[];
 };
@@ -139,7 +141,13 @@ export async function buildSpendRollup(env: Env): Promise<RollupPayload> {
     .from(billableUsage);
   const start = period ? Date.parse(period) : cycleStartMs(now);
   const startD = new Date(start);
-  const end = Date.UTC(startD.getUTCFullYear(), startD.getUTCMonth() + 1, startD.getUTCDate());
+  const sy = startD.getUTCFullYear();
+  const sm = startD.getUTCMonth();
+  const sd = startD.getUTCDate();
+  // end = same day next month, CLAMPED — Date.UTC(y, m+1, 31) overflows a short
+  // month (Jan 31 → Mar 3), stretching the cycle and deflating the projection.
+  const daysInNextMonth = new Date(Date.UTC(sy, sm + 2, 0)).getUTCDate();
+  const end = Date.UTC(sy, sm + 1, Math.min(sd, daysInNextMonth));
   const dayFrac = 86_400_000 / (end - start);
   const elapsedFraction = Math.min(1, Math.max((now - start) / (end - start), dayFrac));
 
@@ -349,6 +357,40 @@ export async function buildSpendRollup(env: Env): Promise<RollupPayload> {
   }
 
   return payload;
+}
+
+/**
+ * "Since your last review" delta. A single KV checkpoint {at, total}; the delta
+ * is `currentActual − checkpoint.total`, so it accumulates between reviews and
+ * stays stable across polls. The checkpoint bootstraps on first read and resets
+ * only when `reset` is set (the Refresh button = "I've reviewed this"). Single
+ * key — this is a personal one-account tool.
+ *
+ * @returns `{ deltaUsd, sinceAt }` — sinceAt is null until a baseline exists.
+ */
+export async function reviewDelta(
+  env: Env,
+  currentActualUsd: number,
+  windowStart: number,
+  reset = false,
+): Promise<{ deltaUsd: number; sinceAt: number | null }> {
+  const KEY = "guardian:last-review";
+  const prev = (await env.SESSIONS.get(KEY, "json")) as
+    | { at: number; total: number; windowStart?: number }
+    | null;
+  // Rebaseline (delta 0) on: first read, a new billing cycle (totalActual resets,
+  // so a raw delta would be a giant negative), or an explicit Refresh.
+  const cycleChanged = prev != null && prev.windowStart !== windowStart;
+  const rebaseline = prev == null || cycleChanged || reset;
+  const deltaUsd = rebaseline ? 0 : currentActualUsd - prev!.total;
+  const sinceAt = rebaseline ? null : prev!.at;
+  if (rebaseline) {
+    await env.SESSIONS.put(
+      KEY,
+      JSON.stringify({ at: Date.now(), total: currentActualUsd, windowStart }),
+    );
+  }
+  return { deltaUsd, sinceAt };
 }
 
 /** Read the latest cached rollup, or null when none built yet. */

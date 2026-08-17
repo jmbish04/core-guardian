@@ -11,16 +11,18 @@
 
 "use client";
 
-import { Loader2Icon } from "lucide-react";
+import { Loader2Icon, RefreshCwIcon } from "lucide-react";
+import { useState } from "react";
 
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { apiGet } from "@/lib/api";
-import { usd } from "@/lib/format";
+import { apiGet, apiSend } from "@/lib/api";
+import { relativeTime, usd } from "@/lib/format";
 
 import { InlineError } from "@/components/dashboard/shared";
 import { useResource } from "@/components/projects/shared";
@@ -30,6 +32,7 @@ type Rollup = {
   totalProjectedUsd: number;
   estimateUsd: number;
   disputeUsd: number;
+  reviewDelta?: { deltaUsd: number; sinceAt: number | null };
 };
 
 function Lane({
@@ -85,9 +88,24 @@ function Lane({
 }
 
 export function SpendLanes() {
-  const { data, loading, error, reload } = useResource<Rollup>(() =>
+  const { data, loading, error, reload, setData } = useResource<Rollup>(() =>
     apiGet<Rollup>("/guardian/spend-rollup"),
   );
+  const [refreshing, setRefreshing] = useState(false);
+
+  const refresh = async () => {
+    setRefreshing(true);
+    try {
+      // Use the POST response directly — re-GETting could read a stale KV-edge
+      // baseline for up to ~60s and make the reset look like it didn't take.
+      const fresh = await apiSend<Rollup>("POST", "guardian/spend-rollup/rebuild");
+      setData(fresh);
+    } catch {
+      reload(); // surface the error through the normal resource path
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -113,8 +131,35 @@ export function SpendLanes() {
   const gap = data.disputeUsd ?? 0;
   const overBilled = gap > 1;
 
+  const rd = data.reviewDelta;
+  const deltaUsd = rd?.deltaUsd ?? 0;
+  // Only surface INCREASES since last review — the watchdog signal. A negative
+  // delta is a billing correction or a new cycle (totalActual resets), not news.
+  const showDelta = rd?.sinceAt != null && deltaUsd >= 0.01;
+
   return (
-    <Card className="grid grid-cols-1 gap-0 p-0 sm:grid-cols-3 sm:divide-x sm:divide-border/60">
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between gap-3 px-0.5">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <span className="font-medium text-foreground">Spend</span>
+          {showDelta && rd?.sinceAt != null && (
+            <span className="text-amber-600 dark:text-amber-400">
+              ▲ +{usd(deltaUsd)} since you last reviewed ({relativeTime(rd.sinceAt)})
+            </span>
+          )}
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => void refresh()}
+          disabled={refreshing}
+        >
+          <RefreshCwIcon className={refreshing ? "size-4 animate-spin" : "size-4"} />
+          {refreshing ? "Refreshing…" : "Refresh"}
+        </Button>
+      </div>
+      <Card className="grid grid-cols-1 gap-0 p-0 sm:grid-cols-3 sm:divide-x sm:divide-border/60">
       <Lane
         label="Billed this cycle"
         value={usd(totalActualUsd)}
@@ -139,6 +184,7 @@ export function SpendLanes() {
           </a>
         }
       />
-    </Card>
+      </Card>
+    </div>
   );
 }
