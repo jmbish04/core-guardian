@@ -6,6 +6,7 @@
  */
 
 export { AccountantView } from "./AccountantView";
+export { AiRecommendationsView } from "./AiRecommendationsView";
 export { AdminDashboard } from "./AdminDashboard";
 export { ActionItems } from "./ActionItems";
 export { AiRouterConsole } from "./AiRouterConsole";
