@@ -20,6 +20,7 @@ import {
   aiRouterRequests,
   billableUsage,
   cfResources,
+  dailyCost,
   guardianProjects,
   resourceBindings,
   resourceUsageSnapshots,
@@ -43,6 +44,20 @@ const FAMILY_TO_CATEGORY: Record<string, string> = {
 function categoryOf(family: string): string {
   return FAMILY_TO_CATEGORY[family] ?? "other";
 }
+/** daily_cost.service (a probe id) → category, for the like-for-like dispute. */
+const SERVICE_TO_CATEGORY: Record<string, string> = {
+  "workers-ai": "ai",
+  "ai-gateway": "ai",
+  d1: "d1",
+  "r2-operations": "r2",
+  "r2-storage": "r2",
+  vectorize: "vectorize",
+  kv: "kv",
+  "durable-objects-requests": "do",
+  "durable-objects-cpu": "do",
+  workers: "compute",
+};
+
 /** Categories with a real per-project estimate basis (else the family is pooled).
  *  `do` attributes via #50's per-script DO wall-time drivers; `compute`/`other`
  *  have no per-project basis yet → pooled unattributed. */
@@ -55,6 +70,10 @@ export type RollupPayload = {
   billed: { family: string; category: string; actualUsd: number; projectedUsd: number }[];
   totalActualUsd: number;
   totalProjectedUsd: number;
+  /** Reconstructed marginal-rate estimate over the cycle (daily_cost). */
+  estimateUsd: number;
+  /** Billed − estimate (signed). >0 = billed above our reconstruction → worth a look. */
+  disputeUsd: number;
   projects: { name: string; kind: string; totalUsd: number; byCategory: Record<string, number> }[];
   pools: { name: string; totalUsd: number }[];
 };
@@ -76,6 +95,28 @@ export function allocateActual(
   const drift = actualUsd - out.reduce((s, o) => s + o.usd, 0);
   if (out.length) out[0].usd += drift;
   return out;
+}
+
+/**
+ * PURE: like-for-like dispute. Compares billed actual to reconstructed estimate
+ * PER CATEGORY, and only where an estimate exists (est > 0) — so a category that
+ * is billed but unpriceable (DO has no overage rate) never counts as a dispute.
+ *
+ * @returns `estimateUsd` (priceable estimate total) and `disputeUsd`
+ *   (Σ actual − estimate over priceable categories; >0 = billed above estimate).
+ */
+export function likeForLikeDispute(
+  actualByCategory: Map<string, number>,
+  estimateByCategory: Map<string, number>,
+): { estimateUsd: number; disputeUsd: number } {
+  let estimateUsd = 0;
+  let disputeUsd = 0;
+  for (const [cat, est] of estimateByCategory) {
+    if (!(est > 0)) continue;
+    estimateUsd += est;
+    disputeUsd += (actualByCategory.get(cat) ?? 0) - est;
+  }
+  return { estimateUsd, disputeUsd };
 }
 
 /** UTC start-of-month fallback when no billing period is recorded yet. */
@@ -240,6 +281,24 @@ export async function buildSpendRollup(env: Env): Promise<RollupPayload> {
   const totalActualUsd = billed.reduce((s, b) => s + b.actualUsd, 0);
   const totalProjectedUsd = billed.reduce((s, b) => s + b.projectedUsd, 0);
 
+  // Dispute lane: our reconstructed marginal-rate estimate (daily_cost service
+  // headlines) vs the billed actual — but LIKE-FOR-LIKE only. daily_cost.cost_usd
+  // is NULL for services with no known overage rate (e.g. Durable Objects), so a
+  // naive total(actual) − total(estimate) would count billed-but-unestimated
+  // spend as a dispute. Compare per category, and only where an estimate exists
+  // on BOTH sides. Signed: >0 = billed above our estimate → review on Accountant.
+  const estRows = await db
+    .select({ service: dailyCost.service, est: sql<number | null>`sum(${dailyCost.costUsd})` })
+    .from(dailyCost)
+    .where(and(gte(dailyCost.dayStart, start), lt(dailyCost.dayStart, end), eq(dailyCost.dimension, "")))
+    .groupBy(dailyCost.service);
+  const estimateByCategory = new Map<string, number>();
+  for (const r of estRows) {
+    const cat = SERVICE_TO_CATEGORY[r.service] ?? "other";
+    estimateByCategory.set(cat, (estimateByCategory.get(cat) ?? 0) + Number(r.est ?? 0));
+  }
+  const { estimateUsd, disputeUsd } = likeForLikeDispute(actualByCategory, estimateByCategory);
+
   // Reconciliation invariant: every billed dollar lands in exactly one project or
   // pool. If this ever drifts > 1¢, the allocation dropped or double-counted —
   // surface it loudly rather than ship a ledger that doesn't tie to the bill.
@@ -265,6 +324,8 @@ export async function buildSpendRollup(env: Env): Promise<RollupPayload> {
     billed,
     totalActualUsd,
     totalProjectedUsd,
+    estimateUsd,
+    disputeUsd,
     projects,
     pools,
   };

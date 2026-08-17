@@ -20,6 +20,7 @@ export { IncidentsPanel } from "./IncidentsPanel";
 export { RiskTargetsPanel } from "./RiskTargetsPanel";
 export { SpendOverview } from "./SpendOverview";
 export { SpendByProject } from "./SpendByProject";
+export { SpendLanes } from "./SpendLanes";
 export { DailyCost } from "./DailyCost";
 export { BillableUsage } from "./BillableUsage";
 export { ModelAdvisor } from "./ModelAdvisor";
