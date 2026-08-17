@@ -19,7 +19,9 @@ const canonicalURL = new URL(Astro.url.pathname, Astro.site).toString();
 const ogImageURL = ogImage
   ? new URL(ogImage, Astro.site).toString()
   : new URL("og-image.png", canonicalURL).toString();
-const faviconURL = new URL("favicon.svg", canonicalURL).toString();
+// Root-absolute: favicon lives at the site root, not relative to the page path
+// (which would 404 on nested routes like /dashboard/guardian).
+const faviconURL = "/favicon.svg";
 ---
 
 <!-- Basic -->

@@ -137,7 +137,7 @@ export function BudgetMeter() {
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <h2 className="text-2xl font-semibold tracking-tight">Total budget</h2>
+          <h2 className="text-xl font-semibold tracking-tight">Total budget</h2>
           <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
             nuclear breaker
           </span>
@@ -164,15 +164,15 @@ export function BudgetMeter() {
         </Card>
       ) : (
         <Card className={pct >= 100 ? "ring-1 ring-destructive/50" : "ring-1 ring-border/40"}>
-          <CardContent className="flex flex-col gap-3 p-6">
+          <CardContent className="flex flex-col gap-2.5 p-4">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <span className="text-3xl font-semibold tabular-nums tracking-tight">
+              <span className="text-2xl font-semibold tabular-nums tracking-tight">
                 {usd(mtdUsd)}{" "}
-                <span className="text-lg font-normal text-muted-foreground">
+                <span className="text-base font-normal text-muted-foreground">
                   / {usd(nuclearBudgetUsd)}
                 </span>
               </span>
-              <span className={`text-2xl font-semibold tabular-nums ${tone.text}`}>
+              <span className={`text-xl font-semibold tabular-nums ${tone.text}`}>
                 {Math.round(pct)}%
               </span>
             </div>

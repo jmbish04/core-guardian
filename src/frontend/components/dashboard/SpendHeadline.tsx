@@ -9,7 +9,7 @@
  *   - a projected month-end figure, flagged when it towers over the run-rate.
  *
  * It owns the single `GET /guardian/billing/insights` fetch and hands the
- * ranked anomalies to `<AnomaliesPanel>` rendered directly below. One fetch is
+ * ranked anomalies to `<AnomaliesGrid>` rendered directly below. One fetch is
  * deliberate: that endpoint records the "last visit" marker in KV on every read,
  * so a second island hitting it would zero out the very delta we're showing.
  */
@@ -24,7 +24,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError, apiGet } from "@/lib/api";
 import { usd } from "@/lib/format";
 
-import { AnomaliesPanel, type Anomaly } from "./AnomaliesPanel";
+import { AnomaliesGrid, type Anomaly } from "./AnomaliesGrid";
 import { InlineError } from "./shared";
 
 interface Insights {
@@ -72,8 +72,8 @@ export function SpendHeadline() {
   if (loading && !data) {
     return (
       <div className="grid grid-cols-2 gap-3 sm:gap-4" aria-busy>
-        <Skeleton className="h-32" />
-        <Skeleton className="h-32" />
+        <Skeleton className="h-24" />
+        <Skeleton className="h-24" />
       </div>
     );
   }
@@ -89,15 +89,15 @@ export function SpendHeadline() {
   const hot = projectedMonthEnd - mtdUsd > Math.max(5, mtdUsd * 0.5);
 
   return (
-    <section className="flex flex-col gap-6">
+    <section className="flex flex-col gap-4">
       <div className="grid grid-cols-2 gap-3 sm:gap-4">
         {/* Month-to-date + since-last-visit, same card. */}
         <Card className="ring-1 ring-border/40">
-          <CardContent className="flex flex-col gap-2 p-5">
+          <CardContent className="flex flex-col gap-1.5 p-4">
             <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
               Month to date
             </span>
-            <span className="text-4xl font-semibold tabular-nums tracking-tight sm:text-5xl">
+            <span className="text-3xl font-semibold tabular-nums tracking-tight sm:text-4xl">
               {usd(mtdUsd, false)}
             </span>
             <span
@@ -139,18 +139,18 @@ export function SpendHeadline() {
 
         {/* Projected month-end. */}
         <Card className={hot ? "ring-1 ring-destructive/40" : "ring-1 ring-border/40"}>
-          <CardContent className="flex flex-col gap-2 p-5">
+          <CardContent className="flex flex-col gap-1.5 p-4">
             <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
               Projected month-end
             </span>
             <span
               className={
                 hot
-                  ? "flex items-center gap-2 text-4xl font-semibold tabular-nums tracking-tight text-destructive sm:text-5xl"
-                  : "flex items-center gap-2 text-4xl font-semibold tabular-nums tracking-tight sm:text-5xl"
+                  ? "flex items-center gap-2 text-3xl font-semibold tabular-nums tracking-tight text-destructive sm:text-4xl"
+                  : "flex items-center gap-2 text-3xl font-semibold tabular-nums tracking-tight sm:text-4xl"
               }
             >
-              {hot ? <TrendingUp className="size-6" aria-hidden /> : null}
+              {hot ? <TrendingUp className="size-5" aria-hidden /> : null}
               {usd(projectedMonthEnd, false)}
             </span>
             <span className={hot ? "text-xs font-medium text-destructive" : "text-xs text-muted-foreground"}>
@@ -160,7 +160,7 @@ export function SpendHeadline() {
         </Card>
       </div>
 
-      <AnomaliesPanel anomalies={anomalies} onActed={load} />
+      <AnomaliesGrid anomalies={anomalies} onActed={load} />
     </section>
   );
 }
