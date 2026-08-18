@@ -62,7 +62,7 @@ const NUMERIC_STATS: StatDef[] = [
     icon: FolderKanban,
     value: (s) => compactNumber(s.totalProjects),
     subtext: (s) => `${compactNumber(s.activeProjects)} active`,
-    accent: "var(--chart-1)",
+    accent: "var(--color-chart-1)",
   },
   {
     key: "totalTasks",
@@ -71,7 +71,7 @@ const NUMERIC_STATS: StatDef[] = [
     value: (s) => compactNumber(s.totalTasks),
     subtext: (s) =>
       `${compactNumber(Math.max(s.totalTasks - s.completedTasks, 0))} open`,
-    accent: "var(--chart-3)",
+    accent: "var(--color-chart-3)",
   },
   {
     key: "completedTasks",
@@ -82,7 +82,7 @@ const NUMERIC_STATS: StatDef[] = [
       s.unreadNotifications > 0
         ? `${compactNumber(s.unreadNotifications)} unread alerts`
         : "inbox clear",
-    accent: "var(--chart-5)",
+    accent: "var(--color-chart-5)",
   },
   {
     key: "overdueTasks",
@@ -90,7 +90,7 @@ const NUMERIC_STATS: StatDef[] = [
     icon: AlertTriangle,
     value: (s) => compactNumber(s.overdueTasks),
     subtext: (s) => (s.overdueTasks > 0 ? "needs attention" : "all on schedule"),
-    accent: "var(--chart-4)",
+    accent: "var(--color-chart-4)",
     alert: (s) => s.overdueTasks > 0,
   },
 ];

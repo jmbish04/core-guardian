@@ -20,7 +20,7 @@
 
 import { Loader2Icon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Area, AreaChart, CartesianGrid, XAxis } from "recharts";
+import { Area, AreaChart, CartesianGrid, ReferenceDot, ReferenceLine, XAxis } from "recharts";
 
 import {
   ChartContainer,
@@ -38,6 +38,8 @@ import {
 } from "@/components/ui/table";
 import { ApiError, apiGet } from "@/lib/api";
 import { compactNumber } from "@/lib/format";
+
+import { seriesStory } from "./story";
 
 // --- Response types (mirror DailyCostReport) --------------------------------
 
@@ -190,6 +192,32 @@ export function DailyCost() {
   const latestTotal = totalPoints.length ? totalPoints[totalPoints.length - 1].cost : 0;
   const latestAttribution = report?.workersAiAttribution.at(-1);
 
+  // Story layer (G7): a baseline avg-per-day and the single outlier day, both
+  // from the real reconstructed totals. Guarded: an empty/degenerate series
+  // yields null baseline + no anomaly, so no line, dot, or caption renders
+  // (never a "$NaN peak").
+  const costStory = useMemo(
+    () => seriesStory(totalPoints.map((p) => (Number.isFinite(p.cost) ? p.cost : 0))),
+    [totalPoints],
+  );
+  const anomalyDay =
+    costStory.anomalyIndex != null ? totalPoints[costStory.anomalyIndex] : undefined;
+  const anomalyPct =
+    anomalyDay && costStory.baseline && costStory.baseline > 0
+      ? Math.round(((anomalyDay.cost - costStory.baseline) / costStory.baseline) * 100)
+      : null;
+  const pace =
+    costStory.paceFraction != null && Math.abs(costStory.paceFraction) >= 0.05
+      ? `${costStory.paceFraction > 0 ? "up" : "down"} ${Math.abs(Math.round(costStory.paceFraction * 100))}%`
+      : null;
+  const trendCaption = anomalyDay
+    ? `Peak ${usd(anomalyDay.cost)} on ${dayTick(anomalyDay.day)}${
+        anomalyPct != null ? ` · ${anomalyPct}% above the ${days}d avg` : ""
+      }`
+    : pace
+      ? `Reconstructed spend pace ${pace} vs earlier this window`
+      : null;
+
   return (
     <section className="flex flex-col gap-4">
       <header className="flex flex-wrap items-end justify-between gap-4">
@@ -245,16 +273,32 @@ export function DailyCost() {
                 reconstructed / day
               </span>
             </div>
+            {/* One-line takeaway — the outlier day, or the pace vs earlier. */}
+            {trendCaption ? (
+              <p className={`mt-1 text-xs ${anomalyDay ? "text-destructive" : "text-muted-foreground"}`}>
+                {trendCaption}
+              </p>
+            ) : null}
             {totalPoints.length >= 2 && (
               <ChartContainer config={CHART_CONFIG} className="mt-4 h-[200px] w-full">
-                <AreaChart data={totalPoints} margin={{ left: 4, right: 4, top: 8, bottom: 0 }}>
+                <AreaChart
+                  data={totalPoints}
+                  margin={{ left: 4, right: 4, top: 8, bottom: 0 }}
+                  className="cursor-pointer"
+                  // Drill-to-L3: click a day → its priced-cost logs (route lands in G6).
+                  onClick={(state) => {
+                    const idx = (state as { activeTooltipIndex?: number })?.activeTooltipIndex;
+                    if (idx == null || idx < 0 || idx >= totalPoints.length) return;
+                    window.location.href = `/dashboard/daily-cost/logs?query=${encodeURIComponent(`day:${totalPoints[idx].day}`)}`;
+                  }}
+                >
                   <defs>
                     <linearGradient id="dailyCostFill" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="0%" stopColor="var(--color-cost)" stopOpacity={0.25} />
                       <stop offset="100%" stopColor="var(--color-cost)" stopOpacity={0} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--color-border)" />
                   <XAxis
                     dataKey="day"
                     tickLine={false}
@@ -262,7 +306,7 @@ export function DailyCost() {
                     tickMargin={8}
                     minTickGap={28}
                     tickFormatter={dayTick}
-                    tick={{ fill: "hsl(var(--foreground))", fontSize: 11 }}
+                    tick={{ fill: "var(--color-foreground)", fontSize: 11 }}
                   />
                   <ChartTooltip
                     content={
@@ -272,6 +316,22 @@ export function DailyCost() {
                       />
                     }
                   />
+                  {/* Baseline avg/day — a muted reference so each day reads
+                      above/below the norm. Rendered only for a finite mean. */}
+                  {costStory.baseline != null && costStory.baseline > 0 && (
+                    <ReferenceLine
+                      y={costStory.baseline}
+                      stroke="var(--color-muted-foreground)"
+                      strokeDasharray="4 4"
+                      strokeWidth={1.25}
+                      label={{
+                        value: `avg ${usd(costStory.baseline)}/day`,
+                        position: "insideTopLeft",
+                        fill: "var(--color-muted-foreground)",
+                        fontSize: 10,
+                      }}
+                    />
+                  )}
                   <Area
                     type="monotone"
                     dataKey="cost"
@@ -279,6 +339,17 @@ export function DailyCost() {
                     strokeWidth={2}
                     fill="url(#dailyCostFill)"
                   />
+                  {/* Anomaly marker — the lone outlier day, in destructive. */}
+                  {anomalyDay && (
+                    <ReferenceDot
+                      x={anomalyDay.day}
+                      y={anomalyDay.cost}
+                      r={4}
+                      fill="var(--color-destructive)"
+                      stroke="var(--color-background)"
+                      strokeWidth={1.5}
+                    />
+                  )}
                 </AreaChart>
               </ChartContainer>
             )}

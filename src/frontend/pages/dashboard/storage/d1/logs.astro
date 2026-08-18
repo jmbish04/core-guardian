@@ -1,0 +1,22 @@
+---
+/**
+ * D1 metered-usage rows — Level-3 drill target for the D1 detail charts.
+ * Reached from `/dashboard/storage/d1` point-clicks (`?query=day:<YYYY-MM-DD>`).
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { D1Logs } from "@/components/logs";
+
+const query = Astro.url.searchParams.get("query") ?? undefined;
+---
+
+<BaseLayout title="D1 usage rows" description="Per-day metered D1 usage: rows read + written and reconciled cost.">
+  <main class="container mx-auto flex max-w-7xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/storage/d1"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← D1 databases
+    </a>
+    <D1Logs client:load query={query} />
+  </main>
+</BaseLayout>

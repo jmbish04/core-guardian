@@ -6,6 +6,7 @@
  */
 import BaseLayout from "@/layouts/BaseLayout.astro";
 import { D1Table } from "@/components/storage";
+import { D1UsageDetail } from "@/components/dashboard";
 ---
 
 <BaseLayout title="D1 databases" description="Every D1 database with file size, table count, and the Workers bound to it.">
@@ -16,6 +17,7 @@ import { D1Table } from "@/components/storage";
     >
       ← Data Storage
     </a>
-    <D1Table client:load />
+    <D1UsageDetail client:load />
+    <D1Table client:visible />
   </main>
 </BaseLayout>
