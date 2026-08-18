@@ -22,3 +22,4 @@ export * from "./usage-snapshots";
 export * from "./spend-rollup";
 export * from "./trim-targets";
 export * from "./webhook-events";
+export * from "./d1-table-archives";
