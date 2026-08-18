@@ -19,21 +19,26 @@ export const d1TableArchives = sqliteTable(
     databaseUuid: text("database_uuid").notNull(),
     databaseName: text("database_name").notNull().default(""),
     tableName: text("table_name").notNull(),
-    /** Column used for the age cutoff, or "" for a whole-table archive (display). */
+    // Scope is stored STRUCTURALLY (not as raw SQL) and re-rendered at trim —
+    // safer than trusting a stored SQL fragment. "" timeColumn = whole table.
     timeColumn: text("time_column").notNull().default(""),
+    cutoffValue: text("cutoff_value").notNull().default(""),
+    cutoffIsNum: integer("cutoff_is_num", { mode: "boolean" }).notNull().default(false),
     /**
-     * The EXACT SQL WHERE fragment (no leading WHERE) that scoped the archive.
-     * Trim reuses this verbatim so it deletes precisely what was archived +
-     * verified — never re-derived (a re-derivation dropped string cutoffs and
-     * would have trimmed the whole table). "" = whole table.
+     * The MAX(rowid) captured at export. Trim deletes only `... AND rowid <=
+     * max_rowid`, so rows created after the archive can never be deleted
+     * un-archived, and a truncated export can't over-delete (the count guard
+     * catches a mismatch).
      */
-    scopeSql: text("scope_sql").notNull().default(""),
+    maxRowid: integer("max_rowid").notNull().default(0),
     /** Rows written to the Drive archive. */
     archivedRows: integer("archived_rows").notNull().default(0),
     driveFileId: text("drive_file_id").notNull().default(""),
     driveUrl: text("drive_url").notNull().default(""),
     bytes: integer("bytes").notNull().default(0),
-    /** Verify-by-redownload: 1 once the Drive file's row count matched archivedRows. */
+    /** SHA-256 of the archived JSONL — verification re-hashes the re-download. */
+    contentHash: text("content_hash").notNull().default(""),
+    /** Verify-by-redownload: 1 once re-download row count + byte length + hash all match. */
     verified: integer("verified", { mode: "boolean" }).notNull().default(false),
     verifiedRows: integer("verified_rows").notNull().default(0),
     verifiedAt: integer("verified_at"),
