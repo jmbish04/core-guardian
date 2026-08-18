@@ -73,6 +73,28 @@ export async function cfApi<T = unknown>(
   return { result: body.result as T, result_info: body.result_info };
 }
 
+/**
+ * List the account's zones. Zones are a TOP-LEVEL resource (`/zones?account.id=`),
+ * NOT under `/accounts/{id}/…`, so this can't go through {@link cfApi}. Returns
+ * [] on any failure — a missing zone list must never sink the resource snapshot.
+ */
+export async function listZones(env: Env): Promise<{ id: string; name: string }[]> {
+  try {
+    const [accountId, token] = await Promise.all([
+      getCloudflareAccountId(env),
+      getCloudflareApiToken(env),
+    ]);
+    if (!accountId || !token) return [];
+    const res = await fetch(`${CF_API_BASE}/zones?account.id=${accountId}&per_page=50`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const body = (await res.json().catch(() => ({}))) as { result?: { id: string; name: string }[] };
+    return (body.result ?? []).map((z) => ({ id: z.id, name: z.name }));
+  } catch {
+    return [];
+  }
+}
+
 /** Runs `work` over `items` with bounded concurrency. */
 async function mapLimit<T, R>(
   items: T[],
