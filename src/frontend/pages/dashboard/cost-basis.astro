@@ -6,6 +6,7 @@
  */
 import BaseLayout from "@/layouts/BaseLayout.astro";
 import { CostBasis } from "@/components/storage";
+import { SpendHero, SpendLanes, SpendByProject } from "@/components/dashboard";
 ---
 
 <BaseLayout
@@ -19,6 +20,11 @@ import { CostBasis } from "@/components/storage";
     >
       ← Core Guardian
     </a>
-    <CostBasis client:load />
+    <SpendHero client:load />
+    <div class="grid grid-cols-1 gap-8 lg:grid-cols-2">
+      <SpendLanes client:visible />
+      <SpendByProject client:visible />
+    </div>
+    <CostBasis client:visible />
   </main>
 </BaseLayout>

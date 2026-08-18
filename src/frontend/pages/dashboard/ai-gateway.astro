@@ -6,7 +6,7 @@
  */
 import BaseLayout from "@/layouts/BaseLayout.astro";
 import { AiBudgetMeter, AiGatewayBilling } from "@/components/storage";
-import { CostTraceIsland } from "@/components/dashboard";
+import { CostTraceIsland, GatewayUsageDetail } from "@/components/dashboard";
 ---
 
 <BaseLayout
@@ -20,6 +20,7 @@ import { CostTraceIsland } from "@/components/dashboard";
     >
       ← Core Guardian
     </a>
+    <GatewayUsageDetail client:load />
     <AiBudgetMeter client:visible />
     <CostTraceIsland scope="ai-gateway" client:visible />
     <AiGatewayBilling client:load />

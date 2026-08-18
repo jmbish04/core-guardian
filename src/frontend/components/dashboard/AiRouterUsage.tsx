@@ -17,7 +17,7 @@ import {
   type ExpandedState,
   useTable,
 } from "@tanstack/react-table";
-import { Loader2Icon, RefreshCwIcon, SearchIcon } from "lucide-react";
+import { ArrowRightIcon, Loader2Icon, RefreshCwIcon, SearchIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, XAxis, YAxis } from "recharts";
 
@@ -91,11 +91,11 @@ const DAY_OPTIONS = [7, 30, 90] as const;
 
 /** The five OKLCH palette hues exposed in global.css as `--chart-1..5`. */
 const PALETTE = [
-  "var(--chart-1)",
-  "var(--chart-2)",
-  "var(--chart-3)",
-  "var(--chart-4)",
-  "var(--chart-5)",
+  "var(--color-chart-1)",
+  "var(--color-chart-2)",
+  "var(--color-chart-3)",
+  "var(--color-chart-4)",
+  "var(--color-chart-5)",
 ] as const;
 
 const CHART_CONFIG = {
@@ -492,13 +492,24 @@ export function AiRouterUsage() {
             className="mt-4 aspect-auto h-[max(240px,theme(spacing.10)*var(--rows))] w-full"
             style={{ ["--rows" as string]: top.length }}
           >
-            <BarChart data={top} layout="vertical" margin={{ left: 4, right: 16, top: 4, bottom: 4 }}>
-              <CartesianGrid horizontal={false} strokeDasharray="3 3" stroke="var(--border)" />
+            <BarChart
+              data={top}
+              layout="vertical"
+              margin={{ left: 4, right: 16, top: 4, bottom: 4 }}
+              className="cursor-pointer"
+              // Drill-to-L3: click a project bar → its routed-request logs (route lands in G6).
+              onClick={(state) => {
+                const idx = (state as { activeTooltipIndex?: number })?.activeTooltipIndex;
+                if (idx == null || idx < 0 || idx >= top.length) return;
+                window.location.href = `/dashboard/ai-router/logs?query=${encodeURIComponent(`project:${top[idx].project}`)}`;
+              }}
+            >
+              <CartesianGrid horizontal={false} strokeDasharray="3 3" stroke="var(--color-border)" />
               <XAxis
                 type="number"
                 tickLine={false}
                 axisLine={false}
-                tick={{ fill: "hsl(var(--foreground))", fontSize: 11 }}
+                tick={{ fill: "var(--color-foreground)", fontSize: 11 }}
                 tickFormatter={(v) => usd(Number(v))}
               />
               <YAxis
@@ -507,7 +518,7 @@ export function AiRouterUsage() {
                 tickLine={false}
                 axisLine={false}
                 width={120}
-                tick={{ fill: "hsl(var(--foreground))", fontSize: 11 }}
+                tick={{ fill: "var(--color-foreground)", fontSize: 11 }}
               />
               <ChartTooltip content={<ChartTooltipContent formatter={(v) => usd(Number(v))} />} />
               <Bar dataKey="costUsd" radius={[0, 4, 4, 0]}>
@@ -518,6 +529,15 @@ export function AiRouterUsage() {
             </BarChart>
           </ChartContainer>
         )}
+        {/* Keyboard-focusable drill to L3 — the bar onClick is a non-focusable
+            svg, so this is the accessible path to the logs (WCAG 2.1.1). */}
+        <a
+          href="/dashboard/ai-router/logs"
+          className="inline-flex w-fit items-center gap-1 rounded text-[11px] text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          View AI Router logs
+          <ArrowRightIcon className="size-3" aria-hidden />
+        </a>
       </section>
 
       {/* --- Project rollup grid (expand a row for its model breakdown) ---- */}

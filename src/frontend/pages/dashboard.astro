@@ -1,35 +1,36 @@
 ---
 /**
- * Admin Dashboard page.
+ * Guardian dashboard — Level-1 overview (progressive disclosure, tier 1).
  *
- * Thin Astro shell: renders the BaseLayout chrome + a page header, then mounts
- * the single `<AdminDashboard>` React island (`client:load`) which owns all
- * data fetching, filtering, charts, AI insights, and the activity feed.
+ * Thin Astro shell: SSR page chrome + a compact header, then the single
+ * `<GuardianOverview>` React island (`client:load`) which owns the top-line
+ * KPIs and one high-level spend chart. Every card/chart is an entry point into
+ * its Level-2 detail page.
+ *
+ * HARD contract: this body fits ONE desktop screen with ZERO vertical scroll.
+ * No log tables, DataGrids, or long lists live here — the heavy islands
+ * (UsageTable, GuardianAuditLog, RecentActivity, SpendLanes, ChartsGrid, …) are
+ * rehomed on L2/L3, not mounted on this overview.
  *
  * The nav already links `/dashboard` (see `src/frontend/lib/config.ts`), so no
  * navigation change is required.
  */
 import BaseLayout from "@/layouts/BaseLayout.astro";
-import { AdminDashboard } from "@/components/dashboard";
+import { GuardianOverview } from "@/components/dashboard";
 ---
 
 <BaseLayout
-  title="Admin Dashboard"
-  description="Live operational overview: project & task KPIs, Workers AI insights, a full recharts analytics suite, and a real-time activity feed — all wired to the D1-backed REST API."
+  title="Guardian Overview"
+  description="Level-1 Cloudflare spend overview: top-line KPIs for total spend, D1, AI Gateway, AI model spend and anomalies — every card an entry point into its detailed view."
 >
-  <main class="container mx-auto flex max-w-7xl flex-col gap-8 px-4 py-12">
-    <header class="flex flex-col gap-2">
-      <div class="flex items-center gap-3">
-        <span class="text-4xl">📊</span>
-        <h1 class="text-3xl font-semibold tracking-tight">Admin Dashboard</h1>
-      </div>
-      <p class="max-w-3xl text-base text-muted-foreground">
-        A live operational overview of the workspace: project and task KPIs,
-        Workers&nbsp;AI-generated insights, a full recharts analytics suite, and
-        a real-time activity feed — every panel wired to the D1-backed REST API.
+  <main class="container mx-auto flex max-w-7xl flex-col gap-4 px-4 py-6">
+    <header class="flex flex-wrap items-baseline justify-between gap-2">
+      <h1 class="text-2xl font-semibold tracking-tight">Overview</h1>
+      <p class="text-sm text-muted-foreground">
+        Top-line Cloudflare spend &amp; usage — drill into any tile for detail.
       </p>
     </header>
 
-    <AdminDashboard client:load />
+    <GuardianOverview client:load />
   </main>
 </BaseLayout>

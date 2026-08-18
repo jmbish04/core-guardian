@@ -1,0 +1,22 @@
+---
+/**
+ * Billable-usage rows — Level-3 drill target for the cost-basis spend hero.
+ * Reached from `/dashboard/cost-basis` point-clicks (`?query=day:<YYYY-MM-DD>`).
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { CostBasisLogs } from "@/components/logs";
+
+const query = Astro.url.searchParams.get("query") ?? undefined;
+---
+
+<BaseLayout title="Cost basis rows" description="Every billable-usage row reconciled from Cloudflare's Billable Usage API.">
+  <main class="container mx-auto flex max-w-7xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/cost-basis"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Cost basis
+    </a>
+    <CostBasisLogs client:load query={query} />
+  </main>
+</BaseLayout>

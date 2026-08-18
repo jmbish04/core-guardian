@@ -40,17 +40,17 @@ export type TrendProbe = {
   breakdown: { label: string; value: number }[];
 };
 
-/** Donut slice palette — same OKLCH family the rest of the dashboard uses. */
+/** Donut slice palette — the shared theme-aware chart palette (recolors on toggle). */
 const SLICE_COLORS = [
-  "oklch(0.6 0.145 181.2)",
-  "oklch(0.76 0.161 80.1)",
-  "oklch(0.66 0.19 42.8)",
-  "oklch(0.62 0.19 300)",
-  "oklch(0.58 0.16 250)",
+  "var(--color-chart-1)",
+  "var(--color-chart-2)",
+  "var(--color-chart-3)",
+  "var(--color-chart-4)",
+  "var(--color-chart-5)",
 ];
 
 const CHART_CONFIG = {
-  value: { label: "Usage", color: "oklch(0.6 0.145 181.2)" },
+  value: { label: "Usage", color: "var(--color-chart-1)" },
 } satisfies ChartConfig;
 
 function fmt(value: number, unit: string): string {
@@ -164,7 +164,7 @@ export function UsageTrend({
                     <stop offset="100%" stopColor="var(--color-value)" stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--color-border)" />
                 <XAxis
                   dataKey="t"
                   tickLine={false}
@@ -172,7 +172,7 @@ export function UsageTrend({
                   tickMargin={8}
                   minTickGap={32}
                   tickFormatter={hourTick}
-                  tick={{ fill: "hsl(var(--foreground))", fontSize: 11 }}
+                  tick={{ fill: "var(--color-foreground)", fontSize: 11 }}
                 />
                 <ChartTooltip
                   content={

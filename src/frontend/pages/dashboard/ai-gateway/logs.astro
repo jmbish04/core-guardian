@@ -1,0 +1,22 @@
+---
+/**
+ * AI Gateway request/usage log — Level-3 drill target for the gateway detail chart.
+ * Reached from `/dashboard/ai-gateway` point-clicks (`?query=day:<YYYY-MM-DD>`).
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { AiGatewayLogs } from "@/components/logs";
+
+const query = Astro.url.searchParams.get("query") ?? undefined;
+---
+
+<BaseLayout title="AI Gateway usage log" description="Every metered AI Gateway usage window over the trailing 90 days.">
+  <main class="container mx-auto flex max-w-7xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/ai-gateway"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← AI Gateway
+    </a>
+    <AiGatewayLogs client:load query={query} />
+  </main>
+</BaseLayout>

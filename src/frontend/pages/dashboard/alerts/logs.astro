@@ -1,0 +1,22 @@
+---
+/**
+ * Guardian alerts / anomaly log — Level-3 drill target for the alerts severity trend.
+ * Reached from `/dashboard/alerts` bar-clicks (`?query=day:<YYYY-MM-DD>`).
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { AlertsLogs } from "@/components/logs";
+
+const query = Astro.url.searchParams.get("query") ?? undefined;
+---
+
+<BaseLayout title="Alerts log" description="Every allowance-projection alert: resource, severity, cause, fix, and status.">
+  <main class="container mx-auto flex max-w-7xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/alerts"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Alerts
+    </a>
+    <AlertsLogs client:load query={query} />
+  </main>
+</BaseLayout>
