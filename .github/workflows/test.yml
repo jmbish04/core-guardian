@@ -1,0 +1,47 @@
+name: Client SDK Tests
+
+# Runs the vendorable-client self-checks (TS + integration builder + template
+# vendor script + GAS version-sync + Python) on every push to main and every PR.
+# The tests need no project dependencies — only node, python3, and tsx — so
+# instead of `pnpm install` we just install pnpm + tsx globally and run the
+# test script. pnpm stays the single source of truth for the command.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          # setup-node@v5 enables package-manager caching by default, which
+          # tries to run pnpm (from the "packageManager" field) during THIS
+          # step — before pnpm is installed — and fails with "Unable to locate
+          # executable file: pnpm". We install pnpm ourselves below, so disable it.
+          package-manager-cache: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      # npm is always on PATH after setup-node. Install pnpm (to run the test
+      # script) and tsx (the TS test runner the script invokes) globally, so
+      # both resolve without corepack shims or npx on-the-fly downloads.
+      - name: Install pnpm and tsx
+        run: npm install -g pnpm@10.33.2 tsx
+
+      - name: Run client SDK tests
+        run: pnpm test

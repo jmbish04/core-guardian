@@ -1,20 +1,20 @@
 "use no memo"
 
 import { memo, type ComponentProps } from "react"
-import { Badge } from "@/components/reui/badge"
-import { type DataGridFeatures } from "@/components/reui/data-grid/data-grid"
-import { DataGridColumnHeader } from "@/components/reui/data-grid/data-grid-column-header"
+import { Badge } from "~/components/reui/badge"
+import { type DataGridFeatures } from "~/components/reui/data-grid/data-grid"
+import { DataGridColumnHeader } from "~/components/reui/data-grid/data-grid-column-header"
 import { type ColumnDef } from "@tanstack/react-table"
 
-import { cn } from "@/lib/utils"
+import { cn } from "~/lib/utils"
 import {
   Avatar,
   AvatarFallback,
   AvatarGroup,
   AvatarGroupCount,
   AvatarImage,
-} from "@/components/ui/avatar"
-import { Button } from "@/components/ui/button"
+} from "~/components/ui/avatar"
+import { Button } from "~/components/ui/button"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,8 +22,8 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import { Item, ItemMedia } from "@/components/ui/item"
+} from "~/components/ui/dropdown-menu"
+import { Item, ItemMedia } from "~/components/ui/item"
 import {
   TASK_TYPE_DETAILS,
   type RoadmapCategoryId,

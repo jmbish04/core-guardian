@@ -18,12 +18,19 @@ import {
   description="Manage AI Router circuit breakers, the global kill switch, and review recent routed AI requests."
 >
   <main class="container mx-auto flex max-w-6xl flex-col gap-8 px-4 py-12">
-    <a
-      href="/dashboard/guardian"
-      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
-    >
-      ← Core Guardian
-    </a>
+    <header class="flex flex-col gap-2">
+      <a
+        href="/dashboard/guardian"
+        class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+      >
+        ← Core Guardian
+      </a>
+      <h1 class="text-3xl font-semibold tracking-tight">AI Router</h1>
+      <p class="max-w-2xl text-sm text-muted-foreground">
+        Circuit breakers, the global kill switch, model substitutions, and cheaper-model
+        recommendations for every routed AI request.
+      </p>
+    </header>
     <AiRouterUsage client:load />
     <AiRouterConsole client:load />
     <ModelSubstitutions client:load />

@@ -334,6 +334,24 @@ export async function uploadToDrive(
 }
 
 /**
+ * Read a Drive file's raw content back by id — the verify-by-redownload step:
+ * re-fetch what we just archived to prove the bytes/rows landed intact.
+ *
+ * @returns the file body as text
+ */
+export async function downloadDriveFile(env: Env, fileId: string, nowSec: number): Promise<string> {
+  const token = await getDriveAccessToken(env, nowSec);
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) {
+    throw new Error(`Drive download ${res.status}: ${await res.text().catch(() => "")}`);
+  }
+  return res.text();
+}
+
+/**
  * Extract a Drive folder/file id from a pasted URL or a bare id.
  *
  * Handles /folders/<id>, /d/<id>, ?id=<id>, and a raw id. Returns null if

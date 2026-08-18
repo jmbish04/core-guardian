@@ -10,7 +10,7 @@
 
 "use client";
 
-import { ArchiveIcon, Loader2Icon, RefreshCwIcon, Trash2Icon } from "lucide-react";
+import { ArchiveIcon, Loader2Icon, RefreshCwIcon, ScissorsIcon, Trash2Icon } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ import { ApiError, apiGet, apiSend } from "@/lib/api";
 import { humanSize, relativeTime } from "@/lib/format";
 
 import { ArchiveD1Dialog } from "./ArchiveD1Dialog";
+import { D1TableManager } from "./D1TableManager";
 import { ConfirmDeleteDialog } from "./ConfirmDeleteDialog";
 import { BoundWorkers, ResourceTable, type Column } from "./ResourceTable";
 
@@ -139,6 +140,7 @@ export function D1Table() {
   );
   const [pending, setPending] = useState<D1Row | null>(null);
   const [archiving, setArchiving] = useState<D1Row | null>(null);
+  const [shrinking, setShrinking] = useState<D1Row | null>(null);
 
   async function remove(row: D1Row) {
     try {
@@ -189,6 +191,15 @@ export function D1Table() {
       align: "right",
       render: (r) => (
         <div className="flex items-center justify-end gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label={`Shrink ${r.name}`}
+            onClick={() => setShrinking(r)}
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <ScissorsIcon className="size-4" />
+          </Button>
           <Button
             variant="ghost"
             size="icon"
@@ -249,6 +260,11 @@ export function D1Table() {
         target={archiving}
         onOpenChange={(open) => !open && setArchiving(null)}
         onDeleted={() => void reload()}
+      />
+      <D1TableManager
+        target={shrinking}
+        onOpenChange={(open) => !open && setShrinking(null)}
+        onChanged={() => void reload()}
       />
     </section>
   );

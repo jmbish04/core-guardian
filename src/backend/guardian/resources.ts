@@ -21,7 +21,9 @@ const CF_API_BASE = "https://api.cloudflare.com/client/v4";
 
 /** Cache key + TTL for the Worker binding index. */
 const BINDINGS_CACHE_KEY = "guardian:worker-bindings";
-const BINDINGS_CACHE_TTL_SECONDS = 3600;
+// Bindings change rarely; cache for a day so the hourly cron reads the cache
+// instead of re-fanning-out to every worker script (~190 subrequests) every run.
+const BINDINGS_CACHE_TTL_SECONDS = 86_400;
 
 /** Max concurrent Cloudflare API calls when fanning out. */
 const FANOUT = 12;
@@ -69,6 +71,28 @@ export async function cfApi<T = unknown>(
     throw new Error(`Cloudflare API error: ${detail}`);
   }
   return { result: body.result as T, result_info: body.result_info };
+}
+
+/**
+ * List the account's zones. Zones are a TOP-LEVEL resource (`/zones?account.id=`),
+ * NOT under `/accounts/{id}/…`, so this can't go through {@link cfApi}. Returns
+ * [] on any failure — a missing zone list must never sink the resource snapshot.
+ */
+export async function listZones(env: Env): Promise<{ id: string; name: string }[]> {
+  try {
+    const [accountId, token] = await Promise.all([
+      getCloudflareAccountId(env),
+      getCloudflareApiToken(env),
+    ]);
+    if (!accountId || !token) return [];
+    const res = await fetch(`${CF_API_BASE}/zones?account.id=${accountId}&per_page=50`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const body = (await res.json().catch(() => ({}))) as { result?: { id: string; name: string }[] };
+    return (body.result ?? []).map((z) => ({ id: z.id, name: z.name }));
+  } catch {
+    return [];
+  }
 }
 
 /** Runs `work` over `items` with bounded concurrency. */
