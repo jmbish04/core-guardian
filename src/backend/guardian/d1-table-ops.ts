@@ -24,13 +24,15 @@ import { desc, eq } from "drizzle-orm";
 
 import { getDb } from "@/backend/db";
 import { d1TableArchives, type D1TableArchiveRow } from "@/backend/db/schema";
-import { downloadDriveFile, ensureArchiveFolder, uploadToDrive } from "@/backend/lib/google-drive";
+import { wsDownloadFile, wsUploadFile } from "@/backend/lib/workspace-drive";
 
 import { toJsonl, workerName } from "./d1-archive";
 import { cfApi } from "./resources";
 
-/** One export must fit in Worker memory + one D1 response + one Drive upload. */
-export const MAX_ARCHIVE_BYTES = 40 * 1024 * 1024; // 40 MB
+/** One export must fit in the 128 MB isolate. The workspace upload holds the
+ *  jsonl string, its bytes, and a base64-in-JSON copy live at once (~5x the raw
+ *  size), so cap well under the isolate — narrow the cutoff to shrink in chunks. */
+export const MAX_ARCHIVE_BYTES = 8 * 1024 * 1024; // 8 MB
 
 /** Double-quote a SQLite identifier, escaping embedded quotes. Guards injection. */
 function ident(name: string): string {
@@ -132,9 +134,13 @@ export async function archiveD1Table(
   const bytes = new TextEncoder().encode(jsonl).length;
   const contentHash = await sha256Hex(jsonl);
 
-  const { folderId } = await ensureArchiveFolder(env, workerName(env), "d1", Math.floor(Date.now() / 1000));
   const stamp = exportedAt.slice(0, 19).replace(/[:T]/g, "-");
-  const upload = await uploadToDrive(env, folderId, `${databaseName}.${table}.${stamp}.jsonl`, jsonl, "application/x-ndjson", Math.floor(Date.now() / 1000));
+  const upload = await wsUploadFile(env, {
+    name: `${databaseName}.${table}.${stamp}.jsonl`,
+    mimeType: "application/x-ndjson",
+    content: jsonl,
+    folderPath: `${workerName(env)}/d1-archive`,
+  });
 
   const db = getDb(env);
   const rec: typeof d1TableArchives.$inferInsert = {
@@ -164,7 +170,7 @@ export async function verifyD1Archive(env: Env, archiveId: string): Promise<D1Ta
   const [rec] = await db.select().from(d1TableArchives).where(eq(d1TableArchives.id, archiveId));
   if (!rec) throw new Error(`archive ${archiveId} not found`);
 
-  const content = await downloadDriveFile(env, rec.driveFileId, Math.floor(Date.now() / 1000));
+  const content = await wsDownloadFile(env, rec.driveFileId);
   const bytes = new TextEncoder().encode(content).length;
   const hash = await sha256Hex(content);
   let driveRows = 0;
