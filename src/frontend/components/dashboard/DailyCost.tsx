@@ -18,7 +18,7 @@
 
 "use client";
 
-import { Loader2Icon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
+import { ArrowRightIcon, Loader2Icon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ReferenceDot, ReferenceLine, XAxis } from "recharts";
 
@@ -354,6 +354,16 @@ export function DailyCost() {
               </ChartContainer>
             )}
           </div>
+
+          {/* Keyboard-focusable drill to L3 — the chart onClick is a non-focusable
+              svg, so this is the accessible path to the logs (WCAG 2.1.1). */}
+          <a
+            href="/dashboard/daily-cost/logs"
+            className="inline-flex w-fit items-center gap-1 rounded text-[11px] text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            View daily-cost logs
+            <ArrowRightIcon className="size-3" aria-hidden />
+          </a>
 
           {/* --- Per-service table ------------------------------------------- */}
           <div className="overflow-hidden rounded-xl border border-border/60 bg-background/40">

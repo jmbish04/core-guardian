@@ -17,7 +17,7 @@ import {
   type ExpandedState,
   useTable,
 } from "@tanstack/react-table";
-import { Loader2Icon, RefreshCwIcon, SearchIcon } from "lucide-react";
+import { ArrowRightIcon, Loader2Icon, RefreshCwIcon, SearchIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, XAxis, YAxis } from "recharts";
 
@@ -529,6 +529,15 @@ export function AiRouterUsage() {
             </BarChart>
           </ChartContainer>
         )}
+        {/* Keyboard-focusable drill to L3 — the bar onClick is a non-focusable
+            svg, so this is the accessible path to the logs (WCAG 2.1.1). */}
+        <a
+          href="/dashboard/ai-router/logs"
+          className="inline-flex w-fit items-center gap-1 rounded text-[11px] text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          View AI Router logs
+          <ArrowRightIcon className="size-3" aria-hidden />
+        </a>
       </section>
 
       {/* --- Project rollup grid (expand a row for its model breakdown) ---- */}

@@ -97,14 +97,25 @@ export interface HeroMetricChartProps {
    * non-focusable svg) — WCAG 2.1.1.
    */
   logsHref?: string;
-  /** Small caption under the headline (e.g. "billed, MTD"). */
-  caption?: string;
+  /**
+   * Small caption under the headline (e.g. "billed, MTD"). Pass a function to
+   * derive it from the visible (windowed) slice so pace phrasing matches the
+   * active tab rather than the full series.
+   */
+  caption?: string | ((windowed: HeroPoint[]) => string);
   /**
    * Story layer (G7): recharts `<ReferenceLine>` / `<ReferenceDot>` rendered as
    * direct children of the LineChart (behind the plotted line) — e.g. a baseline
    * threshold and an anomaly marker. Optional.
    */
   annotations?: ReactNode;
+  /**
+   * Per-window story annotations: called with the VISIBLE (windowed) slice so a
+   * `<ReferenceDot>`/`<ReferenceLine>` lands on plotted points and rescales with
+   * the active tab — recharts silently drops refs outside the domain. Takes
+   * precedence over `annotations` when set.
+   */
+  annotate?: (windowed: HeroPoint[]) => ReactNode;
   className?: string;
 }
 
@@ -125,6 +136,7 @@ export function HeroMetricChart({
   logsHref,
   caption,
   annotations,
+  annotate,
   className,
 }: HeroMetricChartProps) {
   const [period, setPeriod] = useState(periods[0].key);
@@ -135,6 +147,11 @@ export function HeroMetricChart({
     () => points.slice(-active.count).map((p) => ({ label: p.label, value: fin(p.value) })),
     [points, active.count],
   );
+
+  // Story layer, resolved against the VISIBLE slice so ReferenceDot/Line land on
+  // plotted points and rescale with the tab (recharts drops off-domain refs).
+  const resolvedAnnotations = annotate ? annotate(windowed) : annotations;
+  const resolvedCaption = typeof caption === "function" ? caption(windowed) : caption;
 
   const headline = useMemo(() => {
     if (windowed.length === 0) return 0;
@@ -163,8 +180,8 @@ export function HeroMetricChart({
             <span className="font-mono text-2xl font-semibold tabular-nums tracking-tight">
               {valueFormatter(fin(headline))}
             </span>
-            {caption ? (
-              <span className="text-xs text-muted-foreground">{caption}</span>
+            {resolvedCaption ? (
+              <span className="text-xs text-muted-foreground">{resolvedCaption}</span>
             ) : null}
           </div>
         </div>
@@ -227,7 +244,7 @@ export function HeroMetricChart({
                   />
                 }
               />
-              {annotations}
+              {resolvedAnnotations}
               <Line
                 dataKey="value"
                 type="monotone"

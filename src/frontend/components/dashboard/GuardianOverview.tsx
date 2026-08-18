@@ -208,7 +208,7 @@ export function GuardianOverview() {
           delta={deltaFraction(metrics.today, metrics.deltaUsd)}
           invertDelta
           alert={spendStory.over}
-          trend={metrics.spendTrend}
+          trend={kpis.spendTrend}
         />
         <KpiLink
           href="/dashboard/storage/d1"
@@ -249,7 +249,6 @@ export function GuardianOverview() {
           }
           icon={BellRing}
           chartKey="chart-5"
-          delta={kpis.alertCount > 0 ? kpis.alertCount / 100 : 0}
         />
       </div>
 

@@ -161,11 +161,7 @@ export function SpendHero() {
     () => (data?.totalByDay ?? []).map((d) => ({ label: d.day, value: fin(d.costUsd) })),
     [data],
   );
-  const { story, annotations } = useMemo(() => heroStory(points, (n) => usd(n, false)), [points]);
-  const pace = pacePhrase(story.paceFraction);
-  const caption = pace
-    ? `Spend pace ${pace} vs earlier this window`
-    : "Spend holding steady vs the 90d baseline";
+  const fmt = (n: number) => usd(n, false);
   return (
     <HeroMetricChart
       title="Billable spend"
@@ -173,10 +169,17 @@ export function SpendHero() {
       points={points}
       chartKey="chart-1"
       aggregate="sum"
-      valueFormatter={(n) => usd(n, false)}
+      valueFormatter={fmt}
       seriesLabel="Billed"
-      caption={points.length ? caption : "reconciled from Cloudflare's Billable Usage API"}
-      annotations={annotations}
+      caption={
+        points.length
+          ? (w) => {
+              const pace = pacePhrase(heroStory(w, fmt).story.paceFraction);
+              return pace ? `Spend pace ${pace} vs earlier this window` : "Spend holding steady";
+            }
+          : "reconciled from Cloudflare's Billable Usage API"
+      }
+      annotate={(w) => heroStory(w, fmt).annotations}
       xTickFormatter={dayTick}
       loading={loading}
       error={error}
@@ -210,16 +213,15 @@ export function D1UsageDetail() {
     [d1],
   );
 
-  const { story: d1Story, annotations: d1Annotations } = useMemo(
-    () => heroStory(costPoints, (n) => usd(n, false)),
-    [costPoints],
-  );
   const d1Total = useMemo(() => costPoints.reduce((s, p) => s + fin(p.value), 0), [costPoints]);
-  const d1Pace = pacePhrase(d1Story.paceFraction);
+  const d1Fmt = (n: number) => usd(n, false);
   const d1Caption =
     d1Total <= 0
       ? "D1 within free allowance — no metered spend this window"
-      : `D1 metered ${usd(d1Total, false)} over 90d${d1Pace ? ` · pace ${d1Pace}` : ""}`;
+      : (w: HeroPoint[]) => {
+          const pace = pacePhrase(heroStory(w, d1Fmt).story.paceFraction);
+          return `D1 metered ${usd(d1Total, false)} over 90d${pace ? ` · pace ${pace}` : ""}`;
+        };
 
   if (error) return <InlineError message={error} onRetry={reload} />;
   if (!loading && !d1) {
@@ -239,7 +241,7 @@ export function D1UsageDetail() {
         valueFormatter={(n) => usd(n, false)}
         seriesLabel="D1 cost"
         caption={d1 ? d1Caption : undefined}
-        annotations={d1Annotations}
+        annotate={(w) => heroStory(w, d1Fmt).annotations}
         xTickFormatter={dayTick}
         loading={loading}
         error={error}
@@ -291,15 +293,7 @@ export function GatewayUsageDetail() {
     return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([label, value]) => ({ label, value }));
   }, [data]);
 
-  const { story, annotations } = useMemo(
-    () => heroStory(points, (n) => compactNumber(n)),
-    [points],
-  );
-  const pace = pacePhrase(story.paceFraction);
-  const caption = pace
-    ? `Gateway usage ${pace} vs earlier this window`
-    : "Gateway usage holding steady vs the 90d baseline";
-
+  const gwFmt = (n: number) => compactNumber(n);
   return (
     <HeroMetricChart
       title="AI Gateway metered usage"
@@ -307,10 +301,17 @@ export function GatewayUsageDetail() {
       points={points}
       chartKey="chart-4"
       aggregate="sum"
-      valueFormatter={(n) => compactNumber(n)}
+      valueFormatter={gwFmt}
       seriesLabel="Metered units"
-      caption={points.length ? caption : "requests metered through AI Gateway"}
-      annotations={annotations}
+      caption={
+        points.length
+          ? (w) => {
+              const pace = pacePhrase(heroStory(w, gwFmt).story.paceFraction);
+              return pace ? `Gateway usage ${pace} vs earlier this window` : "Gateway usage holding steady";
+            }
+          : "requests metered through AI Gateway"
+      }
+      annotate={(w) => heroStory(w, gwFmt).annotations}
       xTickFormatter={dayTick}
       loading={loading}
       error={error}
