@@ -74,6 +74,13 @@ import { getWorkersPlan, setWorkersPlan } from "@/backend/guardian/plan";
 import { scrapeAllPricing, scrapeOneProduct } from "@/backend/guardian/pricing-scrape";
 import { archiveR2Bucket } from "@/backend/guardian/r2-archive";
 import { buildSpendRollup, latestSpendRollup, reviewDelta } from "@/backend/guardian/spend-rollup";
+import {
+  archiveD1Table,
+  listD1TableArchives,
+  listD1Tables,
+  trimD1Table,
+  verifyD1Archive,
+} from "@/backend/guardian/d1-table-ops";
 import { listUsageRegistrations, registerDirectUsage } from "@/backend/guardian/register-usage";
 import {
   getBindingIndex,
@@ -1469,6 +1476,113 @@ guardianRouter.openapi(
     // Refresh = "I've reviewed" → reset the delta baseline (clean zero).
     fresh.reviewDelta = await reviewDelta(c.env, fresh.totalActualUsd, fresh.window.start, true);
     return c.json(fresh, 200);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// D1 per-table archive → verify → trim (shrink a bloated database safely)
+// ---------------------------------------------------------------------------
+
+guardianRouter.openapi(
+  createRoute({
+    method: "get",
+    path: "/d1/{uuid}/tables",
+    operationId: "guardianD1Tables",
+    summary: "A D1 database's tables ranked by estimated size, + archive history",
+    description:
+      "Per-table row counts and a SAMPLED byte estimate (D1 has no dbstat), biggest-first — so you can target what's massive. Also returns recent archive/verify/trim records for the database.",
+    request: { params: z.object({ uuid: z.string() }) },
+    responses: {
+      200: { description: "Tables + archive log", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+      401: { description: "Unauthorized", content: { "application/json": { schema: errorResponseSchema } } },
+    },
+  }),
+  async (c) => {
+    const { uuid } = c.req.valid("param");
+    const [tables, archives] = await Promise.all([listD1Tables(c.env, uuid), listD1TableArchives(c.env, uuid)]);
+    return c.json({ tables, archives }, 200);
+  },
+);
+
+guardianRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/d1/{uuid}/archive",
+    operationId: "guardianD1TableArchive",
+    summary: "Archive one table (or its older-than-cutoff scope) to Drive as JSONL",
+    description:
+      "Exports the table (optionally only rows where `timeColumn < cutoff`) to Google Drive as JSONL and logs an archive record (verified=0). The archive scope IS the trim scope, so what you later delete is exactly what was exported. NO delete here.",
+    request: {
+      params: z.object({ uuid: z.string() }),
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              databaseName: z.string(),
+              table: z.string(),
+              timeColumn: z.string().optional(),
+              cutoff: z.union([z.number(), z.string()]).optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      200: { description: "Archive record (unverified)", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+      401: { description: "Unauthorized", content: { "application/json": { schema: errorResponseSchema } } },
+    },
+  }),
+  async (c) => {
+    const { uuid } = c.req.valid("param");
+    const b = c.req.valid("json");
+    const rec = await archiveD1Table(c.env, {
+      uuid,
+      databaseName: b.databaseName,
+      table: b.table,
+      scope: b.timeColumn ? { timeColumn: b.timeColumn, cutoff: b.cutoff } : undefined,
+    });
+    return c.json(rec, 200);
+  },
+);
+
+guardianRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/d1/archive/{id}/verify",
+    operationId: "guardianD1ArchiveVerify",
+    summary: "Verify an archive by re-downloading it from Drive and counting rows",
+    description:
+      "Pulls the archived JSONL back from Drive, counts its row lines, and marks the record verified only if that count matches what was exported — proof the data is safely in Drive before any trim.",
+    request: { params: z.object({ id: z.string() }) },
+    responses: {
+      200: { description: "Verification result", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+      401: { description: "Unauthorized", content: { "application/json": { schema: errorResponseSchema } } },
+    },
+  }),
+  async (c) => c.json(await verifyD1Archive(c.env, c.req.valid("param").id), 200),
+);
+
+guardianRouter.openapi(
+  createRoute({
+    method: "post",
+    path: "/d1/archive/{id}/trim",
+    operationId: "guardianD1ArchiveTrim",
+    summary: "DESTRUCTIVE: delete the archived scope from the live D1 table",
+    description:
+      "Deletes exactly the rows that were archived + verified (same WHERE scope), reclaiming D1 space. GATED: refuses unless the archive record is verified and not already trimmed. Records the deleted count + reclaimed bytes.",
+    request: { params: z.object({ id: z.string() }) },
+    responses: {
+      200: { description: "Trim result", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+      409: { description: "Not verified / already trimmed", content: { "application/json": { schema: errorResponseSchema } } },
+      401: { description: "Unauthorized", content: { "application/json": { schema: errorResponseSchema } } },
+    },
+  }),
+  async (c) => {
+    try {
+      return c.json(await trimD1Table(c.env, c.req.valid("param").id), 200);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : "trim failed" }, 409);
+    }
   },
 );
 
