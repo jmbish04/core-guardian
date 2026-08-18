@@ -45,6 +45,8 @@ import {
   type ChartConfig,
 } from "@/components/ui/chart";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { ApiError, apiGet } from "@/lib/api";
 
 // --- Response types (mirror BillableUsageReport) ----------------------------
@@ -282,6 +284,8 @@ export function BillableUsage() {
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<ExpandedState>({});
+  const [tab, setTab] = useState<"reconcile" | "product">("reconcile");
+  const [density, setDensity] = useState<"compact" | "comfortable">("compact");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -397,8 +401,14 @@ export function BillableUsage() {
           <code className="mx-1 font-mono">/api/guardian/billable-usage/sync</code> to pull it now.
         </p>
       ) : (
-        <>
+        <Tabs value={tab} onValueChange={(v) => setTab(v as "reconcile" | "product")}>
+          <TabsList>
+            <TabsTrigger value="reconcile">Reconciliation</TabsTrigger>
+            <TabsTrigger value="product">Per-product</TabsTrigger>
+          </TabsList>
+
           {/* --- Reconciliation: estimate vs the real bill ------------------- */}
+          <TabsContent value="reconcile">
           <div className="rounded-xl border border-border/60 bg-background/40 p-5">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div className="flex items-baseline gap-3">
@@ -487,8 +497,10 @@ export function BillableUsage() {
               </span>
             </div>
           </div>
+          </TabsContent>
 
           {/* --- Per-product billed table (expand a row for its daily points) - */}
+          <TabsContent value="product">
           <div className="overflow-hidden rounded-xl border border-border/60 bg-background/40">
             <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-border/60 px-4 py-3">
               <h3 className="text-sm font-semibold">
@@ -497,14 +509,35 @@ export function BillableUsage() {
                   expand a product for its daily points
                 </span>
               </h3>
-              <div className="relative">
-                <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={query}
-                  onChange={(e) => setQuery(e.currentTarget.value)}
-                  placeholder="Search products…"
-                  className="h-8 w-44 pl-8 text-sm"
-                />
+              <div className="flex flex-wrap items-center gap-3">
+                <ToggleGroup
+                  multiple={false}
+                  value={[density]}
+                  onValueChange={(v) => {
+                    const next = v[0] as "compact" | "comfortable" | undefined;
+                    if (next) setDensity(next);
+                  }}
+                  variant="outline"
+                  size="sm"
+                  spacing={0}
+                  aria-label="Row density"
+                >
+                  <ToggleGroupItem value="compact" aria-label="Compact rows">
+                    Compact
+                  </ToggleGroupItem>
+                  <ToggleGroupItem value="comfortable" aria-label="Comfortable rows">
+                    Comfortable
+                  </ToggleGroupItem>
+                </ToggleGroup>
+                <div className="relative">
+                  <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={query}
+                    onChange={(e) => setQuery(e.currentTarget.value)}
+                    placeholder="Search products…"
+                    className="h-8 w-44 pl-8 text-sm"
+                  />
+                </div>
               </div>
             </div>
 
@@ -512,7 +545,7 @@ export function BillableUsage() {
               table={table}
               recordCount={rows.length}
               emptyMessage="No products match this search."
-              tableLayout={{ dense: true, headerBorder: true, rowBorder: true, columnsVisibility: false }}
+              tableLayout={{ dense: density === "compact", headerBorder: true, rowBorder: true, columnsVisibility: false }}
               tableClassNames={{
                 footer: "border-t border-border/60",
               }}
@@ -540,7 +573,8 @@ export function BillableUsage() {
               </DataGridContainer>
             </DataGrid>
           </div>
-        </>
+          </TabsContent>
+        </Tabs>
       )}
     </section>
   );

@@ -16,6 +16,7 @@
 
 import { useTable, type ColumnDef, type ExpandedState } from "@tanstack/react-table";
 import {
+  BellIcon,
   ChevronRightIcon,
   ExternalLinkIcon,
   GitPullRequestIcon,
@@ -48,6 +49,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { apiGet } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -82,6 +84,12 @@ const STATUS_GROUPS: { id: JulesStatus; label: string; dot: string }[] = [
   { id: "failed", label: "Failed", dot: "bg-destructive" },
   { id: "completed", label: "Completed", dot: "bg-emerald-500" },
 ];
+
+// The three lifecycle states a human should actually look at: mid-flight, stuck,
+// or failed. The "attention only" toggle narrows the grid to just these groups.
+const ATTENTION_STATUSES = new Set<JulesStatus>(["running", "stuck", "failed"]);
+
+type Density = "compact" | "comfortable";
 
 type GroupRow = {
   kind: "group";
@@ -209,6 +217,8 @@ export function JulesSessions() {
   const [status, setStatus] = useState<JulesStatus | "all">("all");
   const [page, setPage] = useState(0);
   const [query, setQuery] = useState("");
+  const [density, setDensity] = useState<Density>("compact");
+  const [attentionOnly, setAttentionOnly] = useState(false);
 
   const fetcher = useCallback(() => {
     const params = new URLSearchParams({
@@ -229,7 +239,10 @@ export function JulesSessions() {
     return sessions.filter((s) => searchBlob(s).includes(q));
   }, [data, query]);
 
-  const rows = useMemo(() => buildRows(filtered), [filtered]);
+  const rows = useMemo(() => {
+    const built = buildRows(filtered);
+    return attentionOnly ? built.filter((r) => ATTENTION_STATUSES.has(r.group.id)) : built;
+  }, [filtered, attentionOnly]);
   const [expanded, setExpanded] = useState<ExpandedState>({});
   // Keep every group open by default as pages/filters change; only an explicit
   // collapse (recorded in `expanded`) overrides it.
@@ -383,7 +396,38 @@ export function JulesSessions() {
           ) : null}
         </InputGroup>
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            variant={attentionOnly ? "secondary" : "outline"}
+            aria-pressed={attentionOnly}
+            onClick={() => setAttentionOnly((v) => !v)}
+            title="Show only Running, Stuck and Failed groups"
+          >
+            <BellIcon className="size-4" aria-hidden />
+            Attention only
+          </Button>
+
+          <ToggleGroup
+            multiple={false}
+            value={[density]}
+            onValueChange={(v) => {
+              const next = v[0] as Density | undefined;
+              if (next) setDensity(next);
+            }}
+            variant="outline"
+            size="sm"
+            spacing={0}
+            aria-label="Row density"
+          >
+            <ToggleGroupItem value="compact" aria-label="Compact rows">
+              Compact
+            </ToggleGroupItem>
+            <ToggleGroupItem value="comfortable" aria-label="Comfortable rows">
+              Comfortable
+            </ToggleGroupItem>
+          </ToggleGroup>
+
           {rows.length > 0 ? (
             <Button
               type="button"
@@ -410,7 +454,7 @@ export function JulesSessions() {
           isLoading={loading}
           emptyMessage="No Jules sessions match this filter."
           tableLayout={{
-            dense: true,
+            dense: density === "compact",
             rowBorder: true,
             headerBorder: true,
             columnsVisibility: false,
