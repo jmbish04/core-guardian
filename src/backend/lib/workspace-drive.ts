@@ -6,35 +6,80 @@
  * needs a Shared Drive. The workspace worker delegates to a real user's OAuth
  * (`as_user`), so archives land in that user's Drive with their quota.
  *
- * Auth: `Authorization: Bearer <WORKER_API_KEY>` (the same Secret Store binding
- * this worker already carries). Base URL is the constant below, overridable by a
+ * Auth: `Authorization: Bearer <token>` — a dedicated `GOOGLE_WORKSPACE_MCP_TOKEN`
+ * Secret Store binding if present, else this worker's `WORKER_API_KEY` (the value
+ * the user pointed us at). Base URL is the constant below, overridable by a
  * `GOOGLE_WORKSPACE_MCP_URL` var; the delegated user by `GUARDIAN_DRIVE_AS_USER`.
  *
- * The tool responses are JSON; their exact envelope is dug for defensively
- * (`dig`) so a top-level or nested `{ id, url, content }` both work.
+ * Responses are MCP tool results: `{ content:[{type:"text",text}], isError? }`,
+ * or a flat `{ id, url, content }`, or a raw string body. `pickStr`/`mcpText`
+ * dig all of these, and an `isError:true` (returned with HTTP 200) is thrown.
  */
 
-import { getSecret, getWorkerApiKey } from "@/backend/utils/secrets";
+import { getSecret, getSecretStoreBinding, getWorkerApiKey } from "@/backend/utils/secrets";
 
 const DEFAULT_BASE = "https://google-workspace-mcp.hacolby.workers.dev";
+const TIMEOUT_MS = 30_000;
 
-/** POST one MCP tool with Bearer auth; returns the parsed JSON body. */
+/** An MCP `isError:true` result (returned with a 200, so `res.ok` misses it). */
+function isErr(raw: unknown): boolean {
+  return !!(raw && typeof raw === "object" && (raw as { isError?: unknown }).isError);
+}
+
+/** The joined text of an MCP `content:[{text}]` payload, or undefined. */
+function mcpText(raw: unknown): string | undefined {
+  const c = (raw as { content?: unknown })?.content;
+  if (!Array.isArray(c)) return undefined;
+  const t = c.map((x) => (x as { text?: string })?.text ?? "").join("");
+  return t || undefined;
+}
+
+/** First STRING value among `keys` — top-level, one wrap down, or inside an MCP
+ *  text payload that is itself JSON. Type-guarded: an array/object under a key
+ *  (e.g. the MCP `content` array) is skipped, never returned cast as a string. */
+function pickStr(raw: unknown, keys: string[]): string | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const o = raw as Record<string, unknown>;
+  for (const k of keys) if (typeof o[k] === "string") return o[k] as string;
+  for (const w of ["result", "data", "file"]) {
+    const hit = pickStr(o[w], keys);
+    if (hit !== undefined) return hit;
+  }
+  const t = mcpText(raw);
+  if (t) {
+    try {
+      return pickStr(JSON.parse(t), keys);
+    } catch {
+      /* MCP text is the raw body, not JSON */
+    }
+  }
+  return undefined;
+}
+
+/** POST one MCP tool with Bearer auth; returns the parsed body (JSON or string). */
 async function wsCall(env: Env, tool: string, body: Record<string, unknown>): Promise<unknown> {
-  const key = await getWorkerApiKey(env);
-  if (!key) throw new Error("Missing WORKER_API_KEY for the workspace client");
+  const key =
+    (await getSecretStoreBinding(env, "GOOGLE_WORKSPACE_MCP_TOKEN")) ??
+    getSecret(env, "GOOGLE_WORKSPACE_MCP_TOKEN") ??
+    (await getWorkerApiKey(env));
+  if (!key) throw new Error("Missing WORKER_API_KEY / GOOGLE_WORKSPACE_MCP_TOKEN for the workspace client");
   const base = (getSecret(env, "GOOGLE_WORKSPACE_MCP_URL") ?? DEFAULT_BASE).replace(/\/+$/, "");
   const res = await fetch(`${base}/api/tools/${tool}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`workspace ${tool} ${res.status}: ${text.slice(0, 300)}`);
+  let parsed: unknown = text;
   try {
-    return JSON.parse(text);
+    parsed = JSON.parse(text);
   } catch {
-    return text;
+    /* raw string body */
   }
+  if (isErr(parsed)) throw new Error(`workspace ${tool} error: ${mcpText(parsed) ?? text.slice(0, 300)}`);
+  return parsed;
 }
 
 /** The delegated Google user for `as_user`, when configured. */
@@ -43,43 +88,21 @@ function asUser(env: Env): Record<string, string> {
   return u ? { as_user: u } : {};
 }
 
-/** Find the first value for any of `keys`, at the top level or one nesting down
- *  (MCP tool results sometimes wrap the payload in `result`/`data`/`content`). */
-function dig<T = unknown>(obj: unknown, keys: string[]): T | undefined {
-  if (!obj || typeof obj !== "object") return undefined;
-  const o = obj as Record<string, unknown>;
-  for (const k of keys) if (o[k] !== undefined) return o[k] as T;
-  for (const wrap of ["result", "data", "content", "file", "tool_result"]) {
-    const inner = o[wrap];
-    if (inner && typeof inner === "object") {
-      const hit = dig<T>(inner, keys);
-      if (hit !== undefined) return hit;
-    }
-    // MCP content arrays: [{ type:"text", text:"<json>" }]
-    if (Array.isArray(inner)) {
-      for (const item of inner) {
-        const t = (item as { text?: string })?.text;
-        if (typeof t === "string") {
-          try {
-            const hit = dig<T>(JSON.parse(t), keys);
-            if (hit !== undefined) return hit;
-          } catch {
-            /* not json */
-          }
-        }
-      }
-    }
-  }
-  return undefined;
-}
-
-/** Base64-encode bytes (chunked to avoid a huge spread into fromCharCode). */
+/** Base64-encode bytes (chunked to stay within the argument-count limit). */
 function toBase64(bytes: Uint8Array): string {
   let s = "";
   for (let i = 0; i < bytes.length; i += 0x8000) {
     s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   }
   return btoa(s);
+}
+
+/** Decode a base64 string to bytes (latin1 round-trip is byte-exact). */
+function fromBase64(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
 
 export type WsUpload = { id: string; name: string; url: string; folderId?: string };
@@ -98,20 +121,25 @@ export async function wsUploadFile(
     ...(opts.folderId ? { folderId: opts.folderId } : {}),
     ...asUser(env),
   });
-  const id = dig<string>(raw, ["id", "fileId"]);
+  const id = pickStr(raw, ["id", "fileId"]);
   if (!id) throw new Error(`workspace upload returned no file id: ${JSON.stringify(raw).slice(0, 200)}`);
   return {
     id,
-    name: dig<string>(raw, ["name"]) ?? opts.name,
-    url: dig<string>(raw, ["url", "webViewLink"]) ?? "",
-    folderId: dig<string>(raw, ["folderId"]),
+    name: pickStr(raw, ["name"]) ?? opts.name,
+    url: pickStr(raw, ["url", "webViewLink"]) ?? "",
+    folderId: pickStr(raw, ["folderId"]),
   };
 }
 
-/** Read a Drive file's raw content back (the archive verify-by-redownload step). */
+/** Read a Drive file's content back (the archive verify-by-redownload step).
+ *  Returns the exact text uploaded — decodes `contentBase64` if the worker
+ *  echoes its own encoding, so `verifyD1Archive`'s byte/hash/count still hold. */
 export async function wsDownloadFile(env: Env, fileId: string): Promise<string> {
   const raw = await wsCall(env, "download_file_content", { fileId, ...asUser(env) });
-  const content = dig<string>(raw, ["content", "text", "body"]);
-  if (content == null) throw new Error(`workspace download returned no content: ${JSON.stringify(raw).slice(0, 200)}`);
-  return content;
+  if (typeof raw === "string") return raw;
+  const b64 = pickStr(raw, ["contentBase64", "dataBase64"]);
+  if (b64) return new TextDecoder().decode(fromBase64(b64));
+  const s = pickStr(raw, ["content", "text", "body"]) ?? mcpText(raw);
+  if (s === undefined) throw new Error(`workspace download returned no content: ${JSON.stringify(raw).slice(0, 200)}`);
+  return s;
 }

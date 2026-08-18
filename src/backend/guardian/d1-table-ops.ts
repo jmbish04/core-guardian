@@ -29,8 +29,10 @@ import { wsDownloadFile, wsUploadFile } from "@/backend/lib/workspace-drive";
 import { toJsonl, workerName } from "./d1-archive";
 import { cfApi } from "./resources";
 
-/** One export must fit in Worker memory + one D1 response + one Drive upload. */
-export const MAX_ARCHIVE_BYTES = 40 * 1024 * 1024; // 40 MB
+/** One export must fit in the 128 MB isolate. The workspace upload holds the
+ *  jsonl string, its bytes, and a base64-in-JSON copy live at once (~5x the raw
+ *  size), so cap well under the isolate — narrow the cutoff to shrink in chunks. */
+export const MAX_ARCHIVE_BYTES = 8 * 1024 * 1024; // 8 MB
 
 /** Double-quote a SQLite identifier, escaping embedded quotes. Guards injection. */
 function ident(name: string): string {
