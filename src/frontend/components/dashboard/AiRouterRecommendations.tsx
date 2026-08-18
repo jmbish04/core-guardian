@@ -452,7 +452,11 @@ export function AiRouterRecommendations() {
         table={table}
         recordCount={filtered.length}
         isLoading={loading}
-        emptyMessage={TAB_EMPTY[activeTab]}
+        emptyMessage={
+          source !== "all" || query.trim()
+            ? "No recommendations match these filters."
+            : TAB_EMPTY[activeTab]
+        }
         tableLayout={{
           dense: density === "compact",
           headerBorder: true,

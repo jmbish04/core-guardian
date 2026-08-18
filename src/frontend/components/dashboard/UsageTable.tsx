@@ -70,14 +70,15 @@ function severity(r: TableReading): number {
   return ratio(r) ?? 0;
 }
 
-type UsageBucket = "surging" | "over-threshold" | "ok" | "unmetered";
+type UsageBucket = "surging" | "over-threshold" | "ok" | "not-metered" | "unavailable";
 
 const BUCKET_OPTIONS: { value: UsageBucket | "all"; label: string }[] = [
   { value: "all", label: "All statuses" },
   { value: "surging", label: "Surging" },
   { value: "over-threshold", label: "Over threshold" },
   { value: "ok", label: "Healthy" },
-  { value: "unmetered", label: "Unmetered" },
+  { value: "unavailable", label: "Unavailable" },
+  { value: "not-metered", label: "Not metered" },
 ];
 
 /**
@@ -86,7 +87,8 @@ const BUCKET_OPTIONS: { value: UsageBucket | "all"; label: string }[] = [
  * StatusBadge already tints amber (>=70% of the alert threshold).
  */
 function bucket(r: TableReading): UsageBucket {
-  if (r.status !== "ok") return "unmetered";
+  if (r.status === "unavailable") return "unavailable";
+  if (r.status !== "ok") return "not-metered";
   if (r.surging) return "surging";
   const pct = ratio(r);
   if (pct != null && pct >= 0.7) return "over-threshold";
