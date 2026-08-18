@@ -26,6 +26,15 @@ import { DataGridTable } from "@/components/reui/data-grid/data-grid-table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { ApiError, apiGet, apiSend } from "@/lib/api";
 
 import { InlineError } from "./shared";
@@ -50,6 +59,25 @@ interface Recommendation {
 
 const PANEL = "rounded-xl border border-border/60 bg-background/40 p-6";
 
+// Dismissed rows are excluded server-side (GET /ai-router/recommendations hard-filters
+// `status != dismissed` and takes only `?project=`), so there is no Dismissed tab.
+type StatusTab = "all" | "open" | "dispatched" | "pr_opened";
+const STATUS_TABS: { value: StatusTab; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "open", label: "Open" },
+  { value: "dispatched", label: "Dispatched" },
+  { value: "pr_opened", label: "PR opened" },
+];
+const TAB_EMPTY: Record<StatusTab, string> = {
+  all: "No recommendations yet — Refresh to analyze router usage.",
+  open: "No open recommendations.",
+  dispatched: "No recommendations dispatched to Jules.",
+  pr_opened: "No right-sizing PRs opened yet.",
+};
+
+type SourceFilter = "all" | "local" | "jules";
+type Density = "compact" | "comfortable";
+
 const usd = (n: number) => `$${n.toFixed(2)}`;
 
 function describeError(err: unknown, fallback: string): string {
@@ -68,6 +96,9 @@ export function AiRouterRecommendations() {
   const [dispatching, setDispatching] = useState<string | null>(null);
   const [rowNotice, setRowNotice] = useState<{ id: string; msg: string } | null>(null);
   const [query, setQuery] = useState("");
+  const [activeTab, setActiveTab] = useState<StatusTab>("all");
+  const [source, setSource] = useState<SourceFilter>("all");
+  const [density, setDensity] = useState<Density>("compact");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -138,13 +169,20 @@ export function AiRouterRecommendations() {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return recommendations;
-    return recommendations.filter((r) =>
-      `${r.project} ${r.provider} ${r.model} ${r.suggestedModel ?? ""} ${r.source} ${r.status}`
-        .toLowerCase()
-        .includes(q),
-    );
-  }, [recommendations, query]);
+    return recommendations.filter((r) => {
+      if (activeTab !== "all" && r.status !== activeTab) return false;
+      if (source !== "all" && r.source !== source) return false;
+      if (
+        q &&
+        !`${r.project} ${r.provider} ${r.model} ${r.suggestedModel ?? ""} ${r.source} ${r.status}`
+          .toLowerCase()
+          .includes(q)
+      ) {
+        return false;
+      }
+      return true;
+    });
+  }, [recommendations, query, activeTab, source]);
 
   const columns = useMemo<ColumnDef<DataGridFeatures, Recommendation>[]>(
     () => [
@@ -360,12 +398,67 @@ export function AiRouterRecommendations() {
 
       {error && <p className={`${PANEL} text-sm text-destructive`}>{error}</p>}
 
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as StatusTab)}>
+          <TabsList variant="line" className="gap-6">
+            {STATUS_TABS.map((tab) => (
+              <TabsTrigger
+                key={tab.value}
+                value={tab.value}
+                className="px-0 pt-2 pb-2 text-sm after:bottom-[-1px]"
+              >
+                {tab.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+
+        <div className="flex items-center gap-2">
+          <Select value={source} onValueChange={(v) => setSource(v as SourceFilter)}>
+            <SelectTrigger size="sm" className="w-32">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectItem value="all">All sources</SelectItem>
+              <SelectItem value="local">Local</SelectItem>
+              <SelectItem value="jules">Jules</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <ToggleGroup
+            multiple={false}
+            value={[density]}
+            onValueChange={(v: string[]) => {
+              const next = v[0] as Density | undefined;
+              if (next) setDensity(next);
+            }}
+            variant="outline"
+            size="sm"
+            spacing={0}
+            aria-label="Table density"
+            className="shrink-0"
+          >
+            <ToggleGroupItem value="compact" className="px-2 text-xs">
+              Compact
+            </ToggleGroupItem>
+            <ToggleGroupItem value="comfortable" className="px-2 text-xs">
+              Comfortable
+            </ToggleGroupItem>
+          </ToggleGroup>
+        </div>
+      </div>
+
       <DataGrid
         table={table}
         recordCount={filtered.length}
         isLoading={loading}
-        emptyMessage="No recommendations yet — Refresh to analyze router usage."
-        tableLayout={{ dense: true, headerBorder: true, rowBorder: true, columnsVisibility: false }}
+        emptyMessage={TAB_EMPTY[activeTab]}
+        tableLayout={{
+          dense: density === "compact",
+          headerBorder: true,
+          rowBorder: true,
+          columnsVisibility: false,
+        }}
       >
         <DataGridContainer>
           <DataGridScrollArea>

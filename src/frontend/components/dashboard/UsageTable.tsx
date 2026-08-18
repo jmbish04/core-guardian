@@ -30,6 +30,14 @@ import { DataGridScrollArea } from "@/components/reui/data-grid/data-grid-scroll
 import { DataGridTable } from "@/components/reui/data-grid/data-grid-table";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { compactNumber, formatRatio, humanSize } from "@/lib/format";
 
 export type TableReading = {
@@ -60,6 +68,29 @@ function severity(r: TableReading): number {
   if (r.surging) return 1000;
   if (r.status !== "ok") return -1;
   return ratio(r) ?? 0;
+}
+
+type UsageBucket = "surging" | "over-threshold" | "ok" | "unmetered";
+
+const BUCKET_OPTIONS: { value: UsageBucket | "all"; label: string }[] = [
+  { value: "all", label: "All statuses" },
+  { value: "surging", label: "Surging" },
+  { value: "over-threshold", label: "Over threshold" },
+  { value: "ok", label: "Healthy" },
+  { value: "unmetered", label: "Unmetered" },
+];
+
+/**
+ * Coarse status bucket a row falls into — a partition, so the toolbar filter
+ * always adds up to the full set. "Over threshold" is the elevated band the
+ * StatusBadge already tints amber (>=70% of the alert threshold).
+ */
+function bucket(r: TableReading): UsageBucket {
+  if (r.status !== "ok") return "unmetered";
+  if (r.surging) return "surging";
+  const pct = ratio(r);
+  if (pct != null && pct >= 0.7) return "over-threshold";
+  return "ok";
 }
 
 function StatusBadge({ reading }: { reading: TableReading }) {
@@ -141,6 +172,8 @@ export function UsageTable({
   onSelect?: (id: string) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<UsageBucket | "all">("all");
+  const [density, setDensity] = useState<"compact" | "comfortable">("compact");
 
   // Severity-first default order. TanStack preserves data order until a header
   // is clicked, so this stays the resting sort while every column is sortable.
@@ -149,15 +182,18 @@ export function UsageTable({
     [readings],
   );
 
+  // Client-side status + search filters run BEFORE the array enters useTable,
+  // so the grid only ever sees the rows the toolbar admits.
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return sorted;
-    return sorted.filter((r) =>
-      `${r.label} ${r.product} ${r.bindings.join(" ")} ${r.unit} ${r.status}`
+    return sorted.filter((r) => {
+      if (statusFilter !== "all" && bucket(r) !== statusFilter) return false;
+      if (!q) return true;
+      return `${r.label} ${r.product} ${r.bindings.join(" ")} ${r.unit} ${r.status}`
         .toLowerCase()
-        .includes(q),
-    );
-  }, [sorted, query]);
+        .includes(q);
+    });
+  }, [sorted, query, statusFilter]);
 
   const columns = useMemo<ColumnDef<DataGridFeatures, TableReading>[]>(
     () => [
@@ -265,7 +301,43 @@ export function UsageTable({
             Ordered by severity. Click a row to chart it above.
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <Select
+            value={statusFilter}
+            onValueChange={(v) => setStatusFilter(v as UsageBucket | "all")}
+          >
+            <SelectTrigger size="sm" className="w-36" aria-label="Filter by status">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              {BUCKET_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>
+                  {o.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <ToggleGroup
+            multiple={false}
+            value={[density]}
+            onValueChange={(v) => {
+              const next = v[0] as "compact" | "comfortable" | undefined;
+              if (next) setDensity(next);
+            }}
+            variant="outline"
+            size="sm"
+            spacing={0}
+            aria-label="Row density"
+          >
+            <ToggleGroupItem value="compact" aria-label="Compact rows">
+              Compact
+            </ToggleGroupItem>
+            <ToggleGroupItem value="comfortable" aria-label="Comfortable rows">
+              Comfortable
+            </ToggleGroupItem>
+          </ToggleGroup>
+
           <div className="relative">
             <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -289,7 +361,7 @@ export function UsageTable({
           // Only metered probes have a trend to chart; unmetered rows are inert.
           if (reading.status === "ok") onSelect?.(reading.id);
         }}
-        tableLayout={{ dense: true, headerBorder: true, rowBorder: true, columnsVisibility: false }}
+        tableLayout={{ dense: density === "compact", headerBorder: true, rowBorder: true, columnsVisibility: false }}
       >
         <DataGridContainer>
           <DataGridScrollArea>
