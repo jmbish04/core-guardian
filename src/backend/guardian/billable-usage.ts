@@ -24,7 +24,7 @@
  * @see {@link file://src/backend/db/schemas/governance/billable-usage.ts}
  */
 
-import { and, gte, sql } from "drizzle-orm";
+import { and, eq, gte, sql } from "drizzle-orm";
 
 import type { NewBillableUsageRow } from "@/backend/db/schema";
 
@@ -87,9 +87,15 @@ export async function fetchBillableUsage(env: Env, from?: string, to?: string): 
     );
   }
 
+  // IMPORTANT: the live Billable Usage API returns ZERO rows when `from`/`to`
+  // are supplied (verified against the endpoint 2026-08 — the param pair filters
+  // everything out, silently freezing the sync). We pull its default trailing
+  // window instead (~30 days, which covers the current billing period) and let
+  // the idempotent PK upsert dedupe. `from`/`to` stay in the signature for
+  // callers but are intentionally NOT sent as query params.
   const url = new URL(`${API_BASE}/accounts/${accountId}/billable-usage`);
-  if (from) url.searchParams.set("from", from);
-  if (to) url.searchParams.set("to", to);
+  void from;
+  void to;
 
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` },
@@ -184,6 +190,34 @@ export async function syncBillableUsageWindow(
       });
   }
   return rows.length;
+}
+
+/**
+ * Current billing-period spend — the number that matches the Cloudflare billing
+ * dashboard, which bills on the subscription **anniversary**, NOT the calendar
+ * 1st. Sums `contracted_cost` for the latest `billing_period_start` present in
+ * the table (every row carries the API's `BillingPeriodStart`). Returns the
+ * period start (ms) so callers can project to the period end, not the month end.
+ */
+export async function getBillingPeriodSpend(
+  env: Env,
+): Promise<{ periodStart: string | null; periodStartMs: number | null; actualUsd: number }> {
+  const db = getDb(env);
+  const [head] = await db
+    .select({ period: sql<string>`max(${billableUsage.billingPeriodStart})` })
+    .from(billableUsage);
+  const periodStart = head?.period ?? null;
+  if (!periodStart) return { periodStart: null, periodStartMs: null, actualUsd: 0 };
+  const [agg] = await db
+    .select({ total: sql<number>`sum(${billableUsage.contractedCost})` })
+    .from(billableUsage)
+    .where(eq(billableUsage.billingPeriodStart, periodStart));
+  const ms = Date.parse(periodStart);
+  return {
+    periodStart,
+    periodStartMs: Number.isNaN(ms) ? null : ms,
+    actualUsd: Number(agg?.total ?? 0),
+  };
 }
 
 // ---------------------------------------------------------------------------

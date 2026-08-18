@@ -37,7 +37,7 @@ import { and, gte, sql } from "drizzle-orm";
 import { getDb } from "@/backend/db";
 import { aiRouterRequests, dailyCost } from "@/backend/db/schema";
 import { getDailyCostReport } from "@/backend/guardian/daily-cost";
-import { getBillableUsageReport } from "@/backend/guardian/billable-usage";
+import { getBillingPeriodSpend } from "@/backend/guardian/billable-usage";
 
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
@@ -201,6 +201,23 @@ export function projectMonthEnd(mtdUsd: number, nowMs: number): number {
     d.getUTCDate() - 1 + (d.getUTCHours() * HOUR_MS + d.getUTCMinutes() * 60_000) / DAY_MS,
   );
   return (mtdUsd / elapsed) * daysInMonth;
+}
+
+/**
+ * Straight-line projection to the end of the CURRENT BILLING PERIOD (the
+ * anniversary window CF actually bills on), from period-to-date spend. The
+ * period end is the same day-of-month one month after its start.
+ */
+export function projectPeriodEnd(ptdUsd: number, periodStartMs: number, nowMs: number): number {
+  const start = new Date(periodStartMs);
+  const endMs = Date.UTC(
+    start.getUTCFullYear(),
+    start.getUTCMonth() + 1,
+    start.getUTCDate(),
+  );
+  const periodDays = Math.max(1, (endMs - periodStartMs) / DAY_MS);
+  const elapsed = Math.max(0.5, (nowMs - periodStartMs) / DAY_MS);
+  return (ptdUsd / Math.min(elapsed, periodDays)) * periodDays;
 }
 
 // ---------------------------------------------------------------------------
@@ -373,12 +390,15 @@ export async function getInsights(env: Env, nowMs = Date.now()): Promise<Insight
   // an estimate and undercounts (that's the "$9 when it's really $500" bug), so
   // it's the LABELED fallback used only when actuals aren't synced yet (missing
   // Billing:Read scope or a stale sync).
-  const [estReport, actualReport] = await Promise.all([
+  const [estReport, period] = await Promise.all([
     getDailyCostReport(env, 31),
-    getBillableUsageReport(env, 35).catch(() => null),
+    // ACTUAL billed spend for the CURRENT BILLING PERIOD (anniversary-based, the
+    // number the CF dashboard shows) — NOT the calendar month, which excludes
+    // the pre-1st tail of the period and made the headline read far low.
+    getBillingPeriodSpend(env).catch(() => ({ periodStartMs: null, actualUsd: 0 })),
   ]);
   const estimateUsd = mtdFromReport(estReport.totalByDay, nowMs);
-  const actualUsd = actualReport ? mtdFromReport(actualReport.totalByDay, nowMs) : 0;
+  const actualUsd = period.actualUsd;
   // Show the HIGHER of billed-actual vs reconstructed-estimate. A spend guard
   // must never HIDE a spike: CF billing lags ~24h+, so a spike today lands in the
   // estimate before it lands in actuals — taking the max keeps it visible, while
@@ -386,7 +406,12 @@ export async function getInsights(env: Env, nowMs = Date.now()): Promise<Insight
   const mtdUsd = Math.max(actualUsd, estimateUsd);
   const mtdSource: "actual" | "estimate" =
     actualUsd > 0 && actualUsd >= estimateUsd ? "actual" : "estimate";
-  const projectedMonthEnd = projectMonthEnd(mtdUsd, nowMs);
+  // Project over the billing period (anniversary → anniversary) when we know its
+  // start; else fall back to the calendar-month straight-line.
+  const projectedMonthEnd =
+    period.periodStartMs && actualUsd >= estimateUsd
+      ? projectPeriodEnd(mtdUsd, period.periodStartMs, nowMs)
+      : projectMonthEnd(mtdUsd, nowMs);
 
   // Router history AGGREGATED per (project, provider, model, UTC day) in SQL —
   // exact totals with bounded output, no raw-row cap that could drop old days

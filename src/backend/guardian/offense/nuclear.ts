@@ -47,7 +47,7 @@ import {
   type CircuitBreakAction,
 } from "@/backend/db/schema";
 import { NotificationsAgent } from "@/backend/ai/agents/NotificationsAgent";
-import { getBillableUsageReport } from "@/backend/guardian/billable-usage";
+import { getBillingPeriodSpend } from "@/backend/guardian/billable-usage";
 import { getDailyCostReport, type DailyCostReport } from "@/backend/guardian/daily-cost";
 import { getKillSwitch, setKillSwitch } from "@/backend/guardian/ai-router/circuits";
 import { getAgentByName } from "agents";
@@ -158,14 +158,15 @@ export interface MtdTotal {
  * is in range regardless of the day.
  */
 export async function getMtdTotal(env: Env): Promise<MtdTotal> {
-  const month = monthPrefix();
-  const billed = await getBillableUsageReport(env, 35);
-  const billedMtd = sumMonth(billed.totalByDay, month);
-  if (billedMtd > 0) return { mtdUsd: billedMtd, mtdSource: "billed" };
-  // No billed rows for this month yet (API lag / missing Billing:Read scope) →
-  // reconstructed estimate rather than a false $0.
+  // ACTUAL billed spend for the CURRENT BILLING PERIOD (anniversary-based — the
+  // number the CF billing dashboard shows), NOT the calendar month, which drops
+  // the pre-1st tail of the period and read far low.
+  const period = await getBillingPeriodSpend(env);
+  if (period.actualUsd > 0) return { mtdUsd: period.actualUsd, mtdSource: "billed" };
+  // No billed rows yet (API lag / missing Billing:Read scope) → reconstructed
+  // estimate rather than a false $0.
   const est = await getDailyCostReport(env, 35);
-  return { mtdUsd: sumMonth(est.totalByDay, month), mtdSource: "estimated" };
+  return { mtdUsd: sumMonth(est.totalByDay, monthPrefix()), mtdSource: "estimated" };
 }
 
 /** Is there already an `active` incident of this source (+ optional scope)? */
