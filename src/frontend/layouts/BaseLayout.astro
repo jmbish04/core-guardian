@@ -2,10 +2,10 @@
 import { cn } from "@/lib/utils";
 
 import HeadSEO from "@/components/HeadSEO.astro";
-import { GuardianAppShell } from "@/components/GuardianAppShell";
+import { Header } from "@/components/Header";
+import { Footer } from "@/components/Footer";
 
 const { title, description, ogImage } = Astro.props;
-const pathname = Astro.url.pathname;
 ---
 
 <!doctype html>
@@ -30,10 +30,12 @@ const pathname = Astro.url.pathname;
       "group/body overscroll-none antialiased [--footer-height:calc(var(--spacing)*14)] [--header-height:calc(var(--spacing)*14)] xl:[--footer-height:calc(var(--spacing)*24)]",
     )}
   >
-    <div class="bg-background relative z-10 min-h-svh">
-      <GuardianAppShell client:load pathname={pathname} title={title}>
+    <div class="bg-background relative z-10 flex min-h-svh flex-col">
+      <Header client:load />
+      <main class="flex flex-1 flex-col">
         <slot />
-      </GuardianAppShell>
+      </main>
+      <Footer />
     </div>
   </body>
 </html>

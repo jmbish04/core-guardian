@@ -1,3 +1,5 @@
+"use client"
+
 import type { JSX, ReactNode } from "react"
 import { useDataGrid } from "@/components/reui/data-grid/data-grid"
 

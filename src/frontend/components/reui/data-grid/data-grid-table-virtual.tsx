@@ -1,3 +1,5 @@
+"use client"
+
 import { memo, useCallback, useEffect, useRef, useState } from "react"
 import type { CSSProperties, ReactNode } from "react"
 import { useDataGrid } from "@/components/reui/data-grid/data-grid"
