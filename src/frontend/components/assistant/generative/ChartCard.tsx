@@ -37,11 +37,11 @@ import { TOOL_NAMES, type ShowChartArgs, type ShowChartResult } from "./types";
 
 /** The five OKLCH palette hues exposed in global.css as `--chart-1..5`. */
 const PALETTE = [
-  "var(--chart-1)",
-  "var(--chart-2)",
-  "var(--chart-3)",
-  "var(--chart-4)",
-  "var(--chart-5)",
+  "var(--color-chart-1)",
+  "var(--color-chart-2)",
+  "var(--color-chart-3)",
+  "var(--color-chart-4)",
+  "var(--color-chart-5)",
 ] as const;
 
 /** Inner chart body — switches on `kind`. Driven by the `<ChartContainer>` config. */

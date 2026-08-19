@@ -431,7 +431,7 @@ export function BillableUsage() {
             {chartData.length >= 2 && (
               <ChartContainer config={CHART_CONFIG} className="mt-4 h-[220px] w-full">
                 <LineChart data={chartData} margin={{ left: 4, right: 4, top: 8, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--color-border)" />
                   <XAxis
                     dataKey="day"
                     tickLine={false}
@@ -439,7 +439,7 @@ export function BillableUsage() {
                     tickMargin={8}
                     minTickGap={28}
                     tickFormatter={dayTick}
-                    tick={{ fill: "hsl(var(--foreground))", fontSize: 11 }}
+                    tick={{ fill: "var(--color-foreground)", fontSize: 11 }}
                   />
                   <ChartTooltip
                     content={

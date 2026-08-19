@@ -8,7 +8,7 @@
  *     threshold reference line, and faint ghost bars for projected future days.
  *
  * Both are recharts wrapped in shadcn `<ChartContainer>` with the OKLCH palette;
- * axis text is forced to `hsl(var(--foreground))` per the Monolith rules.
+ * axis text is forced to `var(--color-foreground)` per the Monolith rules.
  */
 
 "use client";
@@ -46,7 +46,7 @@ function dayTick(day: string): string {
 }
 
 const CONFIG = {
-  cost: { label: "Billed / day", color: "var(--chart-2)" },
+  cost: { label: "Billed / day", color: "var(--color-chart-2)" },
   projected: { label: "Projected (run-rate)", color: "var(--destructive)" },
 } satisfies ChartConfig;
 
@@ -84,7 +84,7 @@ export function SpendTrendChart({ data }: { data: SpendChartPoint[] }) {
             <stop offset="100%" stopColor="var(--color-cost)" stopOpacity={0} />
           </linearGradient>
         </defs>
-        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
+        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--color-border)" />
         <XAxis
           dataKey="day"
           tickLine={false}
@@ -92,7 +92,7 @@ export function SpendTrendChart({ data }: { data: SpendChartPoint[] }) {
           tickMargin={8}
           minTickGap={28}
           tickFormatter={dayTick}
-          tick={{ fill: "hsl(var(--foreground))", fontSize: 11 }}
+          tick={{ fill: "var(--color-foreground)", fontSize: 11 }}
         />
         <SpendTooltip />
         {/* Projected first so the authoritative actual line draws on top. */}
@@ -124,7 +124,7 @@ export function SpendBarChart({ data }: { data: SpendChartPoint[] }) {
   return (
     <ChartContainer config={CONFIG} className="h-[240px] w-full">
       <BarChart data={data} margin={{ left: 4, right: 4, top: 8, bottom: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
+        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--color-border)" />
         <XAxis
           dataKey="day"
           tickLine={false}
@@ -132,7 +132,7 @@ export function SpendBarChart({ data }: { data: SpendChartPoint[] }) {
           tickMargin={8}
           minTickGap={28}
           tickFormatter={dayTick}
-          tick={{ fill: "hsl(var(--foreground))", fontSize: 11 }}
+          tick={{ fill: "var(--color-foreground)", fontSize: 11 }}
         />
         <SpendTooltip />
         <ReferenceLine
@@ -143,7 +143,7 @@ export function SpendBarChart({ data }: { data: SpendChartPoint[] }) {
           label={{
             value: `auto-break $${DAILY_BREAK_THRESHOLD}`,
             position: "insideTopLeft",
-            fill: "hsl(var(--foreground))",
+            fill: "var(--color-foreground)",
             fontSize: 10,
           }}
         />

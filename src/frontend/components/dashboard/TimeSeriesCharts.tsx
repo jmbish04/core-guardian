@@ -41,7 +41,7 @@ import {
 
 import type { TasksOverTimePoint, ThroughputPoint } from "./types";
 
-const AXIS_TICK = { fill: "hsl(var(--foreground))", fontSize: 12 } as const;
+const AXIS_TICK = { fill: "var(--color-foreground)", fontSize: 12 } as const;
 
 /** `YYYY-MM-DD` → short axis label like "Jun 7" (UTC-safe). */
 function shortAxisDate(value: string): string {
@@ -59,8 +59,8 @@ function shortAxisDate(value: string): string {
 // ---------------------------------------------------------------------------
 
 const OVER_TIME_CONFIG: ChartConfig = {
-  created: { label: "Created", color: "var(--chart-1)" },
-  completed: { label: "Completed", color: "var(--chart-5)" },
+  created: { label: "Created", color: "var(--color-chart-1)" },
+  completed: { label: "Completed", color: "var(--color-chart-5)" },
 };
 
 export function TasksOverTimeArea({ data }: { data: TasksOverTimePoint[] }) {
@@ -77,7 +77,7 @@ export function TasksOverTimeArea({ data }: { data: TasksOverTimePoint[] }) {
             <stop offset="95%" stopColor="var(--color-completed)" stopOpacity={0.02} />
           </linearGradient>
         </defs>
-        <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="hsl(var(--border))" />
+        <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--color-border)" />
         <XAxis
           dataKey="date"
           tickLine={false}
@@ -127,7 +127,7 @@ export function TasksOverTimeArea({ data }: { data: TasksOverTimePoint[] }) {
 // ---------------------------------------------------------------------------
 
 const THROUGHPUT_CONFIG: ChartConfig = {
-  value: { label: "Completed", color: "var(--chart-2)" },
+  value: { label: "Completed", color: "var(--color-chart-2)" },
 };
 
 export function ThroughputBar({ data }: { data: ThroughputPoint[] }) {
@@ -150,7 +150,7 @@ export function ThroughputBar({ data }: { data: ThroughputPoint[] }) {
             <stop offset="100%" stopColor="var(--color-value)" stopOpacity={0.55} />
           </linearGradient>
         </defs>
-        <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="hsl(var(--border))" />
+        <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--color-border)" />
         <XAxis
           dataKey="date"
           tickLine={false}
@@ -175,7 +175,7 @@ export function ThroughputBar({ data }: { data: ThroughputPoint[] }) {
         {avg > 0 ? (
           <ReferenceLine
             y={avg}
-            stroke="hsl(var(--muted-foreground))"
+            stroke="var(--color-muted-foreground)"
             strokeDasharray="4 4"
             strokeOpacity={0.7}
           />

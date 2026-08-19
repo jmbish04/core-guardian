@@ -1,0 +1,22 @@
+---
+/**
+ * AI Router request/substitution event log — Level-3 drill target.
+ * Reached from `/dashboard/ai-router` bar-clicks (`?query=project:<name>`).
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { AiRouterLogs } from "@/components/logs";
+
+const query = Astro.url.searchParams.get("query") ?? undefined;
+---
+
+<BaseLayout title="AI Router request log" description="Per-request routing, model substitution, cost, and circuit-breaker outcomes.">
+  <main class="container mx-auto flex max-w-7xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/ai-router"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← AI Router
+    </a>
+    <AiRouterLogs client:load query={query} />
+  </main>
+</BaseLayout>

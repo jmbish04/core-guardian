@@ -1,0 +1,22 @@
+---
+/**
+ * Reconstructed daily-cost rows — Level-3 drill target for the daily-cost chart.
+ * Reached from `/dashboard/daily-cost` bar-clicks (`?query=day:<YYYY-MM-DD>`).
+ */
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import { DailyCostLogs } from "@/components/logs";
+
+const query = Astro.url.searchParams.get("query") ?? undefined;
+---
+
+<BaseLayout title="Daily cost rows" description="Per-service reconstructed daily cost with raw usage and estimated spend.">
+  <main class="container mx-auto flex max-w-7xl flex-col gap-8 px-4 py-12">
+    <a
+      href="/dashboard/daily-cost"
+      class="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground hover:text-foreground"
+    >
+      ← Daily cost
+    </a>
+    <DailyCostLogs client:load query={query} />
+  </main>
+</BaseLayout>

@@ -15,7 +15,7 @@
  * The `{ name, value }[]` / time-series datasets all come straight from
  * `GET /api/dashboard/charts`. No data is fabricated; the grouped chart only
  * re-buckets data the API already returns. Axis/label text is forced to
- * `hsl(var(--foreground))` per the Monolith chart rules.
+ * `var(--color-foreground)` per the Monolith chart rules.
  */
 
 "use client";
@@ -48,14 +48,14 @@ import type { NameValue, TasksOverTimePoint } from "./types";
 
 /** The five-hue palette, indexable for per-slice / per-bar coloring. */
 const PALETTE = [
-  "var(--chart-1)",
-  "var(--chart-2)",
-  "var(--chart-3)",
-  "var(--chart-4)",
-  "var(--chart-5)",
+  "var(--color-chart-1)",
+  "var(--color-chart-2)",
+  "var(--color-chart-3)",
+  "var(--color-chart-4)",
+  "var(--color-chart-5)",
 ];
 
-const AXIS_TICK = { fill: "hsl(var(--foreground))", fontSize: 12 } as const;
+const AXIS_TICK = { fill: "var(--color-foreground)", fontSize: 12 } as const;
 
 /** Build a `ChartConfig` keyed by datum name for legend/tooltip. */
 function buildConfig(data: NameValue[]): ChartConfig {
@@ -93,7 +93,7 @@ export function TasksByStatusDonut({ data }: { data: NameValue[] }) {
           outerRadius={92}
           paddingAngle={2}
           strokeWidth={2}
-          stroke="hsl(var(--background))"
+          stroke="var(--color-background)"
           onMouseEnter={(_, index) => setActiveIndex(index)}
           onMouseLeave={() => setActiveIndex(null)}
         >
@@ -139,8 +139,8 @@ export function TasksByStatusDonut({ data }: { data: NameValue[] }) {
 // ---------------------------------------------------------------------------
 
 const GROUPED_CONFIG: ChartConfig = {
-  created: { label: "Created", color: "var(--chart-1)" },
-  completed: { label: "Completed", color: "var(--chart-5)" },
+  created: { label: "Created", color: "var(--color-chart-1)" },
+  completed: { label: "Completed", color: "var(--color-chart-5)" },
 };
 
 interface WeeklyBucket {
@@ -178,7 +178,7 @@ export function CreatedVsCompletedGrouped({ data }: { data: TasksOverTimePoint[]
   return (
     <ChartContainer config={GROUPED_CONFIG} className="aspect-[16/7] w-full">
       <BarChart data={buckets} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
-        <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="hsl(var(--border))" />
+        <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--color-border)" />
         <XAxis
           dataKey="label"
           tickLine={false}
@@ -217,7 +217,7 @@ export function TasksByPriorityBar({ data }: { data: NameValue[] }) {
   return (
     <ChartContainer config={config} className="aspect-[4/3] w-full">
       <BarChart data={withFill} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
-        <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="hsl(var(--border))" />
+        <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--color-border)" />
         <XAxis
           dataKey="name"
           tickLine={false}
