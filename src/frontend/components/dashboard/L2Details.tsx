@@ -276,12 +276,23 @@ export function D1UsageDetail() {
 // ---------------------------------------------------------------------------
 
 type UsageHistory = { history: { id: string; value: number; startTime: number; endTime: number }[] };
+type RequestSeriesPoint = {
+  day: string;
+  requests: number;
+  tokensIn: number;
+  tokensOut: number;
+  latencyMsAvg?: number;
+};
 
 export function GatewayUsageDetail() {
   const { data, loading, error, reload } = useFetch<UsageHistory>(
     "/ai-gateway/billing/usage-history",
     { days: 90, window: "day" },
   );
+  const series = useFetch<RequestSeriesPoint[]>("/ai-gateway/usage-series", {
+    days: 90,
+    window: "day",
+  });
 
   // Bucket by UTC day (defensive: collapse any duplicate buckets), ascending.
   const points: HeroPoint[] = useMemo(() => {
@@ -293,32 +304,81 @@ export function GatewayUsageDetail() {
     return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([label, value]) => ({ label, value }));
   }, [data]);
 
+  const seriesRows = useMemo(
+    () =>
+      (series.data ?? []).map((p) => ({
+        day: p.day,
+        requests: fin(p.requests),
+        tokensIn: fin(p.tokensIn),
+        tokensOut: fin(p.tokensOut),
+      })),
+    [series.data],
+  );
+  const avgLatencyMs = useMemo(() => {
+    const withLatency = (series.data ?? []).filter((p) => Number.isFinite(p.latencyMsAvg));
+    if (!withLatency.length) return null;
+    return Math.round(withLatency.reduce((s, p) => s + fin(p.latencyMsAvg), 0) / withLatency.length);
+  }, [series.data]);
+
   const gwFmt = (n: number) => compactNumber(n);
   return (
-    <HeroMetricChart
-      title="AI Gateway metered usage"
-      icon={Zap}
-      points={points}
-      chartKey="chart-4"
-      aggregate="sum"
-      valueFormatter={gwFmt}
-      seriesLabel="Metered units"
-      caption={
-        points.length
-          ? (w) => {
-              const pace = pacePhrase(heroStory(w, gwFmt).story.paceFraction);
-              return pace ? `Gateway usage ${pace} vs earlier this window` : "Gateway usage holding steady";
-            }
-          : "requests metered through AI Gateway"
-      }
-      annotate={(w) => heroStory(w, gwFmt).annotations}
-      xTickFormatter={dayTick}
-      loading={loading}
-      error={error}
-      onRetry={reload}
-      onPointClick={(p) => drillTo("ai-gateway", `day:${p.label}`)}
-      logsHref="/dashboard/ai-gateway/logs"
-    />
+    <div className="flex flex-col gap-6">
+      <HeroMetricChart
+        title="AI Gateway metered usage"
+        icon={Zap}
+        points={points}
+        chartKey="chart-4"
+        aggregate="sum"
+        valueFormatter={gwFmt}
+        seriesLabel="Metered units"
+        caption={
+          points.length
+            ? (w) => {
+                const pace = pacePhrase(heroStory(w, gwFmt).story.paceFraction);
+                return pace ? `Gateway usage ${pace} vs earlier this window` : "Gateway usage holding steady";
+              }
+            : "requests metered through AI Gateway"
+        }
+        annotate={(w) => heroStory(w, gwFmt).annotations}
+        xTickFormatter={dayTick}
+        loading={loading}
+        error={error}
+        onRetry={reload}
+        onPointClick={(p) => drillTo("ai-gateway", `day:${p.label}`)}
+        logsHref="/dashboard/ai-gateway/logs"
+      />
+
+      <div className="flex flex-col gap-3 rounded-xl bg-card p-4 ring-1 ring-border/40">
+        <div className="flex items-center justify-between gap-3">
+          <SectionTitle>Requests + tokens · 90d</SectionTitle>
+          {avgLatencyMs != null ? (
+            <span className="font-mono text-xs tabular-nums text-muted-foreground">
+              avg latency {compactNumber(avgLatencyMs)}ms
+            </span>
+          ) : null}
+        </div>
+        {series.error ? (
+          <InlineError message={series.error} onRetry={series.reload} />
+        ) : !series.loading && seriesRows.length === 0 ? (
+          <EmptyState label="No AI Gateway request telemetry yet." />
+        ) : (
+          <TimeSeriesChart
+            data={seriesRows}
+            xKey="day"
+            variant="line"
+            className="aspect-[24/7] w-full"
+            xTickFormatter={dayTick}
+            valueFormatter={(v) => compactNumber(fin(v))}
+            series={[
+              { key: "requests", label: "Requests", chartKey: "chart-4" },
+              { key: "tokensIn", label: "Tokens in", chartKey: "chart-1" },
+              { key: "tokensOut", label: "Tokens out", chartKey: "chart-2" },
+            ]}
+            onPointClick={(row) => drillTo("ai-gateway", `day:${(row as { day: string }).day}`)}
+          />
+        )}
+      </div>
+    </div>
   );
 }
 

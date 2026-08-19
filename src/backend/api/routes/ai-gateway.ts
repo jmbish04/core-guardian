@@ -24,6 +24,7 @@ import {
   getCreditBalance,
   getInvoiceHistory,
   getInvoicePreview,
+  getRequestSeries,
   getSpendingLimit,
   getUsageHistory,
   listGateways,
@@ -165,6 +166,48 @@ aiGatewayRouter.openapi(
     const start = end - (days ?? 30) * 86_400_000;
     const history = await getUsageHistory(c.env, window ?? "day", start, end);
     return c.json({ history }, 200);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/ai-gateway/usage-series
+// ---------------------------------------------------------------------------
+
+const seriesPointSchema = z.object({
+  // `YYYY-MM-DD` for window=day, a full ISO-8601 hour bucket for window=hour —
+  // polymorphic on the query param, so not a single first-class ISO type.
+  day: z.string().min(1),
+  requests: z.number(),
+  tokensIn: z.number(),
+  tokensOut: z.number(),
+  latencyMsP50: z.number().optional(),
+  latencyMsAvg: z.number().optional(),
+});
+
+aiGatewayRouter.openapi(
+  createRoute({
+    method: "get",
+    path: "/usage-series",
+    operationId: "aiGatewayUsageSeries",
+    summary: "Per-day requests, tokens in/out, and latency from AI Gateway analytics",
+    request: {
+      query: z.object({
+        window: z.enum(["day", "hour"]).default("day").optional(),
+        days: z.coerce.number().int().min(1).max(90).default(30).optional(),
+      }),
+    },
+    responses: {
+      200: {
+        description: "Ascending series buckets; [] when analytics are unavailable",
+        content: { "application/json": { schema: z.array(seriesPointSchema) } },
+      },
+      401: unauthorized,
+    },
+  }),
+  async (c) => {
+    const { window, days } = c.req.valid("query");
+    const series = await getRequestSeries(c.env, { days: days ?? 30, window: window ?? "day" });
+    return c.json(series, 200);
   },
 );
 

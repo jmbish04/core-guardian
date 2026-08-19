@@ -17,6 +17,7 @@
  */
 
 import { cfApi } from "@/backend/guardian/resources";
+import { queryAccountAnalytics } from "@/backend/lib/cloudflare-graphql";
 
 /** Current credit balance, payment method, and auto top-up state. */
 export type CreditBalance = {
@@ -380,4 +381,147 @@ export async function updateGateway(
     retryDelay: result.retry_delay ?? null,
     workersAiBillingMode: result.workers_ai_billing_mode ?? null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Request / token / latency time series (GraphQL analytics)
+// ---------------------------------------------------------------------------
+
+/** One bucket of the request/token/latency series. */
+export type RequestSeriesPoint = {
+  day: string;
+  requests: number;
+  tokensIn: number;
+  tokensOut: number;
+  latencyMsP50?: number;
+  latencyMsAvg?: number;
+};
+
+type GwSeriesRow = {
+  count: number;
+  sum: { uncachedTokensIn: number; uncachedTokensOut: number };
+  avg?: { duration: number | null } | null;
+  quantiles?: { durationP50: number | null } | null;
+  dimensions: { bucket: string };
+};
+
+/**
+ * Builds the `aiGatewayRequestsAdaptiveGroups` document, grouped by day or
+ * hour (aliased to `bucket` so the aggregation code stays shape-agnostic).
+ *
+ * @param dim - `date` (daily) or `datetimeHour` (hourly) dimension to group by
+ * @param withLatency - include `avg.duration` / `quantiles.durationP50` — a
+ *   richer shape that risks an "unknown field" rejection on accounts/schema
+ *   versions that don't expose it, so the caller retries without it on failure
+ */
+function seriesQuery(dim: "date" | "datetimeHour", withLatency: boolean): string {
+  const latencyFields = withLatency
+    ? "\n        avg { duration }\n        quantiles { durationP50 }"
+    : "";
+  return `query GwSeries($accountTag: string!, $start: Time!, $end: Time!) {
+  viewer {
+    accounts(filter: { accountTag: $accountTag }) {
+      aiGatewayRequestsAdaptiveGroups(
+        limit: 10000
+        filter: { datetimeHour_geq: $start, datetimeHour_leq: $end }
+      ) {
+        count
+        sum { uncachedTokensIn uncachedTokensOut }${latencyFields}
+        dimensions { bucket: ${dim} }
+      }
+    }
+  }
+}`;
+}
+
+/**
+ * Reads the per-day (or per-hour) AI Gateway request/token/latency series from
+ * Cloudflare's GraphQL analytics — the same `aiGatewayRequestsAdaptiveGroups`
+ * dataset {@link file://src/backend/guardian/ai-gateway-costs.ts} snapshots for
+ * cost, here read live and un-persisted since the chart just needs a trend.
+ *
+ * @param env - Worker env
+ * @param options.days - Lookback window in days (GraphQL retains ~31 days)
+ * @param options.window - `day` (default) or `hour` bucket size
+ * @returns Ascending buckets; nulls/missing sums coalesced to 0. Empty array
+ *   (never a throw) if the dataset or credentials are unavailable — the
+ *   dashboard renders an EmptyState rather than a 500.
+ */
+export async function getRequestSeries(
+  env: Env,
+  options: { days?: number; window?: "day" | "hour" } = {},
+): Promise<RequestSeriesPoint[]> {
+  const days = options.days ?? 30;
+  const dim = options.window === "hour" ? "datetimeHour" : "date";
+  const end = new Date();
+  const start = new Date(end.getTime() - days * 86_400_000);
+  const variables = { start: start.toISOString(), end: end.toISOString() };
+
+  let rows: GwSeriesRow[] = [];
+  try {
+    const account = await queryAccountAnalytics<{
+      aiGatewayRequestsAdaptiveGroups: GwSeriesRow[];
+    }>(env, seriesQuery(dim, true), variables);
+    rows = account.aiGatewayRequestsAdaptiveGroups ?? [];
+  } catch {
+    // The latency sub-fields (avg/quantiles) may not exist on this account's
+    // schema — retry the guaranteed-safe shape (proven by getUsageHistory /
+    // snapshotGatewayCosts) before giving up on the series entirely.
+    try {
+      const account = await queryAccountAnalytics<{
+        aiGatewayRequestsAdaptiveGroups: GwSeriesRow[];
+      }>(env, seriesQuery(dim, false), variables);
+      rows = account.aiGatewayRequestsAdaptiveGroups ?? [];
+    } catch (err) {
+      console.warn(
+        JSON.stringify({
+          level: "WARN",
+          source: "guardian.getRequestSeries",
+          error: String(err),
+        }),
+      );
+      return [];
+    }
+  }
+
+  const byBucket = new Map<
+    string,
+    { requests: number; tokensIn: number; tokensOut: number; durSum: number; durN: number; p50Sum: number; p50N: number }
+  >();
+  for (const r of rows) {
+    const key = r.dimensions.bucket;
+    const cur = byBucket.get(key) ?? {
+      requests: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+      durSum: 0,
+      durN: 0,
+      p50Sum: 0,
+      p50N: 0,
+    };
+    const count = r.count ?? 0;
+    cur.requests += count;
+    cur.tokensIn += r.sum?.uncachedTokensIn ?? 0;
+    cur.tokensOut += r.sum?.uncachedTokensOut ?? 0;
+    if (r.avg?.duration != null) {
+      cur.durSum += r.avg.duration * count; // weight by request count → correct blended avg
+      cur.durN += count;
+    }
+    if (r.quantiles?.durationP50 != null) {
+      cur.p50Sum += r.quantiles.durationP50;
+      cur.p50N += 1;
+    }
+    byBucket.set(key, cur);
+  }
+
+  return [...byBucket.entries()]
+    .map(([day, b]) => ({
+      day,
+      requests: b.requests,
+      tokensIn: b.tokensIn,
+      tokensOut: b.tokensOut,
+      ...(b.durN > 0 ? { latencyMsAvg: Math.round(b.durSum / b.durN) } : {}),
+      ...(b.p50N > 0 ? { latencyMsP50: Math.round(b.p50Sum / b.p50N) } : {}),
+    }))
+    .sort((a, b) => a.day.localeCompare(b.day));
 }
