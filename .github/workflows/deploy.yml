@@ -1,0 +1,56 @@
+name: Deploy (Cloudflare)
+
+# NOTE: could not determine the D1 database name from wrangler config — replace <YOUR_D1_DB_NAME> below.
+# Manual, on-demand operations via workflow_dispatch (below). Auto-deploy on
+# push to main is provided as a commented-out alternative — uncomment this
+# block (and merge it into the `on:` key below) to enable continuous deploys.
+#
+# on:
+#   push:
+#     branches: [main]
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "What to run"
+        required: true
+        default: deploy
+        type: choice
+        options:
+          - deploy
+          - migrate-db
+          - check-logs
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    name: Wrangler
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Deploy Worker
+        if: ${{ github.event_name == 'push' || github.event.inputs.action == 'deploy' }}
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
+
+      - name: Apply remote D1 migrations
+        if: ${{ github.event.inputs.action == 'migrate-db' }}
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: d1 migrations apply <YOUR_D1_DB_NAME> --remote
+
+      - name: Check recent deployments / build status
+        if: ${{ github.event.inputs.action == 'check-logs' }}
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deployments list
