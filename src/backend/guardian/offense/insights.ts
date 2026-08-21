@@ -92,6 +92,10 @@ export interface InsightsReport {
   projectedMonthEnd: number;
   sinceLastVisit: SinceLastVisit;
   anomalies: Anomaly[];
+  /** Epoch-ms of the CF billing period start (anniversary date, not calendar 1st). Null until first sync. */
+  periodStartMs: number | null;
+  /** Epoch-ms of the CF billing period end (= start + 1 month). Null until first sync. */
+  periodEndMs: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -408,9 +412,16 @@ export async function getInsights(env: Env, nowMs = Date.now()): Promise<Insight
     actualUsd > 0 && actualUsd >= estimateUsd ? "actual" : "estimate";
   // Project over the billing period (anniversary → anniversary) when we know its
   // start; else fall back to the calendar-month straight-line.
+  const periodStartMs = period.periodStartMs ?? null;
+  const periodEndMs = periodStartMs
+    ? (() => {
+        const s = new Date(periodStartMs);
+        return Date.UTC(s.getUTCFullYear(), s.getUTCMonth() + 1, s.getUTCDate());
+      })()
+    : null;
   const projectedMonthEnd =
-    period.periodStartMs && actualUsd >= estimateUsd
-      ? projectPeriodEnd(mtdUsd, period.periodStartMs, nowMs)
+    periodStartMs && actualUsd >= estimateUsd
+      ? projectPeriodEnd(mtdUsd, periodStartMs, nowMs)
       : projectMonthEnd(mtdUsd, nowMs);
 
   // Router history AGGREGATED per (project, provider, model, UTC day) in SQL —
@@ -461,7 +472,7 @@ export async function getInsights(env: Env, nowMs = Date.now()): Promise<Insight
 
   const sinceLastVisit = await recordVisit(env, mtdUsd, nowMs);
 
-  return { mtdUsd, mtdSource, estimateUsd, projectedMonthEnd, sinceLastVisit, anomalies };
+  return { mtdUsd, mtdSource, estimateUsd, projectedMonthEnd, sinceLastVisit, anomalies, periodStartMs, periodEndMs };
 }
 
 const VISIT_KEY = "dashboard:last-visit";

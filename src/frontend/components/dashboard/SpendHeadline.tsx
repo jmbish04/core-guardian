@@ -34,6 +34,8 @@ interface Insights {
   projectedMonthEnd: number;
   sinceLastVisit: { deltaUsd: number | null; daysSince: number | null; at: number | null };
   anomalies: Anomaly[];
+  periodStartMs: number | null;
+  periodEndMs: number | null;
 }
 
 /** Human "N days ago" from a fractional day count; sub-day rounds to "today". */
@@ -41,6 +43,19 @@ function visitAgo(daysSince: number): string {
   const d = Math.round(daysSince);
   if (d <= 0) return "earlier today";
   return `${d} day${d === 1 ? "" : "s"} ago`;
+}
+
+const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** Format epoch-ms as "Mon D" (UTC). */
+function fmtDate(ms: number): string {
+  const d = new Date(ms);
+  return `${MONTH_SHORT[d.getUTCMonth()]} ${d.getUTCDate()}`;
+}
+
+/** Whole days remaining until periodEndMs (0 on the last day, negative after). */
+function daysUntil(endMs: number, nowMs: number): number {
+  return Math.ceil((endMs - nowMs) / 86_400_000);
 }
 
 export function SpendHeadline() {
@@ -80,68 +95,99 @@ export function SpendHeadline() {
   if (error && !data) return <InlineError message={error} onRetry={load} />;
   if (!data) return null;
 
-  const { mtdUsd, mtdSource, estimateUsd, projectedMonthEnd, sinceLastVisit, anomalies } = data;
+  const { mtdSource, estimateUsd, projectedMonthEnd, sinceLastVisit, anomalies, periodStartMs, periodEndMs } = data;
+  const nowMs = Date.now();
+
+  // If we're past the period end, show $0 — new cycle started, sync hasn't landed yet.
+  const newCycleStarted = periodEndMs != null && nowMs >= periodEndMs;
+  const mtdUsd = newCycleStarted ? 0 : data.mtdUsd;
+
   const delta = sinceLastVisit.deltaUsd;
   const up = delta !== null && delta > 0;
   const down = delta !== null && delta < 0;
-  // The projection towers over what's accrued: month isn't over and spend keeps
-  // landing. Skip the flag for trivial early-month amounts.
-  const hot = projectedMonthEnd - mtdUsd > Math.max(5, mtdUsd * 0.5);
+  const hot = !newCycleStarted && projectedMonthEnd - mtdUsd > Math.max(5, mtdUsd * 0.5);
+
+  // Billing period label: "Jul 19 – Aug 18" or "Billing period" when unknown.
+  const periodLabel =
+    periodStartMs && periodEndMs
+      ? `${fmtDate(periodStartMs)} – ${fmtDate(periodEndMs - 1)}`
+      : "Billing period";
+
+  // Days remaining in the current billing period.
+  const daysLeft = periodEndMs ? daysUntil(periodEndMs, nowMs) : null;
+  const daysLeftLabel =
+    newCycleStarted
+      ? "New cycle started · syncing…"
+      : daysLeft === 0
+        ? "Invoice due today"
+        : daysLeft === 1
+          ? "Invoice expected tomorrow"
+          : daysLeft !== null
+            ? `Invoice expected in ${daysLeft} day${daysLeft === 1 ? "" : "s"}`
+            : null;
 
   return (
     <section className="flex flex-col gap-4">
       <div className="grid grid-cols-2 gap-3 sm:gap-4">
-        {/* Month-to-date + since-last-visit, same card. */}
+        {/* Billing-period-to-date + since-last-visit, same card. */}
         <Card className="ring-1 ring-border/40">
           <CardContent className="flex flex-col gap-1.5 p-4">
             <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
-              Month to date
+              {periodLabel}
             </span>
             <span className="text-3xl font-semibold tabular-nums tracking-tight sm:text-4xl">
               {usd(mtdUsd, false)}
             </span>
             <span
               className={
-                mtdSource === "actual"
-                  ? "font-mono text-[10px] uppercase tracking-wider text-emerald-500"
-                  : "font-mono text-[10px] uppercase tracking-wider text-amber-500"
+                newCycleStarted
+                  ? "font-mono text-[10px] uppercase tracking-wider text-blue-500"
+                  : mtdSource === "actual"
+                    ? "font-mono text-[10px] uppercase tracking-wider text-emerald-500"
+                    : "font-mono text-[10px] uppercase tracking-wider text-amber-500"
               }
             >
-              {mtdSource === "actual"
-                ? `actual billed · est ${usd(estimateUsd, false)}`
-                : "estimate — actual billing lags ~24h (or not synced yet)"}
+              {newCycleStarted
+                ? "new billing cycle · data syncing"
+                : mtdSource === "actual"
+                  ? `actual billed · est ${usd(estimateUsd, false)}`
+                  : "estimate — actual billing lags ~24h (or not synced yet)"}
             </span>
-            {delta === null ? (
-              <span className="text-xs text-muted-foreground">
-                First visit recorded — we'll track the change from here.
-              </span>
-            ) : (
-              <span
-                className={
-                  up
-                    ? "flex items-center gap-1 text-xs font-medium text-destructive"
-                    : "flex items-center gap-1 text-xs text-muted-foreground"
-                }
-              >
-                {up ? (
-                  <ArrowUpRight className="size-3.5" aria-hidden />
-                ) : down ? (
-                  <ArrowDownRight className="size-3.5" aria-hidden />
-                ) : null}
-                {up ? "up " : down ? "down " : "no change · "}
-                {delta !== 0 ? `${usd(Math.abs(delta))} ` : ""}
-                since your last visit
-                {sinceLastVisit.daysSince !== null ? ` ${visitAgo(sinceLastVisit.daysSince)}` : ""}
-              </span>
+            {!newCycleStarted &&
+              (delta === null ? (
+                <span className="text-xs text-muted-foreground">
+                  First visit recorded — we'll track the change from here.
+                </span>
+              ) : (
+                <span
+                  className={
+                    up
+                      ? "flex items-center gap-1 text-xs font-medium text-destructive"
+                      : "flex items-center gap-1 text-xs text-muted-foreground"
+                  }
+                >
+                  {up ? (
+                    <ArrowUpRight className="size-3.5" aria-hidden />
+                  ) : down ? (
+                    <ArrowDownRight className="size-3.5" aria-hidden />
+                  ) : null}
+                  {up ? "up " : down ? "down " : "no change · "}
+                  {delta !== 0 ? `${usd(Math.abs(delta))} ` : ""}
+                  since your last visit
+                  {sinceLastVisit.daysSince !== null ? ` ${visitAgo(sinceLastVisit.daysSince)}` : ""}
+                </span>
+              ))}
+            {daysLeftLabel && (
+              <span className="text-xs text-muted-foreground">{daysLeftLabel}</span>
             )}
           </CardContent>
         </Card>
 
-        {/* Projected month-end. */}
+        {/* Projected period-end. */}
         <Card className={hot ? "ring-1 ring-destructive/40" : "ring-1 ring-border/40"}>
           <CardContent className="flex flex-col gap-1.5 p-4">
             <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
-              Projected month-end
+              {periodEndMs ? `Projected by ${fmtDate(periodEndMs - 1)}` : "Projected period-end"}
             </span>
             <span
               className={
@@ -151,10 +197,12 @@ export function SpendHeadline() {
               }
             >
               {hot ? <TrendingUp className="size-5" aria-hidden /> : null}
-              {usd(projectedMonthEnd, false)}
+              {newCycleStarted ? usd(0, false) : usd(projectedMonthEnd, false)}
             </span>
             <span className={hot ? "text-xs font-medium text-destructive" : "text-xs text-muted-foreground"}>
-              {usd(Math.max(0, projectedMonthEnd - mtdUsd))} more projected by month-end
+              {newCycleStarted
+                ? "new cycle — projection resets once data syncs"
+                : `${usd(Math.max(0, projectedMonthEnd - mtdUsd))} more projected`}
             </span>
           </CardContent>
         </Card>
