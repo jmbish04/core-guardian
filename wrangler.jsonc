@@ -203,6 +203,12 @@
       "id": "179fc51fa07a4ffca5b7786e0279b80c",
       "remote": true,
     },
+    {
+      // Ollama Cloud model cache + usage data (title: OLLAMA_KV, id: 33c5c85279384da79b06e12734e3d3c9)
+      "binding": "OLLAMA_KV",
+      "id": "33c5c85279384da79b06e12734e3d3c9",
+      "remote": true,
+    },
   ],
   "d1_databases": [
     {
@@ -333,6 +339,21 @@
       "binding": "CLOUDFLARE_API_TOKEN",
       "store_id": "8c42fa70938644e0a8a109744467375f",
       "secret_name": "CLOUDFLARE_API_TOKEN",
+    },
+    {
+      // Ollama Cloud inference key (https://ollama.com). Subscription-based ($0/token).
+      // Read via: await env.OLLAMA_CLOUD_API_KEY.get()
+      "binding": "OLLAMA_CLOUD_API_KEY",
+      "store_id": "8c42fa70938644e0a8a109744467375f",
+      "secret_name": "OLLAMA_CLOUD_API_KEY",
+    },
+    {
+      // Ollama Cloud dashboard session cookie (__Secure-session value) for usage
+      // scraping. Obtain from browser DevTools while logged in to ollama.com.
+      // Read via: await env.OLLAMA_SESSION_COOKIE.get()
+      "binding": "OLLAMA_SESSION_COOKIE",
+      "store_id": "8c42fa70938644e0a8a109744467375f",
+      "secret_name": "OLLAMA_SESSION_COOKIE",
     },
     // External-provider BILLING keys (admin/org keys, distinct from the inference
     // keys above). Used only by the provider-cost sync. Optional — a missing key

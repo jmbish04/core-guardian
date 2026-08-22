@@ -59,6 +59,24 @@ export const STATUS_LABEL: Record<ChangeStatus, string> = {
 export const CHANGELOG: ChangeEntry[] = [
   // ---- Shipped ----------------------------------------------------------
   {
+    id: "0340-ollama-cloud-provider",
+    title: "Ollama Cloud provider — first-class router provider with real-time model validation + quota tracking",
+    status: "shipped",
+    size: "M",
+    date: "2026-08-21",
+    phase: "P8",
+    summary:
+      "Adds provider:\"ollama\" to the AI Router. Ollama Cloud is a flat-rate subscription ($20/mo, 5-hour + weekly windows, no overages), so calls route through the OpenAI-compatible ollama.com/v1 surface, are metered for observability, and priced at $0 (exempt from the catalog-priceability guard). Every request's model is validated in real time against the live account model list, and session/weekly quota usage is tracked by scraping the dashboard.",
+    scope: [
+      "ai-router/ollama.ts (new): getAuthoritativeOllamaModels (GET /api/tags via ollama SDK, Zod-validated, KV-cached 1h in OLLAMA_KV) + validateOllamaModel (real-time gate, fails open on outage) + fetchOllamaUsage (scrapes ollama.com/settings with __Secure-session cookie, parses data-* progress-bar attrs into {plan, session, weekly} with per-model request counts); import.meta.main parser self-check",
+      "providers.ts: PROVIDER_KEY_BINDING.ollama=OLLAMA_CLOUD_API_KEY, nativeBaseUrl.ollama=https://ollama.com/v1 (extractUsage reuses the OpenAI token shape)",
+      "types.ts: ProviderId += \"ollama\"",
+      "routes/ai-router.ts: validation gate + canPrice exemption on the /run path; guardianAuth-gated GET /ollama/models (?refresh=true) and GET /ollama/usage",
+      "Bindings: KV OLLAMA_KV; Secret Store OLLAMA_CLOUD_API_KEY + OLLAMA_SESSION_COOKIE (dashboard cookie, rotate ~6mo)",
+      "ai-router/ollama-pricing.ts (new): daily cron watches the public ollama.com/pricing Individuals cards (no AI, no DO) — normalizes to a line fingerprint, diffs vs the OLLAMA_KV snapshot, and on change stores it + appends a capped change-log + upserts an `alerts` D1 row (NOT the NotificationsAgent DO — DO spend risk). Max sign-ups reopening = INFO alert; price/inclusion change = WARNING. Routes GET /ollama/pricing (?live=true) + POST /ollama/pricing/check; import.meta.main self-check",
+    ],
+  },
+  {
     id: "0330-external-provider-billing",
     title: "External provider billing — monitor Anthropic / OpenAI / Cursor / Gemini spend",
     status: "shipped",

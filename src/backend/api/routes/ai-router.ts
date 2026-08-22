@@ -16,6 +16,8 @@ import { forward } from "@/backend/guardian/ai-router/router";
 import { forwardStream } from "@/backend/guardian/ai-router/router-stream";
 import { isConcreteModel, resolveModel, type ResolveResult } from "@/backend/guardian/ai-router/resolve-model";
 import { canPrice, priceSplit } from "@/backend/guardian/ai-router/pricing";
+import { validateOllamaModel, getAuthoritativeOllamaModels, fetchOllamaUsage } from "@/backend/guardian/ai-router/ollama";
+import { fetchOllamaPricing, maybeCheckOllamaPricing, type OllamaPricingSnapshot, type OllamaPricingChangeEvent } from "@/backend/guardian/ai-router/ollama-pricing";
 import { syncRouterRecommendations, usageByProject, usageByModelForProject } from "@/backend/guardian/ai-router-usage";
 import { getSecretStoreBinding } from "@/backend/utils/secrets";
 import type { RouterRequest } from "@/backend/guardian/ai-router/types";
@@ -150,10 +152,21 @@ aiRouterRouter.openapi(
       return c.json({ error: 'Streaming (stream:true) supports only provider "openai" in v1.' }, 400);
     }
 
+    // Ollama Cloud: validate the model exists on ollama.com before forwarding.
+    // Ollama is subscription-based (flat $20/mo), so costUsd = 0 — exempt from
+    // the canPrice guard below. Validation is real-time (KV-cached 5 min).
+    if (raw.provider === "ollama") {
+      const ollamaKey = await getSecretStoreBinding(c.env, "OLLAMA_CLOUD_API_KEY");
+      if (!ollamaKey) return c.json({ error: "OLLAMA_CLOUD_API_KEY is not configured in the Secret Store." }, 500);
+      const modelErr = await validateOllamaModel(c.env, ollamaKey, String(raw.model));
+      if (modelErr) return c.json({ error: modelErr }, 400);
+    }
+
     // C3: fail closed — sole-meter bypass modes (native, or google forced to
     // gemini-native) must be priceable by the catalog, else spend is unmetered.
+    // Ollama is exempt: subscription billing means costUsd is always 0.
     const bypass = raw.mode === "native" || raw.provider === "google";
-    if (bypass && !(await canPrice(c.env, String(raw.model)))) {
+    if (bypass && raw.provider !== "ollama" && !(await canPrice(c.env, String(raw.model)))) {
       return c.json({ error: `Model "${raw.model}" is not priceable in the catalog; sole-meter modes (native/gemini-native) require a priceable model or a gateway mode.` }, 422);
     }
 
@@ -288,6 +301,8 @@ aiRouterRouter.use("/kill-switch", guardianAuth);
 aiRouterRouter.use("/requests", guardianAuth);
 aiRouterRouter.use("/usage", guardianAuth);
 aiRouterRouter.use("/usage/*", guardianAuth);
+aiRouterRouter.use("/ollama", guardianAuth);
+aiRouterRouter.use("/ollama/*", guardianAuth);
 
 aiRouterRouter.openapi(createRoute({
   method: "get", path: "/circuits", operationId: "aiRouterListCircuits",
@@ -483,4 +498,97 @@ aiRouterRouter.openapi(createRoute({
     .where(eq(aiRouterRecommendations.id, id));
   await audit(c.env, `Dispatched right-sizing to Jules for ${rec.project}/${rec.model} (session ${result.julesSessionId})`);
   return c.json({ ok: true, julesSessionId: result.julesSessionId, dispatchId: result.dispatchId }, 200);
+});
+
+// Ollama Cloud management routes — guardianAuth-gated.
+aiRouterRouter.openapi(createRoute({
+  method: "get", path: "/ollama/models", operationId: "aiRouterOllamaModels",
+  summary: "List available Ollama Cloud models (OLLAMA_KV cached, 1 h TTL)",
+  request: { query: z.object({ refresh: z.enum(["true", "false"]).optional() }) },
+  responses: {
+    200: { description: "Authoritative model list", content: { "application/json": { schema: z.object({ authoritative_timestamp: z.number(), models: z.array(z.object({ name: z.string(), model: z.string(), modified_at: z.string(), size: z.number(), digest: z.string() })) }) } } },
+    500: { description: "Fetch failed", content: { "application/json": { schema: z.object({ error: z.string() }) } } },
+  },
+}), async (c) => {
+  try {
+    const forceRefresh = c.req.query("refresh") === "true";
+    const data = await getAuthoritativeOllamaModels(c.env, forceRefresh);
+    return c.json(data, 200);
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+const ollamaUsagePeriodSchema = z.object({
+  percentageUsed: z.number(),
+  resetsAt: z.string(),
+  resetsIn: z.string(),
+  segments: z.array(z.object({ model: z.string(), requests: z.number(), widthPercent: z.number() })),
+});
+
+aiRouterRouter.openapi(createRoute({
+  method: "get", path: "/ollama/usage", operationId: "aiRouterOllamaUsage",
+  summary: "Scrape Ollama Cloud session/weekly quota usage from settings page",
+  responses: {
+    200: { description: "Usage metrics", content: { "application/json": { schema: z.object({ plan: z.string(), scrapedAt: z.number(), session: ollamaUsagePeriodSchema, weekly: ollamaUsagePeriodSchema }) } } },
+    500: { description: "Scrape failed", content: { "application/json": { schema: z.object({ error: z.string() }) } } },
+  },
+}), async (c) => {
+  try {
+    const data = await fetchOllamaUsage(c.env);
+    return c.json(data, 200);
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+const ollamaPlanSchema = z.object({
+  name: z.string(), price: z.string(), unit: z.string(), available: z.boolean(), features: z.array(z.string()),
+});
+const ollamaPricingSnapshotSchema = z.object({
+  capturedAt: z.number(), maxSignupsPaused: z.boolean(), plans: z.array(ollamaPlanSchema), fingerprint: z.array(z.string()),
+});
+const ollamaPricingChangeSchema = z.object({
+  at: z.number(), maxReopened: z.boolean(), addedLines: z.array(z.string()), removedLines: z.array(z.string()), priceChanges: z.array(z.string()),
+});
+
+aiRouterRouter.openapi(createRoute({
+  method: "get", path: "/ollama/pricing", operationId: "aiRouterOllamaPricing",
+  summary: "Ollama Individuals pricing snapshot + change history (KV-cached; ?live=true re-scrapes now)",
+  request: { query: z.object({ live: z.enum(["true", "false"]).optional() }) },
+  responses: {
+    200: { description: "Latest pricing snapshot + recorded changes", content: { "application/json": { schema: z.object({ snapshot: ollamaPricingSnapshotSchema.nullable(), changes: z.array(ollamaPricingChangeSchema) }) } } },
+    500: { description: "Scrape failed", content: { "application/json": { schema: z.object({ error: z.string() }) } } },
+  },
+}), async (c) => {
+  try {
+    if (c.req.query("live") === "true") {
+      // Read-only live scrape: shows the current page without recording a
+      // change or alert. Use POST /ollama/pricing/check to record + alert.
+      const snapshot = await fetchOllamaPricing(c.env);
+      const changes = (await c.env.OLLAMA_KV.get("ollama:pricing:changes", "json") as OllamaPricingChangeEvent[] | null) ?? [];
+      return c.json({ snapshot, changes }, 200);
+    }
+    const snapshot = (await c.env.OLLAMA_KV.get("ollama:pricing:latest", "json") as OllamaPricingSnapshot | null);
+    const changes = (await c.env.OLLAMA_KV.get("ollama:pricing:changes", "json") as OllamaPricingChangeEvent[] | null) ?? [];
+    return c.json({ snapshot, changes }, 200);
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+aiRouterRouter.openapi(createRoute({
+  method: "post", path: "/ollama/pricing/check", operationId: "aiRouterOllamaPricingCheck",
+  summary: "Force a pricing check now (scrape + diff + record/alert on change), bypassing the daily gate",
+  responses: {
+    200: { description: "Diff result (null when the gate skipped — never for a forced check)", content: { "application/json": { schema: z.object({ changed: z.boolean(), maxReopened: z.boolean(), addedLines: z.array(z.string()), removedLines: z.array(z.string()), priceChanges: z.array(z.string()) }).nullable() } } },
+    500: { description: "Check failed", content: { "application/json": { schema: z.object({ error: z.string() }) } } },
+  },
+}), async (c) => {
+  try {
+    const diff = await maybeCheckOllamaPricing(c.env, true); // force: bypass daily gate
+    return c.json(diff, 200);
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
 });
