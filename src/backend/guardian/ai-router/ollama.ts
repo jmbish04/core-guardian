@@ -257,8 +257,8 @@ export async function fetchOllamaUsage(env: Env): Promise<OllamaUsageMetrics> {
 
   // Split at "Weekly usage" to separate session vs weekly sections.
   const weeklyIdx = html.indexOf('aria-label="Weekly usage');
-  const sessionHtml = weeklyIdx > 0 ? html.slice(0, weeklyIdx) : html;
-  const weeklyHtml = weeklyIdx > 0 ? html.slice(weeklyIdx) : "";
+  const sessionHtml = weeklyIdx >= 0 ? html.slice(0, weeklyIdx) : html;
+  const weeklyHtml = weeklyIdx >= 0 ? html.slice(weeklyIdx) : "";
 
   return {
     plan,
