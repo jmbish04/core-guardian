@@ -53,9 +53,10 @@ function fmtDate(ms: number): string {
   return `${MONTH_SHORT[d.getUTCMonth()]} ${d.getUTCDate()}`;
 }
 
-/** Whole days remaining until periodEndMs (0 on the last day, negative after). */
+/** Whole days remaining until periodEndMs — floor, so N means at least N full
+ * days left (0 on the final calendar day, before the cycle rolls at period end). */
 function daysUntil(endMs: number, nowMs: number): number {
-  return Math.ceil((endMs - nowMs) / 86_400_000);
+  return Math.floor((endMs - nowMs) / 86_400_000);
 }
 
 export function SpendHeadline() {
