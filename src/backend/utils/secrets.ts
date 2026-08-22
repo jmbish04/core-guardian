@@ -80,8 +80,8 @@ export async function getOpenRouterApiKey(env: Env): Promise<string | undefined>
  * catalog degrades to the other sources when this is unset. */
 export async function getOllamaApiKey(env: Env): Promise<string | undefined> {
   return (
-    (await getSecretStoreBinding(env, "OLLAMA_API_KEY")) ??
-    getSecret(env, "OLLAMA_API_KEY")
+    (await getSecretStoreBinding(env, "OLLAMA_CLOUD_API_KEY")) ??
+    getSecret(env, "OLLAMA_CLOUD_API_KEY")
   );
 }
 

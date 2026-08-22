@@ -208,6 +208,14 @@ async function fetchAiPricingGuru(): Promise<CatalogModel[]> {
  * Pricing is not returned by the list API and is stored as null. These entries
  * are included in the catalog for model-resolution and discovery (AI Router,
  * recommendations engine) even though the cost advisor can't price-compare them.
+ *
+ * ponytail: this re-fetches /api/tags standalone. The runtime-provider branch
+ * (claude/ollama-cloud-api-support-cd7c87) adds an OLLAMA_KV cache
+ * (getAuthoritativeOllamaModels, 1h TTL) for the same endpoint. Follow-up once
+ * that lands: swap this fetch for a getAuthoritativeOllamaModels() read so there
+ * is ONE fetch + one authoritative list. Boundary agreed cross-session:
+ * per-model token pricing (this file) is ours; pricing-PLAN watching
+ * (ai-router/ollama-pricing.ts, their branch) is theirs.
  */
 async function fetchOllama(env: Env): Promise<CatalogModel[]> {
   const token = await getOllamaApiKey(env);
