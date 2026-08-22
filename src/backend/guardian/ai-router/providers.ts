@@ -10,6 +10,8 @@ export const PROVIDER_KEY_BINDING: Record<string, string> = {
   // API token (Bearer), the same token router.ts reads as cfApiToken. Without
   // this mapping /run could never serve a workers-ai request.
   "workers-ai": "CLOUDFLARE_API_TOKEN",
+  // Ollama Cloud subscription key — no per-token billing, flat monthly rate.
+  ollama: "OLLAMA_CLOUD_API_KEY",
 };
 
 /**
@@ -51,6 +53,8 @@ export const aigSlug = (provider: string): string =>
 export const nativeBaseUrl = (provider: string): string => ({
   openai: "https://api.openai.com/v1",
   anthropic: "https://api.anthropic.com/v1",
+  // Ollama Cloud exposes an OpenAI-compatible /v1 surface at ollama.com.
+  ollama: "https://ollama.com/v1",
 }[provider] ?? "");
 
 if (import.meta.main) {

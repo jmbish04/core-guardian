@@ -67,6 +67,7 @@ import { buildSpendRollup } from "./backend/guardian/spend-rollup";
 import { CATALOG_CACHE_KEY, refreshModelCatalog } from "./backend/guardian/model-catalog";
 import { syncRecommendationAlerts } from "./backend/guardian/model-recommendations";
 import { scrapeAllModelPricing } from "./backend/guardian/ai-model-pricing";
+import { maybeCheckOllamaPricing } from "./backend/guardian/ai-router/ollama-pricing";
 import { evaluateUsage } from "./backend/guardian/collect";
 import { backfillDailyCost, snapshotDailyCost } from "./backend/guardian/daily-cost";
 import { checkSustainedSpend } from "./backend/guardian/offense/auto-break";
@@ -132,6 +133,16 @@ async function runGuardianEvaluation(env: Env) {
   } catch (err) {
     console.error(
       JSON.stringify({ level: "ERROR", source: "guardian.modelPricing", error: String(err) }),
+    );
+  }
+  // Daily: watch the Ollama Cloud Individuals pricing page (public, no auth, no
+  // AI) — diff the plan cards and raise an `alerts` row on any change, notably
+  // when Max sign-ups reopen. Self-gated to once/day. NO Durable Objects.
+  try {
+    await maybeCheckOllamaPricing(env);
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: "ERROR", source: "guardian.ollama.pricing", error: String(err) }),
     );
   }
   // Daily: snapshot AI Gateway per-model actual cost into D1 (GraphQL retains
