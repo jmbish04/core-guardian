@@ -22,11 +22,13 @@ import { desc } from "drizzle-orm";
 
 import { getDb } from "@/backend/db";
 import { aiModelPricing } from "@/backend/db/schema";
-import { getOpenRouterApiKey } from "@/backend/utils/secrets";
+import { getOllamaApiKey, getOpenRouterApiKey } from "@/backend/utils/secrets";
 
 export const CATALOG_CACHE_KEY = "model-catalog:latest";
 const AIPRICING_URL = "https://www.aipricing.guru/api/pricing.json";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/models?limit=500";
+/** Ollama Cloud model list endpoint — same path as local Ollama, hosted at ollama.com. */
+const OLLAMA_CLOUD_URL = "https://ollama.com/api/tags";
 
 export type CapabilityTier = "small" | "mid" | "frontier";
 
@@ -44,7 +46,7 @@ export type CatalogModel = {
   /** Curated capability score 0–100 (see {@link capabilityScore}). */
   score: number;
   tier: CapabilityTier;
-  source: "aipricing" | "openrouter" | "scraped";
+  source: "aipricing" | "openrouter" | "scraped" | "ollama";
 };
 
 export const TIER_RANK: Record<CapabilityTier, number> = { small: 0, mid: 1, frontier: 2 };
@@ -198,6 +200,45 @@ async function fetchAiPricingGuru(): Promise<CatalogModel[]> {
     }));
 }
 
+/**
+ * Ollama Cloud: fetch available models via `GET /api/tags` (the same endpoint
+ * local Ollama exposes, hosted at ollama.com). Requires `OLLAMA_API_KEY` in the
+ * Secrets Store — skipped silently when unset so the catalog degrades gracefully.
+ *
+ * Pricing is not returned by the list API and is stored as null. These entries
+ * are included in the catalog for model-resolution and discovery (AI Router,
+ * recommendations engine) even though the cost advisor can't price-compare them.
+ */
+async function fetchOllama(env: Env): Promise<CatalogModel[]> {
+  const token = await getOllamaApiKey(env);
+  if (!token) return [];
+  const res = await fetch(OLLAMA_CLOUD_URL, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`Ollama Cloud HTTP ${res.status}`);
+  const body = (await res.json()) as { models?: { name?: string; model?: string; details?: { family?: string; parameter_size?: string } }[] };
+  return (body.models ?? [])
+    .filter((m) => {
+      const id = m.model ?? m.name ?? "";
+      return id && isChatModel(`${id} ${m.details?.family ?? ""}`);
+    })
+    .map((m): CatalogModel => {
+      const id = m.model ?? m.name ?? "";
+      const label = `${id} ${m.details?.family ?? ""} ${m.details?.parameter_size ?? ""}`.trim();
+      return {
+        key: normKey("ollama", id),
+        id,
+        name: m.name ?? id,
+        provider: "ollama",
+        inPerM: null,
+        outPerM: null,
+        cachedInPerM: null,
+        context: null,
+        score: capabilityScore(label),
+        tier: classifyTier(label),
+        source: "ollama",
+      };
+    });
+}
+
 /** The Worker's own `ai_model_pricing` catalog (now Cloudflare Workers AI only),
  * newest row per (provider, api_model_name), as candidates. Queried directly
  * rather than via ai-model-advisor to keep this module out of an import cycle. */
@@ -234,7 +275,7 @@ async function fetchScraped(env: Env): Promise<CatalogModel[]> {
  * @returns the merged candidate list (also written to KV)
  */
 export async function refreshModelCatalog(env: Env): Promise<CatalogModel[]> {
-  const [openrouter, aipricing, scraped] = await Promise.all([
+  const [openrouter, aipricing, scraped, ollama] = await Promise.all([
     fetchOpenRouter(env).catch((e) => {
       console.warn(JSON.stringify({ level: "WARN", source: "modelCatalog.openrouter", error: String(e) }));
       return [] as CatalogModel[];
@@ -244,12 +285,19 @@ export async function refreshModelCatalog(env: Env): Promise<CatalogModel[]> {
       return [] as CatalogModel[];
     }),
     fetchScraped(env).catch(() => [] as CatalogModel[]),
+    fetchOllama(env).catch((e) => {
+      console.warn(JSON.stringify({ level: "WARN", source: "modelCatalog.ollama", error: String(e) }));
+      return [] as CatalogModel[];
+    }),
   ]);
 
   // Priority order defines which source wins a key collision.
+  // Ollama entries have null pricing (list API doesn't expose it) but are still
+  // included for model-resolution and discovery — the cost advisor skips null-priced
+  // candidates via its own filter, so they don't pollute savings recommendations.
   const merged = new Map<string, CatalogModel>();
-  for (const m of [...aipricing, ...scraped, ...openrouter]) {
-    if (m.inPerM === null && m.outPerM === null) continue; // unpriced → not a candidate
+  for (const m of [...aipricing, ...scraped, ...ollama, ...openrouter]) {
+    if (m.inPerM === null && m.outPerM === null && m.source !== "ollama") continue; // unpriced non-ollama → not a candidate
     if (!isChatModel(`${m.id} ${m.name}`)) continue; // chat/completion candidates only
     if (!merged.has(m.key)) merged.set(m.key, m);
   }
