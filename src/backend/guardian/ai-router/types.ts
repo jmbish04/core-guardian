@@ -5,7 +5,7 @@ export type Mode =
   | "gateway" | "gateway-custom" | "provider-sdk-gateway"
   | "openai-compat" | "native" | "gemini-native";
 export type Transport = "ai-sdk" | "provider-sdk" | "openai-compat" | "gemini-sdk";
-export type ProviderId = "openai" | "anthropic" | "google" | "workers-ai";
+export type ProviderId = "openai" | "anthropic" | "google" | "workers-ai" | "ollama";
 export type Window = "day" | "week" | "month" | "total";
 
 /** A validated ingress request. Unknown extra keys survive in `extra`. */

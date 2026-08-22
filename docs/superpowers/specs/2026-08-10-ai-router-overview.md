@@ -88,3 +88,59 @@ Weekly cron → Jules analysis → stored recommendations surfaced in frontend.
 ## Build order
 
 #1 Routing Core → #2 Admin frontend → #3 Usage enrichment → #4 Jules. Each: brainstorm → design doc → writing-plans → build. This overlay doc updated as decisions land.
+
+---
+
+## Provider: Ollama Cloud (BUILT ✅ 2026-08-21)
+
+Added `provider: "ollama"` as a first-class router provider. Ollama Cloud is a
+flat-rate subscription ($20/mo, 5-hour + weekly windows, **no overages**), so it
+is metered for observability but priced at **$0**.
+
+**Files:** `src/backend/guardian/ai-router/ollama.ts` (new); touches `providers.ts`
+(`PROVIDER_KEY_BINDING.ollama`, `nativeBaseUrl.ollama = https://ollama.com/v1`),
+`types.ts` (`ProviderId += "ollama"`), and `routes/ai-router.ts` (validation gate,
+pricing exemption, two admin routes).
+
+**Dispatch:** `mode: "native"` → OpenAI-compatible surface at `https://ollama.com/v1`,
+Bearer `OLLAMA_CLOUD_API_KEY`. `extractUsage` reuses the OpenAI `prompt_tokens`/
+`completion_tokens` shape (default branch). Streaming NOT supported (v1 = OpenAI only).
+
+**Real-time model validation:** every `/run` with `provider:"ollama"` checks the
+requested model against the live account list (GET `/api/tags` via the `ollama`
+SDK, KV-cached 1 h in `OLLAMA_KV`). Unknown model → 400. Validation **fails open**
+on a tags-endpoint outage so a blip can't block inference.
+
+**Pricing exemption:** Ollama bypasses the `canPrice` sole-meter guard (C3) —
+subscription billing means `costUsd` is always 0. Usage (tokens) still flows to
+the roll-up via the normal capture path.
+
+**Quota usage tracking:** no usage JSON API exists — the numbers render only into
+`https://ollama.com/settings`. `fetchOllamaUsage` scrapes that page with the
+dashboard `__Secure-session` cookie (`OLLAMA_SESSION_COOKIE`) and parses the
+`data-*` progress-bar attributes into `{plan, session, weekly}` with per-model
+request counts. Verified: bare server fetch reaches it (no bot-wall; auth is the
+only gate). Parser has an `import.meta.main` self-check against fixture markup.
+
+**Bindings added:** KV `OLLAMA_KV` (id `33c5c852…`); Secret Store
+`OLLAMA_CLOUD_API_KEY` + `OLLAMA_SESSION_COOKIE`.
+
+**Admin routes** (guardianAuth-gated): `GET /api/ai-router/ollama/models`
+(`?refresh=true` forces re-fetch), `GET /api/ai-router/ollama/usage`.
+
+**Pricing watcher (no AI, no DO):** `ollama-pricing.ts` scrapes the public
+`ollama.com/pricing` Individuals cards (Free/Pro/Max; Team & Enterprise ignored)
+on the daily cron, normalises them to an ordered line "fingerprint", and diffs
+against the last snapshot in `OLLAMA_KV`. On any change it stores the new
+snapshot, appends a capped change-log (`ollama:pricing:changes`), and **upserts a
+row into the `alerts` D1 table** — deliberately NOT the NotificationsAgent DO
+(DO invocations are a runaway-spend vector). The headline case — Max sign-ups
+reopening (paused → available) — raises an INFO alert; price/inclusion changes
+raise WARNING. Pure regex extraction + set diff; `import.meta.main` self-check.
+Routes: `GET /api/ai-router/ollama/pricing` (`?live=true` re-scrapes read-only),
+`POST /api/ai-router/ollama/pricing/check` (force check now). Cron step
+`maybeCheckOllamaPricing` in `_worker.ts`, self-gated once/day.
+
+**Ops:** `OLLAMA_SESSION_COOKIE` expires ~6 months — rotate from browser DevTools
+(Application → Cookies → ollama.com → `__Secure-session`) when `/ollama/usage`
+starts 303-ing.
