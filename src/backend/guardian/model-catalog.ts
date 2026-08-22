@@ -22,13 +22,12 @@ import { desc } from "drizzle-orm";
 
 import { getDb } from "@/backend/db";
 import { aiModelPricing } from "@/backend/db/schema";
-import { getOllamaApiKey, getOpenRouterApiKey } from "@/backend/utils/secrets";
+import { getOpenRouterApiKey } from "@/backend/utils/secrets";
+import { getAuthoritativeOllamaModels } from "@/backend/guardian/ai-router/ollama";
 
 export const CATALOG_CACHE_KEY = "model-catalog:latest";
 const AIPRICING_URL = "https://www.aipricing.guru/api/pricing.json";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/models?limit=500";
-/** Ollama Cloud model list endpoint — same path as local Ollama, hosted at ollama.com. */
-const OLLAMA_CLOUD_URL = "https://ollama.com/api/tags";
 
 export type CapabilityTier = "small" | "mid" | "frontier";
 
@@ -201,40 +200,34 @@ async function fetchAiPricingGuru(): Promise<CatalogModel[]> {
 }
 
 /**
- * Ollama Cloud: fetch available models via `GET /api/tags` (the same endpoint
- * local Ollama exposes, hosted at ollama.com). Requires `OLLAMA_API_KEY` in the
- * Secrets Store — skipped silently when unset so the catalog degrades gracefully.
+ * Ollama Cloud: read the authoritative model list from the shared `OLLAMA_KV`
+ * cache ({@link getAuthoritativeOllamaModels}, populated by the AI-Router runtime
+ * provider, 1h TTL) and normalize to catalog candidates. ONE fetch of
+ * `/api/tags` serves both the router's runtime validation and this catalog.
+ * Degrades to `[]` when `OLLAMA_CLOUD_API_KEY` is unset (the cache read throws).
  *
- * Pricing is not returned by the list API and is stored as null. These entries
- * are included in the catalog for model-resolution and discovery (AI Router,
- * recommendations engine) even though the cost advisor can't price-compare them.
+ * Pricing is not returned by the list API and is stored as null. Entries are
+ * included for model-resolution and discovery (AI Router, recommendations
+ * engine) even though the cost advisor can't price-compare them.
  *
- * ponytail: this re-fetches /api/tags standalone. The runtime-provider branch
- * (claude/ollama-cloud-api-support-cd7c87) adds an OLLAMA_KV cache
- * (getAuthoritativeOllamaModels, 1h TTL) for the same endpoint. Follow-up once
- * that lands: swap this fetch for a getAuthoritativeOllamaModels() read so there
- * is ONE fetch + one authoritative list. Boundary agreed cross-session:
- * per-model token pricing (this file) is ours; pricing-PLAN watching
- * (ai-router/ollama-pricing.ts, their branch) is theirs.
+ * Boundary agreed cross-session: per-model token pricing + catalog (this file)
+ * is ours; the runtime provider + pricing-PLAN watcher (ai-router/ollama.ts,
+ * ollama-pricing.ts) are the AI-Router side.
  */
 async function fetchOllama(env: Env): Promise<CatalogModel[]> {
-  const token = await getOllamaApiKey(env);
-  if (!token) return [];
-  const res = await fetch(OLLAMA_CLOUD_URL, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) throw new Error(`Ollama Cloud HTTP ${res.status}`);
-  const body = (await res.json()) as { models?: { name?: string; model?: string; details?: { family?: string; parameter_size?: string } }[] };
-  return (body.models ?? [])
+  const { models } = await getAuthoritativeOllamaModels(env);
+  return models
     .filter((m) => {
-      const id = m.model ?? m.name ?? "";
+      const id = m.model || m.name;
       return id && isChatModel(`${id} ${m.details?.family ?? ""}`);
     })
     .map((m): CatalogModel => {
-      const id = m.model ?? m.name ?? "";
+      const id = m.model || m.name;
       const label = `${id} ${m.details?.family ?? ""} ${m.details?.parameter_size ?? ""}`.trim();
       return {
         key: normKey("ollama", id),
         id,
-        name: m.name ?? id,
+        name: m.name || id,
         provider: "ollama",
         inPerM: null,
         outPerM: null,

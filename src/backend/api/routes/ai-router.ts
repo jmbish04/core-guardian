@@ -19,7 +19,7 @@ import { canPrice, priceSplit } from "@/backend/guardian/ai-router/pricing";
 import { validateOllamaModel, getAuthoritativeOllamaModels, fetchOllamaUsage } from "@/backend/guardian/ai-router/ollama";
 import { fetchOllamaPricing, maybeCheckOllamaPricing, type OllamaPricingSnapshot, type OllamaPricingChangeEvent } from "@/backend/guardian/ai-router/ollama-pricing";
 import { syncRouterRecommendations, usageByProject, usageByModelForProject } from "@/backend/guardian/ai-router-usage";
-import { getSecretStoreBinding } from "@/backend/utils/secrets";
+import { getOllamaApiKey, getSecretStoreBinding } from "@/backend/utils/secrets";
 import type { RouterRequest } from "@/backend/guardian/ai-router/types";
 
 export const aiRouterRouter = new OpenAPIHono<{ Bindings: Env }>();
@@ -156,7 +156,7 @@ aiRouterRouter.openapi(
     // Ollama is subscription-based (flat $20/mo), so costUsd = 0 — exempt from
     // the canPrice guard below. Validation is real-time (KV-cached 5 min).
     if (raw.provider === "ollama") {
-      const ollamaKey = await getSecretStoreBinding(c.env, "OLLAMA_CLOUD_API_KEY");
+      const ollamaKey = await getOllamaApiKey(c.env);
       if (!ollamaKey) return c.json({ error: "OLLAMA_CLOUD_API_KEY is not configured in the Secret Store." }, 500);
       const modelErr = await validateOllamaModel(c.env, ollamaKey, String(raw.model));
       if (modelErr) return c.json({ error: modelErr }, 400);
