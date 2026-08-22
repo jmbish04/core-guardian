@@ -31,7 +31,7 @@
  */
 import { Ollama } from "ollama";
 import { z } from "zod";
-import { getSecretStoreBinding } from "@/backend/utils/secrets";
+import { getOllamaApiKey, getSecretStoreBinding } from "@/backend/utils/secrets";
 
 // -----------------------------------------------------------------------------
 // Schemas
@@ -131,7 +131,7 @@ export async function getAuthoritativeOllamaModels(env: Env, forceRefresh = fals
     }
   }
 
-  const apiKey = await getSecretStoreBinding(env, "OLLAMA_CLOUD_API_KEY");
+  const apiKey = await getOllamaApiKey(env);
   if (!apiKey) throw new Error("OLLAMA_CLOUD_API_KEY not configured in the Secret Store.");
 
   const models = await fetchModelsFromCloud(apiKey);

@@ -92,6 +92,10 @@ const insightsResponseSchema = z.object({
     at: z.number().nullable(),
   }),
   anomalies: z.array(anomalySchema),
+  /** Epoch-ms of the CF billing period start (anniversary date). Null until first billable-usage sync. */
+  periodStartMs: z.number().nullable(),
+  /** Epoch-ms of the CF billing period end (= start + 1 month). Null until first sync. */
+  periodEndMs: z.number().nullable(),
 });
 
 billingInsightsRouter.openapi(

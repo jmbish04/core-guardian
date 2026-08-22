@@ -23,6 +23,7 @@ import { desc } from "drizzle-orm";
 import { getDb } from "@/backend/db";
 import { aiModelPricing } from "@/backend/db/schema";
 import { getOpenRouterApiKey } from "@/backend/utils/secrets";
+import { getAuthoritativeOllamaModels } from "@/backend/guardian/ai-router/ollama";
 
 export const CATALOG_CACHE_KEY = "model-catalog:latest";
 const AIPRICING_URL = "https://www.aipricing.guru/api/pricing.json";
@@ -44,7 +45,7 @@ export type CatalogModel = {
   /** Curated capability score 0–100 (see {@link capabilityScore}). */
   score: number;
   tier: CapabilityTier;
-  source: "aipricing" | "openrouter" | "scraped";
+  source: "aipricing" | "openrouter" | "scraped" | "ollama";
 };
 
 export const TIER_RANK: Record<CapabilityTier, number> = { small: 0, mid: 1, frontier: 2 };
@@ -198,6 +199,47 @@ async function fetchAiPricingGuru(): Promise<CatalogModel[]> {
     }));
 }
 
+/**
+ * Ollama Cloud: read the authoritative model list from the shared `OLLAMA_KV`
+ * cache ({@link getAuthoritativeOllamaModels}, populated by the AI-Router runtime
+ * provider, 1h TTL) and normalize to catalog candidates. ONE fetch of
+ * `/api/tags` serves both the router's runtime validation and this catalog.
+ * Degrades to `[]` when `OLLAMA_CLOUD_API_KEY` is unset (the cache read throws).
+ *
+ * Pricing is not returned by the list API and is stored as null. Entries are
+ * included for model-resolution and discovery (AI Router, recommendations
+ * engine) even though the cost advisor can't price-compare them.
+ *
+ * Boundary agreed cross-session: per-model token pricing + catalog (this file)
+ * is ours; the runtime provider + pricing-PLAN watcher (ai-router/ollama.ts,
+ * ollama-pricing.ts) are the AI-Router side.
+ */
+async function fetchOllama(env: Env): Promise<CatalogModel[]> {
+  const { models } = await getAuthoritativeOllamaModels(env);
+  return models
+    .filter((m) => {
+      const id = m.model || m.name;
+      return id && isChatModel(`${id} ${m.details?.family ?? ""}`);
+    })
+    .map((m): CatalogModel => {
+      const id = m.model || m.name;
+      const label = `${id} ${m.details?.family ?? ""} ${m.details?.parameter_size ?? ""}`.trim();
+      return {
+        key: normKey("ollama", id),
+        id,
+        name: m.name || id,
+        provider: "ollama",
+        inPerM: null,
+        outPerM: null,
+        cachedInPerM: null,
+        context: null,
+        score: capabilityScore(label),
+        tier: classifyTier(label),
+        source: "ollama",
+      };
+    });
+}
+
 /** The Worker's own `ai_model_pricing` catalog (now Cloudflare Workers AI only),
  * newest row per (provider, api_model_name), as candidates. Queried directly
  * rather than via ai-model-advisor to keep this module out of an import cycle. */
@@ -234,7 +276,7 @@ async function fetchScraped(env: Env): Promise<CatalogModel[]> {
  * @returns the merged candidate list (also written to KV)
  */
 export async function refreshModelCatalog(env: Env): Promise<CatalogModel[]> {
-  const [openrouter, aipricing, scraped] = await Promise.all([
+  const [openrouter, aipricing, scraped, ollama] = await Promise.all([
     fetchOpenRouter(env).catch((e) => {
       console.warn(JSON.stringify({ level: "WARN", source: "modelCatalog.openrouter", error: String(e) }));
       return [] as CatalogModel[];
@@ -244,12 +286,19 @@ export async function refreshModelCatalog(env: Env): Promise<CatalogModel[]> {
       return [] as CatalogModel[];
     }),
     fetchScraped(env).catch(() => [] as CatalogModel[]),
+    fetchOllama(env).catch((e) => {
+      console.warn(JSON.stringify({ level: "WARN", source: "modelCatalog.ollama", error: String(e) }));
+      return [] as CatalogModel[];
+    }),
   ]);
 
   // Priority order defines which source wins a key collision.
+  // Ollama entries have null pricing (list API doesn't expose it) but are still
+  // included for model-resolution and discovery — the cost advisor skips null-priced
+  // candidates via its own filter, so they don't pollute savings recommendations.
   const merged = new Map<string, CatalogModel>();
-  for (const m of [...aipricing, ...scraped, ...openrouter]) {
-    if (m.inPerM === null && m.outPerM === null) continue; // unpriced → not a candidate
+  for (const m of [...aipricing, ...scraped, ...ollama, ...openrouter]) {
+    if (m.inPerM === null && m.outPerM === null && m.source !== "ollama") continue; // unpriced non-ollama → not a candidate
     if (!isChatModel(`${m.id} ${m.name}`)) continue; // chat/completion candidates only
     if (!merged.has(m.key)) merged.set(m.key, m);
   }
